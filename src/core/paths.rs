@@ -1,8 +1,7 @@
 //! Where things live: per-user cache/log dirs, and the Echo VR install layout.
 //!
 //! The Echo client always lives at `<root>/ready-at-dawn-echo-arena/bin/win10/echovr.exe`.
-//! Install paths are kept in the Java form -- forward slashes, no trailing slash -- so the
-//! saved `paths.properties` stays compatible with the old installer.
+//! Install paths are kept with forward slashes and no trailing slash.
 
 use std::path::{Path, PathBuf};
 

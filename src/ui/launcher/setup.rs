@@ -25,12 +25,10 @@ pub(super) const QUEST_REINSTALL_KEY: &str = "quest-reinstall";
 
 /// A card over the whole window.
 pub(super) enum Overlay {
-    Setup,
+    /// "Welcome To Echo VR": step 0 asks about the licence, step 1 how you play.
+    Setup { step: u8 },
     /// A patch from a link the user already has.
-    PatchLink {
-        target: LinkFor,
-        url: String,
-    },
+    PatchLink { target: LinkFor, url: String },
 }
 
 /// What a patch link is for.
@@ -192,7 +190,7 @@ pub(super) fn quest_source(d: &Dashboard) -> ApkSource {
 /// Asks before replacing Echo VR on the headset (the setup comes first if unanswered).
 pub(super) fn ask_quest_install(d: &mut Dashboard) {
     if d.state.owner.is_none() {
-        d.overlay = Some(Overlay::Setup);
+        d.overlay = Some(Overlay::Setup { step: 0 });
         return;
     }
     d.dialogs.confirm(
@@ -254,7 +252,10 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
             k.origin = screen.min;
             k.fill(0.0, 0.0, W, H, style::with_alpha(style::BG, 175));
             match &d.overlay {
-                Some(Overlay::Setup) => setup_card(d, &mut k),
+                Some(Overlay::Setup { step }) => {
+                    let step = *step;
+                    setup_card(d, &mut k, step)
+                }
                 Some(Overlay::PatchLink { .. }) => link_card(d, &mut k, ctx),
                 None => {}
             }
@@ -265,97 +266,144 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
     }
 }
 
-/// First run: own Echo VR or not, and how you play.
-fn setup_card(d: &mut Dashboard, k: &mut Kit) {
-    let (w, h) = (660.0, 360.0);
-    let (x, y) = (((W - w) / 2.0).floor(), ((H - h) / 2.0).floor());
-    solid_card(k, x, y, w, h, "Welcome to the Echo VR Launcher");
-    k.text(
-        x + 24.0,
-        y + 52.0,
-        "Two quick questions, so PLAY does the right thing. You can change both in Settings.",
-        style::body(14.0),
-        style::TEXT_DIM,
-    );
+const OWN_NOTE: &str =
+    "You play with your own licence from the Meta store. The licence patch stays optional.";
+const NEW_NOTE: &str =
+    "No licence yet? You get a personal licence patch through Discord before your first match.";
 
-    k.caps(
-        x + 24.0,
-        y + 92.0,
-        "Do you own Echo VR on your Meta account?",
-        style::TEXT,
-    );
-    let owner = match d.state.owner {
-        Some(true) => 0,
-        Some(false) => 1,
-        None => usize::MAX,
-    };
-    if let Some(i) = k.segmented(
-        "setup-owner",
-        &["I own it", "I'm a new player"],
-        owner,
-        x + 24.0,
-        y + 114.0,
-        w - 48.0,
-        32.0,
-    ) {
-        d.state.owner = Some(i == 0);
-    }
-    let owner_note = match d.state.owner {
-        Some(true) => "You play with your own licence. The licence patch stays optional.",
-        Some(false) => {
-            "You'll get a personal licence patch through Discord before your first match."
-        }
-        None => "",
-    };
-    k.text(
-        x + 24.0,
-        y + 154.0,
-        owner_note,
-        style::body(13.0),
-        style::TEXT_MUTED,
-    );
-
-    k.caps(x + 24.0, y + 196.0, "How do you play?", style::TEXT);
-    let labels = ["Meta Link", "Virtual Desktop", "SteamVR", "Flat"];
-    let sel = Runtime::ALL
-        .iter()
-        .position(|r| *r == d.state.profile.runtime)
-        .unwrap_or(0);
-    if let Some(i) = k.segmented(
-        "setup-runtime",
-        &labels,
-        sel,
-        x + 24.0,
-        y + 218.0,
-        w - 48.0,
-        32.0,
-    ) {
-        d.state.profile.runtime = Runtime::ALL[i];
-    }
-    let runtime_note = match d.state.profile.runtime {
+fn runtime_note(r: Runtime) -> &'static str {
+    match r {
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
         Runtime::VirtualDesktop => "Quest over Virtual Desktop; start its streamer first.",
         Runtime::Revive => "Any SteamVR headset. The launcher sets up Revive for you.",
         Runtime::Flat => "No headset: play or spectate on the monitor.",
+    }
+}
+
+/// "Welcome To Echo VR", the installer's way: one question per step, big slanted answers,
+/// and a tip line for the hovered one.
+fn setup_card(d: &mut Dashboard, k: &mut Kit, step: u8) {
+    let (w, h) = (640.0, 400.0);
+    let (x, y) = (((W - w) / 2.0).floor(), ((H - h) / 2.0).floor());
+    solid_card(k, x, y, w, h, "Welcome To Echo VR");
+    let question = if step == 0 {
+        "Do you own Echo VR on your Meta account?"
+    } else {
+        "How do you play Echo VR?"
     };
-    k.text(
-        x + 24.0,
-        y + 258.0,
-        runtime_note,
-        style::body(13.0),
-        style::TEXT_MUTED,
+    let qw = k.banner_width(question, 40.0, 15.0).min(w - 48.0);
+    k.banner(x + (w - qw) / 2.0, y + 56.0, qw, 40.0, question, 15.0);
+
+    let mut tip = None;
+    let row = |i: usize| y + 118.0 + i as f32 * (style::BIG + 12.0);
+    if step == 0 {
+        let bw = 380.0;
+        let bx = x + (w - bw) / 2.0;
+        let answers = [
+            (true, "I own Echo on Meta", OWN_NOTE),
+            (false, "I'm a new player", NEW_NOTE),
+        ];
+        for (i, (own, label, note)) in answers.into_iter().enumerate() {
+            let r = k.choice(
+                &format!("setup-owner-{i}"),
+                label,
+                bx,
+                row(i),
+                bw,
+                style::BIG,
+                d.state.owner == Some(own),
+                "",
+            );
+            if r.hovered {
+                tip = Some(note);
+            }
+            if r.clicked {
+                d.state.owner = Some(own);
+                d.overlay = Some(Overlay::Setup { step: 1 });
+            }
+        }
+    } else {
+        let labels = [
+            "Meta Link",
+            "Virtual Desktop",
+            "SteamVR (Revive)",
+            "Flat (no headset)",
+        ];
+        let bw = 280.0;
+        let x0 = x + (w - 2.0 * bw - 16.0) / 2.0;
+        for (i, (rt, label)) in Runtime::ALL.iter().zip(labels).enumerate() {
+            let r = k.choice(
+                &format!("setup-runtime-{i}"),
+                label,
+                x0 + (i % 2) as f32 * (bw + 16.0),
+                row(i / 2),
+                bw,
+                style::BIG,
+                d.state.profile.runtime == *rt,
+                "",
+            );
+            if r.hovered {
+                tip = Some(runtime_note(*rt));
+            }
+            if r.clicked {
+                d.state.profile.runtime = *rt;
+                finish_setup(d);
+            }
+        }
+    }
+
+    // The tip line, in a quiet box like the installer's tipbox.
+    let ty = y + 250.0;
+    k.round_box(
+        x + 32.0,
+        ty,
+        w - 64.0,
+        64.0,
+        15.0,
+        style::with_alpha(style::BG, 110),
+        Some(style::BORDER),
+    );
+    k.text_center(
+        x + 48.0,
+        ty,
+        w - 96.0,
+        64.0,
+        tip.unwrap_or("Hover over a choice for details. You can change both later in Settings."),
+        style::body(14.0),
+        style::TEXT_DIM,
+        Some(w - 96.0),
     );
 
     let by = y + h - 24.0 - style::MID;
+    let mut bx = x + 24.0;
+    if step == 1 {
+        if k.flat_button(
+            "setup-back",
+            Variant::Secondary,
+            None,
+            "< Back",
+            bx,
+            by,
+            140.0,
+            style::MID,
+            true,
+            "",
+        )
+        .clicked
+        {
+            d.overlay = Some(Overlay::Setup { step: 0 });
+        }
+        bx += 152.0;
+    }
     if k.flat_button(
         "setup-skip",
         Variant::Ghost,
         None,
         "Skip for now",
-        x + 24.0,
-        by + (style::MID - style::SMALL) / 2.0,
-        160.0,
-        style::SMALL,
+        bx,
+        by,
+        200.0,
+        style::MID,
         true,
         "Ask later; you can set this in Settings",
     )
@@ -363,22 +411,9 @@ fn setup_card(d: &mut Dashboard, k: &mut Kit) {
     {
         finish_setup(d);
     }
-    if k.flat_button(
-        "setup-done",
-        Variant::Primary,
-        None,
-        "Let's go",
-        x + w - 24.0 - 200.0,
-        by,
-        200.0,
-        style::MID,
-        d.state.owner.is_some(),
-        "Save and start",
-    )
-    .clicked
-    {
-        finish_setup(d);
-    }
+    let steps = format!("Step {} of 2", step + 1);
+    let sw = k.text_width(&steps, style::display(11.0));
+    k.caps(x + w - 24.0 - sw, by + 12.0, &steps, style::TEXT_MUTED);
 }
 
 /// A titled card with an opaque backing, so the dashboard doesn't show through.

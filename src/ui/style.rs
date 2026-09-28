@@ -1,8 +1,8 @@
 //! The launcher's widgets, drawn in the installer's visual language: slanted bitmap
 //! buttons (9-slice stretched to any width), magenta translucent panels with the dark
 //! 1px rim, the wine sidebar colour, banner headers with cyan stripes, the blue status
-//! bar and the green/grey step chips. Page layout is the launcher's; the look is the
-//! installer's (`kit.rs`).
+//! bar and green/grey chips as status badges. Every clickable thing is a slanted button.
+//! Page layout is the launcher's; the look is the installer's (`kit.rs`).
 
 use egui::{
     pos2, vec2, Color32, CursorIcon, Id, Mesh, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
@@ -108,18 +108,9 @@ pub enum Icon {
     Check,
     Warning,
     Headset,
-    More,
     ChevronDown,
     Monitor,
     Info,
-}
-
-/// What the split PLAY button reports back.
-pub struct Split {
-    /// The main part was clicked.
-    pub main: bool,
-    /// The whole button, for anchoring its menu.
-    pub menu_rect: Rect,
 }
 
 /// One entry of a popup menu.
@@ -396,6 +387,60 @@ impl Kit<'_> {
 
     // ---- buttons ----
 
+    /// The slanted bitmap for `r` (at a native height): pressed, hovered (`t > 0.5`) or up.
+    fn slanted(&self, r: Rect, t: f32, pressed: bool, tint: Color32) {
+        let ([up, hi, down], cap) = button_set(r.height());
+        let img = if pressed {
+            down
+        } else if t > 0.5 {
+            hi
+        } else {
+            up
+        };
+        let (tex, sz) = self.native_tex(img);
+        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
+    }
+
+    /// Icon and Conthrax label centered in `r`; `check` puts the installer's green ✓ first.
+    fn button_label(&self, r: Rect, icon: Option<Icon>, label: &str, fg: Color32, check: bool) {
+        let h = r.height();
+        let font = display(label_size(h));
+        let tw = if label.is_empty() {
+            0.0
+        } else {
+            self.text_width(label, font.clone())
+        };
+        let isz = if h >= BIG { 18.0 } else { 14.0 };
+        let icon = if check { Some(Icon::Check) } else { icon };
+        let gap = if icon.is_some() && !label.is_empty() {
+            10.0
+        } else {
+            0.0
+        };
+        let total = tw + gap + if icon.is_some() { isz } else { 0.0 };
+        let mut cx = r.center().x - total / 2.0;
+        if let Some(i) = icon {
+            let color = if check { theme::MARK_OK } else { fg };
+            icon_at(
+                self.ui.painter(),
+                i,
+                pos2(cx, r.center().y - isz / 2.0),
+                isz,
+                color,
+            );
+            cx += isz + gap;
+        }
+        if !label.is_empty() {
+            self.ui.painter().with_clip_rect(r).text(
+                pos2(cx, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                font,
+                fg,
+            );
+        }
+    }
+
     /// The installer's slanted bitmap button, stretched to `w`x`h`, with an optional icon.
     #[allow(clippy::too_many_arguments)]
     pub fn flat_button(
@@ -414,84 +459,103 @@ impl Kit<'_> {
         let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
         let r = self.rect(x, y, w, h);
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
-        let ([up, hi, down], cap) = button_set(h);
-        let img = if pressed {
-            down
-        } else if t > 0.5 {
-            hi
-        } else {
-            up
-        };
-        let (tex, sz) = self.native_tex(img);
         let tint = match (enabled, variant) {
             (false, _) => Color32::from_gray(140),
             (true, Variant::Ghost) => Color32::from_rgba_unmultiplied(255, 255, 255, 215),
             _ => Color32::WHITE,
         };
-        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
+        self.slanted(r, t, pressed, tint);
         let fg = if !enabled {
             Color32::from_gray(150)
         } else {
             mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
         };
-        let font = display(label_size(h));
-        let tw = if label.is_empty() {
-            0.0
-        } else {
-            self.text_width(label, font.clone())
-        };
-        let isz = if h >= BIG { 18.0 } else { 14.0 };
-        let gap = if icon.is_some() && !label.is_empty() {
-            10.0
-        } else {
-            0.0
-        };
-        let total = tw + gap + if icon.is_some() { isz } else { 0.0 };
-        let mut cx = r.center().x - total / 2.0;
-        if let Some(i) = icon {
-            icon_at(
-                self.ui.painter(),
-                i,
-                pos2(cx, r.center().y - isz / 2.0),
-                isz,
-                fg,
-            );
-            cx += isz + gap;
-        }
-        if !label.is_empty() {
-            self.ui.painter().with_clip_rect(r).text(
-                pos2(cx, r.center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                font,
-                fg,
-            );
-        }
+        self.button_label(r, icon, label, fg, false);
         resp
     }
 
-    /// A square slanted button with just an icon.
-    pub fn icon_button(
+    /// One answer of a choice: a slanted button that stays pressed, with a green ✓, while
+    /// it is the `selected` one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn choice(
         &mut self,
         key: &str,
-        icon: Icon,
+        label: &str,
         x: f32,
         y: f32,
-        s: f32,
+        w: f32,
+        h: f32,
+        selected: bool,
         tip: &str,
     ) -> Resp {
-        self.flat_button(
-            key,
-            Variant::Secondary,
-            Some(icon),
-            "",
-            x,
-            y,
-            s.max(50.0),
-            s,
-            true,
-            tip,
-        )
+        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
+        let r = self.rect(x, y, w, h);
+        let (resp, t, pressed) = self.hot(key, r, true, tip);
+        self.slanted(
+            r,
+            if selected { 0.0 } else { t },
+            pressed || selected,
+            Color32::WHITE,
+        );
+        let fg = if selected {
+            TEXT
+        } else {
+            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
+        };
+        self.button_label(r, None, label, fg, selected);
+        resp
+    }
+
+    /// The big PLAY button; `sub` is an optional small second line under the label.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_button(
+        &mut self,
+        key: &str,
+        label: &str,
+        sub: Option<&str>,
+        x: f32,
+        y: f32,
+        w: f32,
+        enabled: bool,
+        tip: &str,
+    ) -> Resp {
+        let r = self.rect(x, y, w, BIG);
+        let (resp, t, pressed) = self.hot(key, r, enabled, tip);
+        let tint = if enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(170)
+        };
+        self.slanted(r, t, pressed, tint);
+        let fg = if enabled {
+            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
+        } else {
+            Color32::from_gray(160)
+        };
+        let c = r.center();
+        let p = self.ui.painter().with_clip_rect(r);
+        match sub {
+            Some(sub) => {
+                p.text(
+                    pos2(c.x, c.y - 7.0),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    display(17.0),
+                    fg,
+                );
+                p.text(
+                    pos2(c.x, c.y + 13.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub,
+                    body(11.0),
+                    fg,
+                );
+            }
+            None => {
+                p.text(c, egui::Align2::CENTER_CENTER, label, display(20.0), fg);
+            }
+        }
+        resp
     }
 
     /// A rail item: icon over a small label. Active = green step chip, hover = magenta.
@@ -547,51 +611,6 @@ impl Kit<'_> {
             fg,
         );
         resp.clicked
-    }
-
-    /// A row of step chips; returns the newly picked index.
-    #[allow(clippy::too_many_arguments)]
-    pub fn segmented(
-        &mut self,
-        key: &str,
-        options: &[&str],
-        selected: usize,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    ) -> Option<usize> {
-        let gap = 8.0;
-        let cw = (w - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
-        let mut picked = None;
-        for (i, o) in options.iter().enumerate() {
-            let cx = x + i as f32 * (cw + gap);
-            let r = self.rect(cx, y, cw, h);
-            let (resp, t, _) = self.hot(&format!("{key}-{i}"), r, i != selected, "");
-            let bg = if i == selected {
-                theme::CHIP_CURRENT_BG
-            } else {
-                mix(theme::CHIP_UPCOMING_BG, theme::CHIP_DONE_BG, t)
-            };
-            self.ui.painter().rect_filled(r, R_CONTROL, bg);
-            self.ui.painter().rect_stroke(
-                r,
-                R_CONTROL,
-                Stroke::new(1.0, BORDER),
-                StrokeKind::Inside,
-            );
-            self.ui.painter().text(
-                r.center(),
-                egui::Align2::CENTER_CENTER,
-                *o,
-                display(11.0),
-                TEXT,
-            );
-            if resp.clicked {
-                picked = Some(i);
-            }
-        }
-        picked
     }
 
     // ---- small parts ----
@@ -773,6 +792,50 @@ impl Kit<'_> {
 
     // ---- dropdowns / popovers ----
 
+    /// A slanted button showing `label` with a chevron; a click opens or closes the popup
+    /// menu of `key`. Returns the button's rect, to anchor the menu.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dropdown_face(
+        &mut self,
+        key: &str,
+        label: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        enabled: bool,
+        tip: &str,
+    ) -> Rect {
+        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
+        let r = self.rect(x, y, w, h);
+        let (resp, t, pressed) = self.hot(key, r, enabled, tip);
+        let tint = if enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(140)
+        };
+        self.slanted(r, t, pressed, tint);
+        let fg = if enabled {
+            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
+        } else {
+            Color32::from_gray(150)
+        };
+        let font = display(label_size(h));
+        let lh = self.ui.ctx().fonts_mut(|f| f.row_height(&font));
+        self.text_fit(x + 22.0, y + (h - lh) / 2.0, w - 60.0, label, font, fg);
+        icon_at(
+            self.ui.painter(),
+            Icon::ChevronDown,
+            pos2(r.max.x - 34.0, r.center().y - 6.0),
+            12.0,
+            fg,
+        );
+        if resp.clicked {
+            self.toggle_menu(key);
+        }
+        r
+    }
+
     /// A slanted button showing `options[selected]` with a chevron; returns a new pick.
     #[allow(clippy::too_many_arguments)]
     pub fn dropdown(
@@ -787,34 +850,7 @@ impl Kit<'_> {
         tip: &str,
     ) -> Option<usize> {
         let label = options.get(selected).cloned().unwrap_or_default();
-        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
-        let r = self.rect(x, y, w, h);
-        let (resp, t, pressed) = self.hot(key, r, !options.is_empty(), tip);
-        let ([up, hi, down], cap) = button_set(h);
-        let img = if pressed {
-            down
-        } else if t > 0.5 {
-            hi
-        } else {
-            up
-        };
-        let (tex, sz) = self.native_tex(img);
-        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), Color32::WHITE);
-        let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
-        let font = display(label_size(h));
-        let lh = self.ui.ctx().fonts_mut(|f| f.row_height(&font));
-        self.text_fit(x + 22.0, y + (h - lh) / 2.0, w - 60.0, &label, font, fg);
-        icon_at(
-            self.ui.painter(),
-            Icon::ChevronDown,
-            pos2(r.max.x - 34.0, r.center().y - 6.0),
-            12.0,
-            fg,
-        );
-        if resp.clicked {
-            self.toggle_menu(key);
-            return None;
-        }
+        let r = self.dropdown_face(key, &label, x, y, w, h, !options.is_empty(), tip);
         let items: Vec<MenuItem> = options
             .iter()
             .enumerate()
@@ -834,99 +870,6 @@ impl Kit<'_> {
         self.ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
     }
 
-    /// The big PLAY button with a menu segment at its right end: `[ PLAY | ▾ ]`.
-    /// `sub` is an optional small second line under the label.
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_button(
-        &mut self,
-        key: &str,
-        label: &str,
-        sub: Option<&str>,
-        x: f32,
-        y: f32,
-        w: f32,
-        enabled: bool,
-        tip: &str,
-        menu_tip: &str,
-    ) -> Split {
-        let h = BIG;
-        let seg = 52.0;
-        let r = self.rect(x, y, w, h);
-        let main_r = self.rect(x, y, w - seg, h);
-        let menu_r = self.rect(x + w - seg, y, seg, h);
-        let (main, tm, pm) = self.hot(&format!("{key}-main"), main_r, enabled, tip);
-        let (menu, tn, pn) = self.hot(&format!("{key}-menu"), menu_r, true, menu_tip);
-        let ([up, hi, down], cap) = button_set(h);
-        let img = if pm || pn {
-            down
-        } else if tm.max(tn) > 0.5 {
-            hi
-        } else {
-            up
-        };
-        let (tex, sz) = self.native_tex(img);
-        let tint = if enabled || tn > 0.5 {
-            Color32::WHITE
-        } else {
-            Color32::from_gray(170)
-        };
-        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
-        // Divider between the two parts.
-        let dx = menu_r.min.x;
-        self.ui.painter().line_segment(
-            [pos2(dx, r.min.y + 11.0), pos2(dx, r.max.y - 11.0)],
-            Stroke::new(1.5, with_alpha(Color32::WHITE, 110)),
-        );
-        let fg_main = if enabled {
-            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, tm)
-        } else {
-            Color32::from_gray(160)
-        };
-        let fg_menu = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, tn);
-        icon_at(
-            self.ui.painter(),
-            Icon::ChevronDown,
-            pos2(menu_r.center().x - 9.0, menu_r.center().y - 7.0),
-            16.0,
-            fg_menu,
-        );
-        let c = main_r.center();
-        match sub {
-            Some(sub) => {
-                self.ui.painter().with_clip_rect(main_r).text(
-                    pos2(c.x, c.y - 7.0),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    display(17.0),
-                    fg_main,
-                );
-                self.ui.painter().with_clip_rect(main_r).text(
-                    pos2(c.x, c.y + 13.0),
-                    egui::Align2::CENTER_CENTER,
-                    sub,
-                    body(11.0),
-                    fg_main,
-                );
-            }
-            None => {
-                self.ui.painter().with_clip_rect(main_r).text(
-                    c,
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    display(20.0),
-                    fg_main,
-                );
-            }
-        }
-        if menu.clicked {
-            self.toggle_menu(key);
-        }
-        Split {
-            main: main.clicked,
-            menu_rect: r,
-        }
-    }
-
     /// A small slanted button with a label and a chevron that opens a menu of actions;
     /// returns the picked index.
     #[allow(clippy::too_many_arguments)]
@@ -943,16 +886,7 @@ impl Kit<'_> {
         let h = SMALL;
         let r = self.rect(x, y, w, h);
         let (resp, t, pressed) = self.hot(key, r, true, tip);
-        let ([up, hi, down], cap) = button_set(h);
-        let img = if pressed {
-            down
-        } else if t > 0.5 {
-            hi
-        } else {
-            up
-        };
-        let (tex, sz) = self.native_tex(img);
-        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), Color32::WHITE);
+        self.slanted(r, t, pressed, Color32::WHITE);
         let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
         self.ui.painter().text(
             pos2(r.center().x - 8.0, r.center().y),
@@ -1316,11 +1250,6 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
                 pt(0.7, 0.12),
                 pt(0.8, 0.3),
             ]);
-        }
-        Icon::More => {
-            for fx in [0.2, 0.5, 0.8] {
-                p.circle_filled(pt(fx, 0.5), s / 11.0 + 0.5, c);
-            }
         }
         Icon::ChevronDown => line(vec![pt(0.15, 0.32), pt(0.5, 0.68), pt(0.85, 0.32)]),
         Icon::Monitor => {

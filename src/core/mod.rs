@@ -2,7 +2,6 @@
 
 pub mod adb;
 pub mod cache;
-pub mod config;
 pub mod download;
 pub mod elevation;
 pub mod error;

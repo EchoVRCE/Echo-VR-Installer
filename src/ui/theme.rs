@@ -84,7 +84,6 @@ pub const SIDEBAR_FILL: Color32 = rgba(100, 0, 50, 220);
 pub const STATUS_IDLE: Color32 = Color32::from_rgb(50, 90, 150);
 pub const STATUS_DONE: Color32 = Color32::from_rgb(40, 130, 40);
 
-pub const CHIP_DONE_BG: Color32 = Color32::from_rgb(60, 60, 60);
 pub const CHIP_CURRENT_BG: Color32 = Color32::from_rgb(0, 180, 0);
 pub const CHIP_UPCOMING_BG: Color32 = Color32::from_rgb(40, 40, 40);
 

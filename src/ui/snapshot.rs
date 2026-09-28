@@ -66,7 +66,10 @@ impl Snapshotter {
             ("play_not_installed", SnapVariant::NotInstalled),
             ("play_installing", SnapVariant::Installing),
             ("play_needs_patch", SnapVariant::NeedsPatch),
+            ("play_options", SnapVariant::LaunchOptions),
+            ("play_quest", SnapVariant::QuestSide),
             ("setup", SnapVariant::Setup),
+            ("setup_headset", SnapVariant::SetupHeadset),
         ] {
             shots.push(Shot {
                 name: format!("launcher_{n}"),

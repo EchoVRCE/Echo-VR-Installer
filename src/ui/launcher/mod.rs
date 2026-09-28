@@ -117,6 +117,12 @@ pub enum SnapVariant {
     Installing,
     /// The first-run setup card.
     Setup,
+    /// Its second step (how you play).
+    SetupHeadset,
+    /// The launch options are shown under PLAY.
+    LaunchOptions,
+    /// The Quest side of Play, with Echo VR installed on the headset.
+    QuestSide,
     /// A new player's version that still needs the licence patch.
     NeedsPatch,
 }
@@ -145,7 +151,6 @@ pub struct Dashboard {
     pending_repair: Option<String>,
     /// Last update result per version, shown on the Play page's Updates card.
     update_note: HashMap<String, String>,
-    options_open: bool,
     clippy: Clippy,
     /// Snapshot mode: made-up state, never saved.
     pub demo: bool,
@@ -194,7 +199,7 @@ impl Dashboard {
         }
         self.library_field = self.state.library.clone();
         if !self.state.setup_done && !self.demo {
-            self.overlay = Some(setup::Overlay::Setup);
+            self.overlay = Some(setup::Overlay::Setup { step: 0 });
         }
         if self.demo {
             self.catalog = Some(demo_catalog());
@@ -269,7 +274,11 @@ impl Dashboard {
         self.overlay = None;
         self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
-        let open = egui::Id::new(("style", "play-split")).with("open");
+        self.state.show_launch_options = false;
+        self.play_platform = Platform::Pc;
+        self.quest_conn.status = None;
+        self.quest_info = None;
+        let open = egui::Id::new(("style", play::VERSION_KEY)).with("open");
         ctx.data_mut(|d| d.insert_temp(open, false));
         match self.snap_variant {
             Some(SnapVariant::PlayMenu) => {
@@ -290,9 +299,25 @@ impl Dashboard {
             }
             Some(SnapVariant::Setup) => {
                 self.state.owner = None;
-                self.overlay = Some(setup::Overlay::Setup);
+                self.overlay = Some(setup::Overlay::Setup { step: 0 });
+            }
+            Some(SnapVariant::SetupHeadset) => {
+                self.overlay = Some(setup::Overlay::Setup { step: 1 });
             }
             Some(SnapVariant::NeedsPatch) => self.state.owner = Some(false),
+            Some(SnapVariant::LaunchOptions) => self.state.show_launch_options = true,
+            Some(SnapVariant::QuestSide) => {
+                self.play_platform = Platform::Quest;
+                self.quest_conn.status = Some(Status::Ready);
+                self.quest_info = Some(QuestInfo {
+                    device: Some("Meta Quest 3 (2G0YC5ZF8R0123)".into()),
+                    installed: true,
+                    marker: Some(crate::core::quest_update::Marker {
+                        base_apk: Some("r15_26-06-23.apk".into()),
+                        ..Default::default()
+                    }),
+                });
+            }
             None => {}
         }
     }

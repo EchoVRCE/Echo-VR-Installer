@@ -1,6 +1,8 @@
-//! Settings page: library folder, maintenance, and About (with the Clippy easter egg).
+//! Settings page: library folder, maintenance, play setup, and About (with the Clippy
+//! easter egg).
 
-use super::{Dashboard, Msg, CREDITS, X0};
+use super::{setup, Dashboard, Msg, CREDITS, X0};
+use crate::core::launcher::versions;
 use crate::core::{paths, platform};
 use crate::ui::kit::Kit;
 use crate::ui::parts;
@@ -70,15 +72,27 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             x + 20.0,
             y + 50.0,
             bw,
-            40.0,
-            !d.deleting_cache,
-            "Clear cached downloads to free up space",
+            style::MID,
+            !d.deleting_cache && !d.any_job(),
+            "Clear cached downloads, and game zips left by cancelled installs",
         )
         .clicked
     {
         d.deleting_cache = true;
-        d.worker.spawn(ctx, |tx| {
-            tx.send(Msg::CacheDeleted(crate::core::cache::delete_all()))
+        // The launcher's own version folders, where a cancelled install leaves its zip.
+        let lib = &d.state.library;
+        let mut roots: Vec<String> = d
+            .state
+            .versions
+            .iter()
+            .filter(|v| !v.external)
+            .map(|v| v.root.clone())
+            .collect();
+        if let Some(c) = &d.catalog {
+            roots.extend(c.pc().map(|e| versions::root_for(lib, &e.id)));
+        }
+        d.worker.spawn(ctx, move |tx| {
+            tx.send(Msg::CacheDeleted(crate::core::cache::delete_all(&roots)))
         });
     }
     if kit
@@ -90,7 +104,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             x + 32.0 + bw,
             y + 50.0,
             bw,
-            40.0,
+            style::MID,
             true,
             "The launcher's log files",
         )
@@ -107,7 +121,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             x + 44.0 + 2.0 * bw,
             y + 50.0,
             bw,
-            40.0,
+            style::MID,
             true,
             "launcher.json and logs",
         )
@@ -119,28 +133,58 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // Play setup: what the first-run setup asked, and launching.
     let y = 384.0;
     kit.titled_card(x, y, W, 132.0, "Play setup");
-    kit.caps(x + 20.0, y + 54.0, "Echo VR licence", style::TEXT_MUTED);
-    let owner = match d.state.owner {
-        Some(true) => 0,
-        Some(false) => 1,
-        None => usize::MAX,
-    };
-    if let Some(i) = kit.segmented(
-        "settings-owner",
-        &["I own it", "New player"],
-        owner,
-        x + 200.0,
-        y + 46.0,
-        300.0,
-        30.0,
-    ) {
-        d.state.owner = Some(i == 0);
-        d.state.setup_done = true;
-        d.save();
+    if kit
+        .flat_button(
+            "welcome-again",
+            Variant::Secondary,
+            None,
+            "Show welcome again",
+            x + W - 20.0 - 200.0,
+            y + 10.0,
+            200.0,
+            style::SMALL,
+            true,
+            "Answer the two welcome questions again",
+        )
+        .clicked
+    {
+        d.overlay = Some(setup::Overlay::Setup { step: 0 });
+    }
+    kit.caps(x + 20.0, y + 56.0, "Echo VR licence", style::TEXT_MUTED);
+    for (i, (own, label, tip)) in [
+        (true, "I own it", "You own Echo VR on your Meta account"),
+        (
+            false,
+            "New player",
+            "No licence yet: PLAY asks for the licence patch first",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let on = d.state.owner == Some(own);
+        let bx = x + 200.0 + i as f32 * 152.0;
+        if kit
+            .choice(
+                &format!("settings-owner-{i}"),
+                label,
+                bx,
+                y + 50.0,
+                140.0,
+                style::SMALL,
+                on,
+                tip,
+            )
+            .clicked
+        {
+            d.state.owner = Some(own);
+            d.state.setup_done = true;
+            d.save();
+        }
     }
     kit.text(
         x + 516.0,
-        y + 53.0,
+        y + 55.0,
         match d.state.owner {
             Some(false) => "PLAY asks for the licence patch first.",
             Some(true) => "Your own licence; the patch is optional.",

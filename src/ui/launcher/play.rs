@@ -1,8 +1,8 @@
-//! Play page: the selected version over the game art with a split PLAY button (its menu
-//! picks any version, installed or not), the launch mode and options, and a row of cards
-//! (join lobby, updates, Quest). The Quest variant starts Echo on the headset.
+//! Play page: "Echo VR" over the game art, a left column with the version and headset
+//! pickers, a full-width PLAY and the launch options (shown with a checkbox), and a row of
+//! cards (join lobby, updates, Quest). The Quest side starts Echo on the headset.
 
-use egui::{pos2, vec2, Order, Rect, Sense};
+use egui::Rect;
 
 use super::{setup, versions, Dashboard, Msg, Page, CW, X0};
 use crate::core::adb::devices::Status;
@@ -16,34 +16,50 @@ use crate::ui::kit::Kit;
 use crate::ui::style::{self, Icon, MenuItem, Variant};
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
-/// The hero: title, sub line, the action row and a hint line under it.
-const HERO_Y: f32 = 214.0;
-const ROW_Y: f32 = HERO_Y + 92.0;
-const HINT_Y: f32 = ROW_Y + style::BIG + 16.0;
-const SPLIT_W: f32 = 290.0;
+/// The version picker's menu key (snapshots open it).
+pub(super) const VERSION_KEY: &str = "version";
+
+// The left column, in fixed slots so nothing moves when the state changes.
+const COL_W: f32 = 520.0;
+const VERSION_W: f32 = 280.0;
+const TABS_Y: f32 = 60.0;
+const TITLE_Y: f32 = 100.0;
+const STATUS_Y: f32 = 150.0;
+const LABEL_Y: f32 = 188.0;
+const PICK_Y: f32 = 206.0;
+const PLAY_Y: f32 = 256.0;
+const HINT_Y: f32 = 316.0;
+const OPTS_Y: f32 = 340.0;
+const OPTS_CARD_Y: f32 = 372.0;
+const OPTS_CARD_H: f32 = 102.0;
+/// The Quest side's row of smaller buttons under its main button.
+const SECOND_Y: f32 = 318.0;
 const CARDS_Y: f32 = 508.0;
 const CARD_H: f32 = 168.0;
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    let sel = if d.play_platform == Platform::Pc {
-        0
-    } else {
-        1
-    };
-    if let Some(i) = kit.segmented(
-        "play-platform",
-        &["PC", "Quest"],
-        sel,
-        X0,
-        64.0,
-        190.0,
-        30.0,
-    ) {
-        d.play_platform = if i == 0 {
-            Platform::Pc
-        } else {
-            Platform::Quest
-        };
+    let sides = [
+        (Platform::Pc, "PC", "Echo VR on this PC"),
+        (Platform::Quest, "Quest", "Echo VR on your Quest, over USB"),
+    ];
+    for (i, (p, label, tip)) in sides.into_iter().enumerate() {
+        let on = d.play_platform == p;
+        let x = X0 + i as f32 * 118.0;
+        if kit
+            .choice(
+                &format!("play-side-{i}"),
+                label,
+                x,
+                TABS_Y,
+                110.0,
+                style::SMALL,
+                on,
+                tip,
+            )
+            .clicked
+        {
+            d.play_platform = p;
+        }
     }
     // Look for a headset quietly once, so the Quest card has something to say.
     if !d.quest_auto_checked && !d.demo {
@@ -61,14 +77,75 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     }
 }
 
-fn hero_text(kit: &Kit, title: &str, sub: &str, sub_color: egui::Color32) {
-    kit.text_fit(X0, HERO_Y, 860.0, title, style::display(32.0), style::TEXT);
-    kit.text_fit(X0, HERO_Y + 52.0, 860.0, sub, style::body(15.0), sub_color);
+/// The title and the status line under it.
+fn hero_text(kit: &Kit, status: &str, color: egui::Color32) {
+    kit.text(X0, TITLE_Y, "Echo VR", style::display(36.0), style::TEXT);
+    kit.text_fit(X0, STATUS_Y, 860.0, status, style::body(15.0), color);
+}
+
+fn hint(kit: &Kit, y: f32, text: &str, color: egui::Color32) {
+    if !text.is_empty() {
+        kit.text_fit(X0, y, 860.0, text, style::body(13.0), color);
+    }
+}
+
+/// A running job in place of a big button: its progress and a small Cancel.
+fn job_row(d: &mut Dashboard, kit: &mut Kit, key: &str, id: &str, label: &str, f: Option<f32>) {
+    kit.progress(X0, PLAY_Y + 8.0, COL_W - 132.0, f, label);
+    if kit
+        .flat_button(
+            key,
+            Variant::Ghost,
+            None,
+            "Cancel",
+            X0 + COL_W - 120.0,
+            PLAY_Y + (style::BIG - style::SMALL) / 2.0,
+            120.0,
+            style::SMALL,
+            true,
+            "Stop this job",
+        )
+        .clicked
+    {
+        d.cancel_job(id);
+    }
 }
 
 fn card_x(i: usize) -> (f32, f32) {
     let w = ((CW - 32.0) / 3.0).floor();
     (X0 + i as f32 * (w + 16.0), w)
+}
+
+/// A card's frame: banner title, a bold headline and a muted line. Returns the card's x
+/// and width, and the y of its action row (one full-width row at the bottom).
+fn info_card(
+    kit: &Kit,
+    slot: usize,
+    title: &str,
+    headline: &str,
+    sub: &str,
+    sub_color: egui::Color32,
+) -> (f32, f32, f32) {
+    let (x, w) = card_x(slot);
+    kit.titled_card(x, CARDS_Y, w, CARD_H, title);
+    let font = style::bold(16.0);
+    kit.text_fit(
+        x + 20.0,
+        CARDS_Y + 50.0,
+        w - 40.0,
+        headline,
+        font,
+        style::TEXT,
+    );
+    kit.text_fit(
+        x + 20.0,
+        CARDS_Y + 74.0,
+        w - 40.0,
+        sub,
+        style::body(12.0),
+        sub_color,
+    );
+    (x, w, CARDS_Y + CARD_H - 18.0 - style::MID)
 }
 
 fn gb(bytes: u64) -> String {
@@ -77,9 +154,10 @@ fn gb(bytes: u64) -> String {
 
 // ---- PC ----
 
-fn subline(d: &Dashboard) -> String {
+/// The launch options in effect, for the status line.
+fn options_line(d: &Dashboard) -> Vec<String> {
     let p = &d.state.profile;
-    let mut parts = vec![p.runtime.label().to_string()];
+    let mut parts = Vec::new();
     if p.runtime == Runtime::Flat && p.spectator {
         parts.push("Spectator".into());
     }
@@ -89,10 +167,10 @@ fn subline(d: &Dashboard) -> String {
     if !p.extra_args.trim().is_empty() {
         parts.push(p.extra_args.trim().to_string());
     }
-    parts.join("  ·  ")
+    parts
 }
 
-/// What the main part of the split button does.
+/// What PLAY does.
 enum Main {
     Play,
     Stop,
@@ -103,14 +181,139 @@ enum Main {
     Nothing,
 }
 
+/// The status line, the PLAY button's label (and second line), what it does, whether it
+/// is enabled, and a hint under it.
+struct Action {
+    status: String,
+    status_color: egui::Color32,
+    label: String,
+    sub: Option<String>,
+    main: Main,
+    enabled: bool,
+    hint: String,
+    hint_color: egui::Color32,
+}
+
+fn action(d: &mut Dashboard, target: &Target, installing: bool) -> Action {
+    let needs_revive = d.state.profile.runtime == Runtime::Revive
+        && (cfg!(windows) || d.demo)
+        && d.revive_dir().is_none();
+    let running = d.game().is_running();
+    let ours = d.child.is_some();
+    let mut a = Action {
+        status: String::new(),
+        status_color: style::TEXT_DIM,
+        label: "PLAY".into(),
+        sub: None,
+        main: Main::Nothing,
+        enabled: false,
+        hint: String::new(),
+        hint_color: style::TEXT_MUTED,
+    };
+    let line = |state: &str, root: &str| {
+        let mut parts = vec![state.to_string()];
+        parts.extend(options_line(d));
+        parts.push(root.to_string());
+        parts.join("  ·  ")
+    };
+    match target {
+        Target::Installed(v) => {
+            let lobby_ok = d.state.last_lobby.trim().is_empty()
+                || launch::lobby_uuid(&d.state.last_lobby).is_some();
+            if running && ours {
+                a.status = line("Running", &v.root);
+                (a.label, a.main, a.enabled) = ("STOP".into(), Main::Stop, true);
+            } else if running {
+                a.status = line("Running", &v.root);
+                a.label = "RUNNING".into();
+                a.hint = "Echo VR was started outside the launcher.".into();
+            } else if d.state.owner == Some(false) && !v.patched {
+                a.status = line("Needs the licence patch", &v.root);
+                (a.label, a.main) = ("PATCH".into(), Main::Patch(v.id.clone()));
+                a.sub = Some("Licence patch".into());
+                a.enabled = !d.any_job();
+                a.hint = "New players need a personal licence patch: authorize with Discord to get yours.".into();
+            } else if needs_revive {
+                a.status = line("SteamVR is not set up", &v.root);
+                (a.label, a.main) = ("SET UP STEAMVR".into(), Main::SetUpRevive);
+                a.sub = Some("Installs Revive".into());
+                a.enabled = !d.any_job();
+                a.hint = "Setting up SteamVR (Revive) asks for administrator rights.".into();
+            } else {
+                a.status = line("Ready", &v.root);
+                (a.main, a.enabled) = (Main::Play, lobby_ok);
+                if !lobby_ok {
+                    a.hint = "Fix or clear the lobby link to play.".into();
+                    a.hint_color = style::DANGER;
+                }
+            }
+        }
+        Target::Missing(v) => {
+            a.status = format!("Game files missing  ·  {}", v.root);
+            a.status_color = style::DANGER;
+            let entry = v.catalog_id.as_ref().and_then(|cid| {
+                d.catalog
+                    .as_ref()
+                    .and_then(|c| c.pc().find(|e| &e.id == cid).cloned())
+            });
+            match entry {
+                Some(e) if !v.external => {
+                    a.label = "REINSTALL".into();
+                    a.sub = e.size.map(gb);
+                    a.main = Main::Reinstall(e);
+                    a.enabled = !d.any_job();
+                }
+                _ => {
+                    a.hint =
+                        "The folder is gone. Pick its new location: Version → Add existing folder."
+                            .into();
+                    a.hint_color = style::DANGER;
+                }
+            }
+        }
+        Target::Available(e) => {
+            let root = versions_root(d, &e.id);
+            let size = e.size.map(gb).unwrap_or_else(|| "size unknown".into());
+            let state = if installing {
+                "Installing"
+            } else {
+                "Not installed"
+            };
+            a.status = format!("{state}  ·  {size}  ·  into {root}");
+            let free = d.free_bytes();
+            let short = matches!((e.size, free), (Some(need), Some(free)) if need > free);
+            if let (true, Some(free)) = (short, free) {
+                a.hint = format!(
+                    "Not enough space: needs {}, {} free. Pick another library in Settings.",
+                    gb(e.size.unwrap_or_default()),
+                    gb(free)
+                );
+                a.hint_color = style::DANGER;
+            } else if d.state.versions.is_empty() {
+                a.hint =
+                    "Already have Echo VR? Add its folder or find your Meta install under Version."
+                        .into();
+            }
+            a.label = "INSTALL".into();
+            a.sub = e.size.map(gb);
+            a.main = Main::Install(e.clone());
+            a.enabled = !short && !d.any_job();
+        }
+        Target::None => {
+            a.status = "The version list is loading. You can also add a folder you already have under Version.".into();
+        }
+    }
+    a
+}
+
 fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let target = d.target();
-    let id = match &target {
-        Target::Installed(v) | Target::Missing(v) => Some(v.id.clone()),
-        Target::Available(e) => Some(e.id.clone()),
-        Target::None => None,
+    let (id, name) = match &target {
+        Target::Installed(v) | Target::Missing(v) => (Some(v.id.clone()), v.name.clone()),
+        Target::Available(e) => (Some(e.id.clone()), e.name.clone()),
+        Target::None => (None, "No versions yet".into()),
     };
-    let job_id = id.clone().filter(|id| d.jobs.contains_key(id)).or_else(|| {
+    let job_id = id.filter(|id| d.jobs.contains_key(id)).or_else(|| {
         d.jobs
             .contains_key(setup::REVIVE_JOB)
             .then(|| setup::REVIVE_JOB.into())
@@ -119,160 +322,48 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         .as_ref()
         .and_then(|id| d.jobs.get(id))
         .map(|j| (j.label.clone(), j.fraction));
-    let needs_revive = d.state.profile.runtime == Runtime::Revive
-        && (cfg!(windows) || d.demo)
-        && d.revive_dir().is_none();
-    let running = d.game().is_running();
-    let ours = d.child.is_some();
+    let a = action(d, &target, job.is_some());
+    hero_text(kit, &a.status, a.status_color);
 
-    // Hero text and the main action.
-    let danger = style::DANGER;
-    let (label, sub_label, main, enabled, hint): (String, Option<String>, Main, bool, String) =
-        match &target {
-            Target::Installed(v) => {
-                hero_text(
-                    kit,
-                    &v.name,
-                    &format!("{}   —   {}", subline(d), v.root),
-                    style::TEXT_DIM,
-                );
-                let lobby_ok = d.state.last_lobby.trim().is_empty()
-                    || launch::lobby_uuid(&d.state.last_lobby).is_some();
-                if running && ours {
-                    ("STOP".into(), None, Main::Stop, true, String::new())
-                } else if running {
-                    (
-                        "RUNNING".into(),
-                        None,
-                        Main::Nothing,
-                        false,
-                        "Echo VR was started outside the launcher.".into(),
-                    )
-                } else if d.state.owner == Some(false) && !v.patched {
-                    (
-                        "PATCH".into(),
-                        Some("Licence patch".into()),
-                        Main::Patch(v.id.clone()),
-                        !d.any_job(),
-                        "New players need a personal licence patch: authorize with Discord to get yours."
-                            .into(),
-                    )
-                } else if needs_revive {
-                    (
-                        "SET UP STEAMVR".into(),
-                        Some("Installs Revive".into()),
-                        Main::SetUpRevive,
-                        !d.any_job(),
-                        "SteamVR (Revive) isn't installed yet. Setting it up asks for administrator rights."
-                            .into(),
-                    )
-                } else {
-                    ("PLAY".into(), None, Main::Play, lobby_ok, String::new())
-                }
-            }
-            Target::Missing(v) => {
-                hero_text(
-                    kit,
-                    &v.name,
-                    &format!("Game files missing   —   {}", v.root),
-                    danger,
-                );
-                let entry = v.catalog_id.as_ref().and_then(|cid| {
-                    d.catalog
-                        .as_ref()
-                        .and_then(|c| c.pc().find(|e| &e.id == cid).cloned())
-                });
-                match entry {
-                    Some(e) if !v.external => (
-                        "REINSTALL".into(),
-                        e.size.map(gb),
-                        Main::Reinstall(e),
-                        true,
-                        String::new(),
-                    ),
-                    _ => (
-                        "PLAY".into(),
-                        None,
-                        Main::Nothing,
-                        false,
-                        "The folder is gone. Pick its new location with ▾ → Add existing folder."
-                            .into(),
-                    ),
-                }
-            }
-            Target::Available(e) => {
-                let root = versions_root(d, &e.id);
-                let size = e.size.map(gb).unwrap_or_else(|| "size unknown".into());
-                let state = if job.is_some() {
-                    "Installing"
-                } else {
-                    "Not installed"
-                };
-                hero_text(
-                    kit,
-                    &e.name,
-                    &format!("{state}  ·  {size}   —   into {root}"),
-                    style::TEXT_DIM,
-                );
-                let free = d.free_bytes();
-                let short = matches!((e.size, free), (Some(need), Some(free)) if need > free);
-                let hint = match (short, free) {
-                    (true, Some(free)) => format!(
-                        "Not enough space: needs {}, {} free. Pick another library in Settings.",
-                        gb(e.size.unwrap_or_default()),
-                        gb(free)
-                    ),
-                    _ if d.state.versions.is_empty() => {
-                        "Already have Echo VR? Add its folder or find your Meta install with ▾."
-                            .into()
-                    }
-                    _ => String::new(),
-                };
-                (
-                    "INSTALL".into(),
-                    e.size.map(gb),
-                    Main::Install(e.clone()),
-                    !short && !d.any_job(),
-                    hint,
-                )
-            }
-            Target::None => {
-                hero_text(
-                    kit,
-                    "No versions yet",
-                    "The version list is loading. You can also add a folder you already have with ▾.",
-                    style::TEXT_DIM,
-                );
-                ("PLAY".into(), None, Main::Nothing, false, String::new())
-            }
-        };
+    // Version and headset.
+    let hx = X0 + VERSION_W + 12.0;
+    kit.caps(X0, LABEL_Y, "Version", style::TEXT_MUTED);
+    kit.caps(hx, LABEL_Y, "Headset", style::TEXT_MUTED);
+    let anchor = kit.dropdown_face(
+        VERSION_KEY,
+        &name,
+        X0,
+        PICK_Y,
+        VERSION_W,
+        style::MID,
+        true,
+        "Choose a version: installed ones, or ones you can install",
+    );
+    version_menu(d, kit, ctx, anchor);
+    let modes: Vec<String> = Runtime::ALL.iter().map(|r| r.label().to_string()).collect();
+    let msel = Runtime::ALL
+        .iter()
+        .position(|r| *r == d.state.profile.runtime)
+        .unwrap_or(0);
+    if let Some(i) = kit.dropdown(
+        "mode",
+        &modes,
+        msel,
+        hx,
+        PICK_Y,
+        COL_W - VERSION_W - 12.0,
+        style::MID,
+        "How Echo VR reaches your headset",
+    ) {
+        d.state.profile.runtime = Runtime::ALL[i];
+        d.save();
+    }
 
-    // The action row: [ PLAY | ▾ ], launch mode, options.
-    let split_key = "play-split";
-    let menu_rect;
-    if let Some((jl, fraction)) = &job {
-        kit.progress(X0, ROW_Y + 8.0, SPLIT_W, *fraction, jl);
-        menu_rect = kit.rect(X0, ROW_Y, SPLIT_W, style::BIG);
-        let id = job_id.clone().unwrap_or_default();
-        if kit
-            .flat_button(
-                "job-cancel",
-                Variant::Ghost,
-                None,
-                "Cancel",
-                X0,
-                HINT_Y,
-                120.0,
-                style::SMALL,
-                true,
-                "Stop this job",
-            )
-            .clicked
-        {
-            d.cancel_job(&id);
-        }
+    // PLAY, or the running job in its place.
+    if let (Some((label, fraction)), Some(id)) = (&job, &job_id) {
+        job_row(d, kit, "job-cancel", id, label, *fraction);
     } else {
-        let tip = match &main {
+        let tip = match &a.main {
             Main::Play => "Start Echo VR",
             Main::Stop => "Close Echo VR",
             Main::Install(_) => "Download and install this version into your library",
@@ -281,20 +372,21 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Main::SetUpRevive => "Download and install Revive, which runs Echo VR on SteamVR",
             Main::Nothing => "",
         };
-        let split = kit.split_button(
-            split_key,
-            &label,
-            sub_label.as_deref(),
-            X0,
-            ROW_Y,
-            SPLIT_W,
-            enabled,
-            tip,
-            "Choose a version: installed ones, or ones you can install",
-        );
-        menu_rect = split.menu_rect;
-        if split.main {
-            match main {
+        let sub = a.sub.as_deref();
+        if kit
+            .play_button(
+                "play-main",
+                &a.label,
+                sub,
+                X0,
+                PLAY_Y,
+                COL_W,
+                a.enabled,
+                tip,
+            )
+            .clicked
+        {
+            match a.main {
                 Main::Play => try_start(d, ctx),
                 Main::Stop => {
                     if let Some(mut c) = d.child.take() {
@@ -309,52 +401,25 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Main::Nothing => {}
             }
         }
-        if !hint.is_empty() {
-            let color = if hint.starts_with("Not enough") || hint.starts_with("The folder") {
-                danger
-            } else {
-                style::TEXT_MUTED
-            };
-            kit.text_fit(X0, HINT_Y + 4.0, 860.0, &hint, style::body(13.0), color);
-        }
     }
-    version_menu(d, kit, ctx, split_key, menu_rect);
+    hint(kit, HINT_Y, &a.hint, a.hint_color);
 
-    let mid_y = ROW_Y + (style::BIG - style::MID) / 2.0;
-    let modes: Vec<String> = Runtime::ALL.iter().map(|r| r.label().to_string()).collect();
-    let msel = Runtime::ALL
-        .iter()
-        .position(|r| *r == d.state.profile.runtime)
-        .unwrap_or(0);
-    if let Some(i) = kit.dropdown(
-        "mode",
-        &modes,
-        msel,
-        X0 + SPLIT_W + 16.0,
-        mid_y,
-        240.0,
-        style::MID,
-        "How Echo VR reaches your headset",
+    // Launch options, right here when ticked.
+    let mut show = d.state.show_launch_options;
+    if kit.toggle(
+        "launch-options",
+        &mut show,
+        "Launch options",
+        X0,
+        OPTS_Y,
+        true,
+        "Show the options Echo VR starts with",
     ) {
-        d.state.profile.runtime = Runtime::ALL[i];
+        d.state.show_launch_options = show;
         d.save();
     }
-    let ox = X0 + SPLIT_W + 16.0 + 240.0 + 12.0;
-    if kit
-        .icon_button(
-            "options",
-            Icon::More,
-            ox,
-            mid_y,
-            style::MID,
-            "Launch options",
-        )
-        .clicked
-    {
-        d.options_open = !d.options_open;
-    } else if d.options_open {
-        let anchor = kit.rect(ox, mid_y, 50.0, style::MID);
-        options_popover(d, kit, anchor);
+    if show {
+        launch_options(d, kit);
     }
 
     lobby_card(d, kit, ctx);
@@ -369,8 +434,8 @@ fn versions_root(d: &Dashboard, id: &str) -> String {
     crate::core::launcher::versions::root_for(&d.state.library, id)
 }
 
-/// The split button's menu: installed versions, versions to install, and actions.
-fn version_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, key: &str, anchor: Rect) {
+/// The version picker's menu: installed versions, versions to install, and actions.
+fn version_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, anchor: Rect) {
     enum Pick {
         Select(String),
         AddFolder,
@@ -460,7 +525,7 @@ fn version_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, key: &str
         Some(Pick::Manage),
     );
     let w = anchor.width().max(420.0);
-    let Some(i) = kit.menu_popup(key, anchor, w, &items) else {
+    let Some(i) = kit.menu_popup(VERSION_KEY, anchor, w, &items) else {
         return;
     };
     match picks.into_iter().nth(i).flatten() {
@@ -476,117 +541,125 @@ fn version_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, key: &str
     ctx.request_repaint();
 }
 
-/// Launch options in a floating card next to the `⋯` button.
-fn options_popover(d: &mut Dashboard, kit: &mut Kit, anchor: Rect) {
-    let (w, h) = (380.0, 206.0);
-    let pos = pos2(anchor.max.x + 12.0, anchor.min.y - 8.0);
-    let popup = Rect::from_min_size(pos, vec2(w, h));
-    let ctx = kit.ctx();
-    let assets = kit.assets;
-    let mut changed = false;
-    egui::Area::new(egui::Id::new("launch-options"))
-        .order(Order::Foreground)
-        .fixed_pos(pos)
-        .show(&ctx, |ui| {
-            ui.allocate_exact_size(vec2(w, h), Sense::hover());
-            let mut k = Kit::new(ui, assets, "launch-options", false);
-            k.origin = pos;
-            let p = k.ui.painter();
-            p.rect_filled(
-                popup.translate(vec2(0.0, 4.0)).expand(2.0),
-                10.0,
-                style::with_alpha(egui::Color32::BLACK, 90),
-            );
-            p.rect_filled(popup, 10.0, style::SURFACE_SOLID);
-            p.rect_stroke(
-                popup,
-                10.0,
-                egui::Stroke::new(1.0, style::BORDER_HI),
-                egui::StrokeKind::Inside,
-            );
-            k.caps(20.0, 18.0, "Launch options", style::TEXT_MUTED);
-            let flat = d.state.profile.runtime == Runtime::Flat;
-            changed |= k.toggle(
-                "opt-windowed",
-                &mut d.state.profile.windowed,
-                "Windowed",
-                20.0,
-                44.0,
-                true,
-                "Run in a window (-windowed)",
-            );
-            changed |= k.toggle(
-                "opt-spectator",
-                &mut d.state.profile.spectator,
-                "Spectator stream",
-                20.0,
-                76.0,
-                flat,
-                "Flat mode only: join as a spectator (-spectatorstream)",
-            );
-            k.caps(20.0, 116.0, "Extra arguments", style::TEXT_MUTED);
-            changed |= k.input(
-                "opt-args",
-                &mut d.state.profile.extra_args,
-                20.0,
-                138.0,
-                w - 40.0,
-                40.0,
-                "e.g. -mp -http",
-                false,
-                "Additional arguments for echovr.exe",
-            );
-        });
+/// The launch options, in a box under their checkbox.
+fn launch_options(d: &mut Dashboard, kit: &mut Kit) {
+    kit.card(X0, OPTS_CARD_Y, COL_W, OPTS_CARD_H);
+    let (x, y) = (X0 + 20.0, OPTS_CARD_Y + 14.0);
+    let flat = d.state.profile.runtime == Runtime::Flat;
+    let mut changed = kit.toggle(
+        "opt-windowed",
+        &mut d.state.profile.windowed,
+        "Windowed",
+        x,
+        y,
+        true,
+        "Run in a window (-windowed)",
+    );
+    changed |= kit.toggle(
+        "opt-spectator",
+        &mut d.state.profile.spectator,
+        "Spectator stream",
+        x + 200.0,
+        y,
+        flat,
+        "Flat mode only: join as a spectator (-spectatorstream)",
+    );
+    kit.caps(x, y + 50.0, "Extra arguments", style::TEXT_MUTED);
+    changed |= kit.input(
+        "opt-args",
+        &mut d.state.profile.extra_args,
+        x + 170.0,
+        y + 40.0,
+        COL_W - 40.0 - 170.0,
+        32.0,
+        "e.g. -mp -http",
+        false,
+        "Additional arguments for echovr.exe",
+    );
     if changed {
-        d.save();
-    }
-    let outside = ctx.input(|i| {
-        i.pointer.any_click()
-            && i.pointer
-                .interact_pos()
-                .is_some_and(|p| !popup.contains(p) && !anchor.contains(p))
-    });
-    if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        d.options_open = false;
         d.save();
     }
 }
 
 fn lobby_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    let (x, w) = card_x(0);
-    kit.titled_card(x, CARDS_Y, w, CARD_H, "Join lobby");
-    // A lobby link on the clipboard: one click to use it.
-    if let Some(clip) = d.clip_lobby.clone() {
-        let pw = kit.pill_width("Paste from clipboard", false);
-        let px = x + w - 16.0 - pw;
-        kit.pill(px, CARDS_Y + 12.0, "Paste from clipboard", style::OK, false);
-        let r = kit.rect(px, CARDS_Y + 12.0, pw, 22.0);
-        if kit.hot("lobby-clip", r, true, &clip).0.clicked {
+    let lobby = d.state.last_lobby.trim().to_string();
+    let invalid = !lobby.is_empty() && launch::lobby_uuid(&lobby).is_none();
+    let running = d.game().is_running();
+    let (headline, sub, color) = if invalid {
+        (
+            "Join a lobby",
+            "That doesn't look like a lobby link.",
+            style::DANGER,
+        )
+    } else if running {
+        (
+            "Join a lobby",
+            "Echo VR is running -- join from the game for now.",
+            style::TEXT_MUTED,
+        )
+    } else if d.clip_lobby.is_some() {
+        (
+            "Lobby link on your clipboard",
+            "Paste it to start straight into that lobby.",
+            style::TEXT_MUTED,
+        )
+    } else if !lobby.is_empty() {
+        (
+            "Lobby ready",
+            "PLAY and Join start straight into this lobby.",
+            style::TEXT_MUTED,
+        )
+    } else {
+        (
+            "Join a lobby",
+            "Paste a spark:// link or lobby ID to start straight into it.",
+            style::TEXT_MUTED,
+        )
+    };
+    let (x, w, ay) = info_card(kit, 0, "Join lobby", headline, sub, color);
+    if kit
+        .flat_button(
+            "lobby-paste",
+            Variant::Secondary,
+            None,
+            "Paste",
+            x + w - 20.0 - 90.0,
+            CARDS_Y + 10.0,
+            90.0,
+            style::SMALL,
+            true,
+            "Paste a lobby link from your clipboard",
+        )
+        .clicked
+    {
+        let clip = d.clip_lobby.take().or_else(|| {
+            arboard::Clipboard::new()
+                .ok()
+                .and_then(|mut c| c.get_text().ok())
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty() && t.len() < 300)
+        });
+        if let Some(clip) = clip {
             d.state.last_lobby = clip;
-            d.clip_lobby = None;
             d.save();
         }
     }
-    let invalid =
-        !d.state.last_lobby.trim().is_empty() && launch::lobby_uuid(&d.state.last_lobby).is_none();
-    let tip = "Starts Echo VR straight into this lobby (-lobbyid)";
     let bw = 110.0;
     if kit.input(
         "lobby",
         &mut d.state.last_lobby,
         x + 20.0,
-        CARDS_Y + 50.0,
+        ay,
         w - 40.0 - bw - 10.0,
         style::MID,
         "spark:// link or lobby ID",
         invalid,
-        tip,
+        "Starts Echo VR straight into this lobby (-lobbyid)",
     ) {
         d.save();
     }
-    let running = d.game().is_running();
     let installed = matches!(d.target(), Target::Installed(_));
-    let can = !invalid && !d.state.last_lobby.trim().is_empty() && !running && installed;
+    let can = !invalid && !lobby.is_empty() && !running && installed;
     if kit
         .flat_button(
             "join",
@@ -594,7 +667,7 @@ fn lobby_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             None,
             "Join",
             x + w - 20.0 - bw,
-            CARDS_Y + 50.0,
+            ay,
             bw,
             style::MID,
             can,
@@ -604,27 +677,6 @@ fn lobby_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     {
         try_start(d, ctx);
     }
-    let (note, color) = if invalid {
-        ("That doesn't look like a lobby link.", style::DANGER)
-    } else if running {
-        (
-            "Echo VR is running -- join from the game for now.",
-            style::TEXT_MUTED,
-        )
-    } else {
-        (
-            "Paste a lobby link to start straight into it.",
-            style::TEXT_MUTED,
-        )
-    };
-    kit.text_fit(
-        x + 20.0,
-        CARDS_Y + 100.0,
-        w - 40.0,
-        note,
-        style::body(12.0),
-        color,
-    );
 }
 
 fn updates_card(
@@ -633,60 +685,31 @@ fn updates_card(
     ctx: &egui::Context,
     v: Option<&InstalledVersion>,
 ) {
-    let (x, w) = card_x(1);
-    kit.titled_card(x, CARDS_Y, w, CARD_H, "Updates");
-    let Some(v) = v else {
-        kit.text_fit(
-            x + 20.0,
-            CARDS_Y + 50.0,
-            w - 40.0,
-            "Nothing to update yet",
-            style::bold(16.0),
-            style::TEXT,
-        );
-        kit.text_fit(
-            x + 20.0,
-            CARDS_Y + 74.0,
-            w - 40.0,
+    let (headline, sub) = match v {
+        Some(v) => (
+            d.update_note
+                .get(&v.id)
+                .cloned()
+                .unwrap_or_else(|| "Community patches".into()),
+            "Keeps the game files of this version current.",
+        ),
+        None => (
+            "Nothing to update yet".into(),
             "Install the version first; updates run from here.",
-            style::body(12.0),
-            style::TEXT_MUTED,
-        );
-        return;
+        ),
     };
-    let note = d
-        .update_note
-        .get(&v.id)
-        .cloned()
-        .unwrap_or_else(|| "Community patches".into());
-    kit.text_fit(
-        x + 20.0,
-        CARDS_Y + 50.0,
-        w - 40.0,
-        &note,
-        style::bold(16.0),
-        style::TEXT,
-    );
-    kit.text_fit(
-        x + 20.0,
-        CARDS_Y + 74.0,
-        w - 40.0,
-        "Keeps the game files of this version current.",
-        style::body(12.0),
-        style::TEXT_MUTED,
-    );
-    let by = CARDS_Y + CARD_H - 18.0 - style::MID;
-    if let Some(j) = d.jobs.get(&v.id) {
+    let (x, w, ay) = info_card(kit, 1, "Updates", &headline, sub, style::TEXT_MUTED);
+    if let Some(j) = v.and_then(|v| d.jobs.get(&v.id)) {
         let (label, fraction) = (j.label.clone(), j.fraction);
-        kit.progress(x + 20.0, by + 2.0, w - 150.0, fraction, &label);
+        kit.progress(x + 20.0, ay + 2.0, w - 40.0 - 110.0, fraction, &label);
         if kit
             .flat_button(
                 "upd-cancel",
                 Variant::Ghost,
                 None,
                 "Cancel",
-                x + w - 120.0,
-                by + (style::MID - style::SMALL) / 2.0,
+                x + w - 20.0 - 100.0,
+                ay + (style::MID - style::SMALL) / 2.0,
                 100.0,
                 style::SMALL,
                 true,
@@ -694,52 +717,39 @@ fn updates_card(
             )
             .clicked
         {
-            d.cancel_job(&v.id);
+            if let Some(v) = v {
+                d.cancel_job(&v.id);
+            }
         }
-    } else {
-        let ok = (d.demo || paths::has_echo_install(&v.root)) && !d.game().is_running();
-        if kit
-            .flat_button(
-                "upd-check",
-                Variant::Secondary,
-                Some(Icon::Refresh),
-                "Check for updates",
-                x + 20.0,
-                by,
-                260.0,
-                style::MID,
-                ok,
-                "Download any changed game files",
-            )
-            .clicked
-        {
+        return;
+    }
+    let ok =
+        v.is_some_and(|v| d.demo || paths::has_echo_install(&v.root)) && !d.game().is_running();
+    if kit
+        .flat_button(
+            "upd-check",
+            Variant::Secondary,
+            Some(Icon::Refresh),
+            "Check for updates",
+            x + 20.0,
+            ay,
+            w - 40.0,
+            style::MID,
+            ok,
+            "Download any changed game files",
+        )
+        .clicked
+    {
+        if let Some(v) = v {
             versions::update(d, ctx, v.clone());
         }
     }
 }
 
 fn quest_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, slot: usize) {
-    let (x, w) = card_x(slot);
-    kit.titled_card(x, CARDS_Y, w, CARD_H, "Quest");
     let ready = d.quest_conn.status == Some(Status::Ready);
     let (title, sub) = quest_texts(d);
-    kit.text_fit(
-        x + 20.0,
-        CARDS_Y + 50.0,
-        w - 40.0,
-        &title,
-        style::bold(16.0),
-        style::TEXT,
-    );
-    kit.text_fit(
-        x + 20.0,
-        CARDS_Y + 74.0,
-        w - 40.0,
-        &sub,
-        style::body(12.0),
-        style::TEXT_MUTED,
-    );
-    let by = CARDS_Y + CARD_H - 18.0 - style::MID;
+    let (x, w, ay) = info_card(kit, slot, "Quest", &title, &sub, style::TEXT_MUTED);
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
     if installed {
         let half = ((w - 52.0) / 2.0).floor();
@@ -748,9 +758,9 @@ fn quest_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, slot: usize
                 "qc-launch",
                 Variant::Secondary,
                 Some(Icon::Play),
-                "Launch",
+                "Play on Quest",
                 x + 20.0,
-                by,
+                ay,
                 half,
                 style::MID,
                 !d.quest_busy,
@@ -763,11 +773,11 @@ fn quest_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, slot: usize
         if kit
             .flat_button(
                 "qc-stop",
-                Variant::Ghost,
+                Variant::Secondary,
                 Some(Icon::Stop),
                 "Stop",
                 x + 32.0 + half,
-                by,
+                ay,
                 half,
                 style::MID,
                 !d.quest_busy,
@@ -786,8 +796,8 @@ fn quest_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, slot: usize
                 Some(Icon::Headset),
                 "Connect Quest",
                 x + 20.0,
-                by,
-                260.0,
+                ay,
+                w - 40.0,
                 style::MID,
                 !busy,
                 "Check the USB connection to your Quest",
@@ -907,67 +917,90 @@ fn start(d: &mut Dashboard, ctx: &egui::Context) {
 
 // ---- Quest ----
 
+/// The Quest side's status line, and what to show as the device.
+fn quest_status(d: &Dashboard) -> (String, String) {
+    let device = d.quest_info.as_ref().and_then(|i| i.device.clone());
+    match (d.quest_conn.checking, d.quest_conn.status) {
+        (true, _) => (
+            "Looking for your headset over USB...".into(),
+            "Checking...".into(),
+        ),
+        (_, Some(Status::Ready)) => {
+            let status = match &d.quest_info {
+                Some(i) if i.installed => format!("Installed  ·  {}", i.version_label()),
+                Some(_) => "Not installed on this Quest".into(),
+                None => "Reading the installed version...".into(),
+            };
+            (status, device.unwrap_or_else(|| "Quest connected".into()))
+        }
+        (_, Some(Status::Unauthorized)) => (
+            "Accept the USB debugging prompt in the headset to allow this PC.".into(),
+            "Waiting for permission".into(),
+        ),
+        (_, Some(Status::Ambiguous)) => (
+            "Several devices are connected: pick your Quest when you connect.".into(),
+            "Several devices".into(),
+        ),
+        (_, Some(Status::None)) => (
+            "No Quest found. Plug it in by USB with developer mode on.".into(),
+            "Not connected".into(),
+        ),
+        (_, None) => (
+            "Plug in your Quest by USB to install or launch Echo VR on it.".into(),
+            "Not checked yet".into(),
+        ),
+    }
+}
+
 fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let ready = d.quest_conn.status == Some(Status::Ready);
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
-    let (title, sub) = quest_texts(d);
-    let title = if installed {
-        title
-    } else if ready && d.quest_info.is_some() {
-        "Echo VR is not installed".into()
-    } else if ready {
-        title
-    } else {
-        "Connect your Quest".into()
-    };
-    hero_text(kit, &title, &sub, style::TEXT_DIM);
+    let known = ready && d.quest_info.is_some();
+    let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
+    let (status, device) = quest_status(d);
+    hero_text(kit, &status, style::TEXT_DIM);
+
+    kit.caps(X0, LABEL_Y, "Device", style::TEXT_MUTED);
+    let font = style::bold(16.0);
+    kit.text_fit(X0, PICK_Y + 9.0, COL_W - 170.0, &device, font, style::TEXT);
+    if ready
+        && kit
+            .flat_button(
+                "q-recheck",
+                Variant::Ghost,
+                Some(Icon::Refresh),
+                "Check again",
+                X0 + COL_W - 150.0,
+                PICK_Y + (style::MID - style::SMALL) / 2.0,
+                150.0,
+                style::SMALL,
+                !busy,
+                "Read the headset's state again",
+            )
+            .clicked
+    {
+        d.check_quest(ctx, true);
+    }
 
     let job = d
         .jobs
         .get(setup::QUEST_JOB)
         .map(|j| (j.label.clone(), j.fraction));
-    let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
-    let mid_y = ROW_Y + (style::BIG - style::MID) / 2.0;
-    let side_x = X0 + SPLIT_W + 16.0;
-    let mut hint = String::new();
+    let half = ((COL_W - 12.0) / 2.0).floor();
+    let mut hint_text = "";
+    let mut second_row = false;
     if let Some((label, fraction)) = job {
-        kit.progress(X0, ROW_Y + 8.0, SPLIT_W, fraction, &label);
-        if kit
-            .flat_button(
-                "q-cancel",
-                Variant::Ghost,
-                None,
-                "Cancel",
-                X0,
-                HINT_Y,
-                120.0,
-                style::SMALL,
-                true,
-                "Stop after the current step",
-            )
-            .clicked
-        {
-            d.cancel_job(setup::QUEST_JOB);
-        }
-        kit.text_fit(
-            X0 + 136.0,
-            HINT_Y + 4.0,
-            700.0,
-            "Keep the headset connected until this finishes.",
-            style::body(13.0),
-            style::TEXT_MUTED,
-        );
+        job_row(d, kit, "q-cancel", setup::QUEST_JOB, &label, fraction);
+        hint_text = "Keep the headset connected until this finishes.";
     } else if installed {
         if kit
-            .flat_button(
+            .play_button(
                 "q-launch",
-                Variant::Primary,
-                Some(Icon::Play),
                 "PLAY ON QUEST",
+                None,
                 X0,
-                ROW_Y,
-                SPLIT_W,
-                style::BIG,
+                PLAY_Y,
+                COL_W,
                 !d.quest_busy,
                 "Start Echo VR on the headset",
             )
@@ -975,15 +1008,16 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         {
             quest_launch(d, ctx);
         }
+        second_row = true;
         if kit
             .flat_button(
                 "q-stop",
                 Variant::Secondary,
                 Some(Icon::Stop),
                 "Stop",
-                side_x,
-                mid_y,
-                150.0,
+                X0,
+                SECOND_Y,
+                half,
                 style::MID,
                 !d.quest_busy,
                 "Close Echo VR on the headset",
@@ -998,9 +1032,9 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Variant::Secondary,
                 Some(Icon::Refresh),
                 "Update",
-                side_x + 162.0,
-                mid_y,
-                170.0,
+                X0 + half + 12.0,
+                SECOND_Y,
+                half,
                 style::MID,
                 !busy,
                 "Copy the latest game files to your Quest",
@@ -1009,17 +1043,15 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         {
             setup::quest_update(d, ctx);
         }
-    } else if ready && d.quest_info.is_some() {
+    } else if known {
         if kit
-            .flat_button(
+            .play_button(
                 "q-install",
-                Variant::Primary,
-                Some(Icon::Download),
                 "INSTALL ON QUEST",
+                None,
                 X0,
-                ROW_Y,
-                SPLIT_W,
-                style::BIG,
+                PLAY_Y,
+                COL_W,
                 !busy,
                 "Download Echo VR and install it on your Quest",
             )
@@ -1028,15 +1060,16 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             setup::ask_quest_install(d);
         }
         if d.state.owner == Some(false) {
+            second_row = true;
             if kit
                 .flat_button(
                     "q-link",
                     Variant::Secondary,
                     None,
                     "APK from a link…",
-                    side_x,
-                    mid_y,
-                    230.0,
+                    X0,
+                    SECOND_Y,
+                    half,
                     style::MID,
                     !busy,
                     "Install a patched APK from a link you already have",
@@ -1048,61 +1081,41 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                     url: String::new(),
                 });
             }
-            hint = "New players get a personal patched APK through Discord.".into();
+            hint_text = "New players get a personal patched APK through Discord.";
         }
-    } else {
-        if kit
-            .flat_button(
-                "q-connect",
-                Variant::Primary,
-                Some(Icon::Headset),
-                "CONNECT",
-                X0,
-                ROW_Y,
-                SPLIT_W,
-                style::BIG,
-                !d.quest_conn.checking && !d.quest_busy,
-                "Look for your Quest over USB",
-            )
-            .clicked
-        {
-            d.check_quest(ctx, true);
-        }
-        hint = "Plug in your Quest by USB, with developer mode on.".into();
-    }
-    if !hint.is_empty() {
-        kit.text_fit(
+    } else if kit
+        .play_button(
+            "q-connect",
+            "CONNECT",
+            None,
             X0,
-            HINT_Y + 4.0,
-            860.0,
-            &hint,
-            style::body(13.0),
-            style::TEXT_MUTED,
-        );
+            PLAY_Y,
+            COL_W,
+            !d.quest_conn.checking && !d.quest_busy,
+            "Look for your Quest over USB",
+        )
+        .clicked
+    {
+        d.check_quest(ctx, true);
     }
+    let hy = if second_row {
+        SECOND_Y + style::MID + 12.0
+    } else {
+        HINT_Y
+    };
+    hint(kit, hy, hint_text, style::TEXT_MUTED);
 
     // Cards: install, update, help.
-    let by = CARDS_Y + CARD_H - 18.0 - style::MID;
-    let (x0, w) = card_x(0);
-    kit.titled_card(x0, CARDS_Y, w, CARD_H, "Install");
-    kit.text_fit(
-        x0 + 20.0,
-        CARDS_Y + 50.0,
-        w - 40.0,
+    let (x, w, ay) = info_card(
+        kit,
+        0,
+        "Install",
         if installed {
             "Reinstall"
         } else {
             "Fresh install"
         },
-        style::bold(16.0),
-        style::TEXT,
-    );
-    kit.text_fit(
-        x0 + 20.0,
-        CARDS_Y + 74.0,
-        w - 40.0,
         "APK and game data, patched if you need it.",
-        style::body(12.0),
         style::TEXT_MUTED,
     );
     if kit
@@ -1115,9 +1128,9 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             } else {
                 "Install on Quest"
             },
-            x0 + 20.0,
-            by,
-            260.0,
+            x + 20.0,
+            ay,
+            w - 40.0,
             style::MID,
             !busy,
             "Download Echo VR and install it on your Quest over USB",
@@ -1126,22 +1139,12 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     {
         setup::ask_quest_install(d);
     }
-    let (x1, _) = card_x(1);
-    kit.titled_card(x1, CARDS_Y, w, CARD_H, "Update");
-    kit.text_fit(
-        x1 + 20.0,
-        CARDS_Y + 50.0,
-        w - 40.0,
+    let (x, w, ay) = info_card(
+        kit,
+        1,
+        "Update",
         "Community patches",
-        style::bold(16.0),
-        style::TEXT,
-    );
-    kit.text_fit(
-        x1 + 20.0,
-        CARDS_Y + 74.0,
-        w - 40.0,
         "Copies changed files to the headset.",
-        style::body(12.0),
         style::TEXT_MUTED,
     );
     if kit
@@ -1150,9 +1153,9 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Variant::Secondary,
             Some(Icon::Refresh),
             "Update on Quest",
-            x1 + 20.0,
-            by,
-            260.0,
+            x + 20.0,
+            ay,
+            w - 40.0,
             style::MID,
             !busy && (installed || !ready),
             "Copy the latest game files to your Quest",
@@ -1161,22 +1164,12 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     {
         setup::quest_update(d, ctx);
     }
-    let (x2, w2) = card_x(2);
-    kit.titled_card(x2, CARDS_Y, w2, CARD_H, "Help");
-    kit.text_fit(
-        x2 + 20.0,
-        CARDS_Y + 50.0,
-        w2 - 40.0,
+    let (x, w, ay) = info_card(
+        kit,
+        2,
+        "Help",
         "Developer mode",
-        style::bold(16.0),
-        style::TEXT,
-    );
-    kit.text_fit(
-        x2 + 20.0,
-        CARDS_Y + 74.0,
-        w2 - 40.0,
         "Needed for USB installs and launching.",
-        style::body(12.0),
         style::TEXT_MUTED,
     );
     if kit
@@ -1185,9 +1178,9 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Variant::Ghost,
             Some(Icon::Info),
             "How to enable it",
-            x2 + 20.0,
-            by,
-            260.0,
+            x + 20.0,
+            ay,
+            w - 40.0,
             style::MID,
             true,
             "Opens a guide in your browser",

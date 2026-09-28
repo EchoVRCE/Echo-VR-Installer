@@ -95,6 +95,8 @@ pub struct LauncherState {
     pub setup_done: bool,
     /// SteamVR setup also installs the game artwork for the SteamVR library.
     pub revive_artwork: bool,
+    /// The Play page shows the launch options under PLAY.
+    pub show_launch_options: bool,
 }
 
 /// What the PLAY button acts on: the selected version, installed or not.
@@ -122,6 +124,7 @@ impl Default for LauncherState {
             owner: None,
             setup_done: false,
             revive_artwork: true,
+            show_launch_options: false,
         }
     }
 }
@@ -259,13 +262,10 @@ impl LauncherState {
             .expect("infinite")
     }
 
-    /// Registers pre-existing installs once: the installer's saved path and the Meta
-    /// library. Returns how many were added.
+    /// Registers pre-existing installs once: Echo VR in the Meta library. Returns how many
+    /// were added.
     pub fn import_existing(&mut self) -> usize {
         let mut candidates = Vec::new();
-        if let Some(p) = crate::core::config::load_install_path() {
-            candidates.push(p);
-        }
         if let Some(base) = crate::core::platform::oculus_base_path() {
             let sep = if base.ends_with(['\\', '/']) { "" } else { "/" };
             candidates.push(format!("{base}{sep}Software/Software"));

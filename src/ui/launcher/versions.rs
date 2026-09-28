@@ -1,6 +1,6 @@
 //! Versions page: installed versions and the catalogue as a list of cards.
 
-use super::{setup, Dashboard, JobResult, Page, BESIDE_TITLE, CW, X0};
+use super::{setup, Dashboard, JobResult, Page, BESIDE_TITLE, CW, TITLE_Y, X0};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
@@ -169,25 +169,29 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
     }
 
-    let sel = if d.versions_platform == Platform::Pc {
-        0
-    } else {
-        1
-    };
-    if let Some(i) = kit.segmented(
-        "versions-platform",
-        &["PC", "Quest"],
-        sel,
-        BESIDE_TITLE,
-        61.0,
-        190.0,
-        30.0,
-    ) {
-        d.versions_platform = if i == 0 {
-            Platform::Pc
-        } else {
-            Platform::Quest
-        };
+    let sides = [
+        (Platform::Pc, "PC", "Versions on this PC"),
+        (Platform::Quest, "Quest", "Echo VR on your Quest"),
+    ];
+    for (i, (p, label, tip)) in sides.into_iter().enumerate() {
+        let on = d.versions_platform == p;
+        let x = BESIDE_TITLE + i as f32 * 118.0;
+        let y = TITLE_Y + (40.0 - style::SMALL) / 2.0;
+        if kit
+            .choice(
+                &format!("versions-side-{i}"),
+                label,
+                x,
+                y,
+                110.0,
+                style::SMALL,
+                on,
+                tip,
+            )
+            .clicked
+        {
+            d.versions_platform = p;
+        }
     }
     if d.versions_platform == Platform::Quest {
         quest(d, kit, ctx);
