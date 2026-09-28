@@ -1,10 +1,8 @@
-//! The egui front end: one window that shows the launcher or, in its place, one of the
-//! installer wizards, plus modal dialog windows. Both draw on the wizard's 1056x594
-//! canvas (`frame.rs`), zoomed to the 1280x720 window.
+//! The egui front end: one root window (the main menu) and, on top of it, at most one
+//! modal wizard window, each with its own modal dialogs.
 
 mod assets;
 mod dialogs;
-mod frame;
 mod kit;
 mod launcher;
 mod parts;
@@ -25,7 +23,7 @@ pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(crate::version::VERSION_TITLE)
-            .with_inner_size([frame::W * theme::SCALE, frame::FH * theme::SCALE])
+            .with_inner_size([launcher::W, launcher::H])
             .with_resizable(false)
             .with_maximize_button(false)
             .with_icon(std::sync::Arc::new(assets::icon())),
@@ -39,7 +37,9 @@ pub fn run() -> anyhow::Result<()> {
             theme::install_fonts(&cc.egui_ctx);
             theme::install_style(&cc.egui_ctx);
             let snapshots = snapshot::Snapshotter::from_env();
-            let mut app = App::default();
+            let mut app = App {
+                ..Default::default()
+            };
             app.menu.demo = snapshots.as_ref().is_some_and(|s| s.demo);
             app.snapshots = snapshots;
             Ok(Box::new(app))
@@ -103,6 +103,12 @@ impl App {
                 }
             }
             self.snap_at = want;
+            // Wizards are drawn into the root window for snapshots (see `ui`).
+            let size = match &self.wizard {
+                Some(w) if want.is_some() => egui::vec2(w.width(), wizard::FH),
+                _ => egui::vec2(launcher::W, launcher::H),
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
         }
         let snap = self.snapshots.as_mut().expect("checked");
         if snap.tick(ctx, egui::ViewportId::ROOT) {
@@ -116,40 +122,33 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         snapshot::capture(ui);
         self.drive_snapshots(&ctx);
-        // A wizard takes over the window until it closes.
-        if let Some(w) = self.wizard.as_mut() {
-            if ui.input(|i| i.viewport().close_requested()) && w.hold_close() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        if self.snapshots.is_some() && self.snap_at.is_some() {
+            if let Some(w) = self.wizard.as_mut() {
+                w.frame(ui, &self.assets);
+                return;
             }
-            match w.frame(ui, &self.assets) {
-                Some(Exit::Closed) => {
-                    self.wizard = None;
-                    self.wizard_kind = None;
-                    self.menu.wizard_closed();
-                    ctx.request_repaint();
-                }
-                Some(Exit::Quit) => {
-                    self.wizard = None;
-                    self.wizard_kind = None;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                Some(Exit::OpenQuestInstall) => {
-                    self.menu.wizard_closed();
-                    self.open(Open::QuestInstall);
-                    ctx.request_repaint();
-                }
-                None => {}
-            }
-            return;
         }
         let own_rect = ui.input(|i| i.viewport().outer_rect);
-        let blocked = self.menu.dialogs.is_open();
+        let blocked = self.wizard.is_some() || self.menu.dialogs.is_open();
         let mut kit = kit::Kit::new(ui, &self.assets, "main", blocked);
         let open = self.menu.show(&mut kit);
         self.menu.dialogs.show(&ctx, &self.assets, own_rect);
         if let Some(which) = open {
             self.open(which);
-            ctx.request_repaint();
+        }
+        if let Some(w) = self.wizard.as_mut() {
+            match w.show(&ctx, &self.assets, own_rect) {
+                Some(Exit::Closed) => {
+                    self.wizard = None;
+                    self.wizard_kind = None;
+                    self.menu.wizard_closed();
+                }
+                Some(Exit::OpenQuestInstall) => {
+                    self.menu.wizard_closed();
+                    self.open(Open::QuestInstall);
+                }
+                None => {}
+            }
         }
     }
 

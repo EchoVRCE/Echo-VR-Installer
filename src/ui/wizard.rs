@@ -1,19 +1,24 @@
-//! `BaseWizard`: the shared shell of every install/update flow -- status bar with the
+//! `BaseWizard`: the shared shell of every install/update window -- status bar with the
 //! pulse animation, sidebar with sub-steps, the chip navigation bar with Back/Next, the
-//! big section box and the TipBox (see `frame.rs`). Each concrete wizard implements
-//! [`Flow`]. Wizards run inside the launcher window.
+//! big section box and the TipBox. Each concrete wizard implements [`Flow`].
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::assets::Assets;
+use egui::{Color32, ViewportBuilder, ViewportCommand, ViewportId};
+
+use super::assets::{self, Assets};
 use super::dialogs::{DialogHost, Icon};
-use super::frame::{self, Chip, Mark, SideRow, CONTENT_W, CONTENT_X};
 use super::kit::{Btn, Kit};
-use super::theme;
+use super::theme::{self};
 use super::tipbox::{self, TipBox};
 
+pub const FH: f32 = 594.0;
+const SIDEBAR_W: f32 = 120.0;
+const CONTENT_X: f32 = SIDEBAR_W + 30.0; // 150
 const CONTENT_Y: f32 = 72.0;
 const CONTENT_H: f32 = 245.0;
+const BAR_Y: f32 = FH - 74.0; // 520
+const BAR_H: f32 = 42.0;
 const ABORT_KEY: &str = "wizard-abort";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +28,6 @@ pub enum Nav {
     Back,
     Chip(usize),
     Close,
-    /// The app window is closing.
-    Quit,
 }
 
 /// What a closed wizard asks the app to do next.
@@ -32,8 +35,6 @@ pub enum Nav {
 pub enum Exit {
     Closed,
     OpenQuestInstall,
-    /// Close the app (its window was closed while work ran, and the user agreed).
-    Quit,
 }
 
 pub struct Shell {
@@ -50,7 +51,8 @@ pub struct Shell {
     pub exit: Option<Exit>,
     nav: Option<Nav>,
     pending: Option<Nav>,
-    pulse: frame::Pulse,
+    phase: f32,
+    last_tick: Instant,
 }
 
 impl Shell {
@@ -69,7 +71,8 @@ impl Shell {
             exit: None,
             nav: None,
             pending: None,
-            pulse: frame::Pulse::default(),
+            phase: 0.0,
+            last_tick: Instant::now(),
         }
     }
 
@@ -147,9 +150,11 @@ pub struct Wizard<F: Flow> {
 
 impl<F: Flow> Wizard<F> {
     pub fn new(id: &'static str, flow: F) -> Self {
+        let (w, h) = assets::native_size(flow.background());
+        let fw = (w as f32 * FH / h as f32).floor();
         let mut wz = Wizard {
             flow,
-            sh: Shell::new(frame::W),
+            sh: Shell::new(fw),
             id,
         };
         wz.show_step(0, 0);
@@ -215,9 +220,6 @@ impl<F: Flow> Wizard<F> {
             Nav::Close => {
                 self.sh.exit.get_or_insert(Exit::Closed);
             }
-            Nav::Quit => {
-                self.sh.exit.get_or_insert(Exit::Quit);
-            }
         }
     }
 
@@ -245,23 +247,47 @@ impl<F: Flow> Wizard<F> {
         }
     }
 
-    /// One frame of the wizard inside the launcher window. Returns `Some` once it closed.
-    pub fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets) -> Option<Exit> {
+    /// Shows the wizard window. Returns `Some` once it closed.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        assets: &Assets,
+        parent: Option<egui::Rect>,
+    ) -> Option<Exit> {
+        let fw = self.sh.fw;
+        let mut builder = ViewportBuilder::default()
+            .with_title(crate::version::VERSION_TITLE)
+            .with_inner_size([fw, FH])
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_icon(std::sync::Arc::new(assets::icon()));
+        if let Some(p) = parent {
+            builder =
+                builder.with_position(egui::pos2(p.center().x - fw / 2.0, p.center().y - FH / 2.0));
+        }
+        let vid = ViewportId::from_hash_of(("wizard", self.id));
+        ctx.show_viewport_immediate(vid, builder, |ui, _| {
+            super::snapshot::capture(ui);
+            if ui.input(|i| i.viewport().close_requested()) {
+                ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                if !self.sh.dialogs.is_open() {
+                    self.sh.go(Nav::Close);
+                }
+            }
+            self.frame(ui, assets);
+        });
+        self.sh.exit
+    }
+
+    /// One frame of the wizard inside `ui` (its own window, or the root for snapshots).
+    pub fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets) {
         self.flow.poll(&mut self.sh);
         self.process_nav();
         let blocked = self.sh.dialogs.is_open();
         let own_rect = ui.input(|i| i.viewport().outer_rect);
-        // Esc goes back to the launcher (asking first while work runs), unless it just
-        // leaves a text field.
-        let esc = !blocked
-            && ui.memory(|m| m.focused().is_none())
-            && ui.input(|i| i.key_pressed(egui::Key::Escape));
         let mut kit = Kit::new(ui, assets, self.id, blocked);
         self.draw(&mut kit);
         let ctx = kit.ctx();
-        if esc {
-            self.sh.go(Nav::Close);
-        }
         self.sh.dialogs.show(&ctx, assets, own_rect);
         if self.sh.in_progress {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -270,19 +296,47 @@ impl<F: Flow> Wizard<F> {
         if self.sh.nav.is_some() || self.sh.dialogs.has_answers() || self.sh.exit.is_some() {
             ctx.request_repaint();
         }
-        self.sh.exit
     }
 
     fn draw(&mut self, kit: &mut Kit) {
-        let pulse = self.sh.pulse.tick(self.sh.in_progress);
-        let tip_x = CONTENT_X + ((CONTENT_W - tipbox::W) / 2.0).floor();
-        let tip_y = CONTENT_Y + CONTENT_H + 10.0 + 8.0;
+        // Pulse: phase += 0.15 every 50 ms while working.
+        let now = Instant::now();
+        if self.sh.in_progress {
+            let ticks = (now - self.sh.last_tick).as_millis() as f32 / 50.0;
+            self.sh.phase += 0.15 * ticks;
+        }
+        self.sh.last_tick = now;
+        let pulse = self.sh.phase.sin() * 0.5 + 0.5;
 
-        frame::background(kit, self.flow.background());
+        let fw = self.sh.fw;
+        let cbw = fw - CONTENT_X - 10.0;
+        let tip_x = CONTENT_X + ((cbw - tipbox::W) / 2.0).floor();
+        let tip_y = CONTENT_Y + CONTENT_H + 10.0 + 8.0;
+        let section_y = CONTENT_Y - 20.0;
+        let section_h = tip_y + tipbox::H - section_y + 20.0;
+
+        kit.image(self.flow.background(), 0.0, 0.0, fw, FH);
         self.sh.tipbox.draw_clippy(kit, tip_x, tip_y);
 
-        self.draw_bar(kit, pulse);
-        frame::boxes(kit);
+        self.draw_bar(kit, cbw, pulse);
+
+        // Sidebar box + big section box.
+        kit.section_box(
+            10.0,
+            section_y,
+            SIDEBAR_W + 10.0,
+            section_h,
+            15.0,
+            theme::SIDEBAR_FILL,
+        );
+        kit.section_box(
+            CONTENT_X,
+            section_y,
+            cbw,
+            section_h,
+            15.0,
+            theme::SECTION_FILL,
+        );
 
         // Content.
         let cx = self.sh.content_w();
@@ -292,54 +346,115 @@ impl<F: Flow> Wizard<F> {
 
         // Status bar, drawn above the content like the Swing z-order.
         let fill = if self.sh.in_progress {
-            frame::pulse_fill(pulse)
+            Color32::from_rgb(
+                (50.0 + pulse * 40.0) as u8,
+                (90.0 + pulse * 50.0) as u8,
+                (150.0 + pulse * 60.0) as u8,
+            )
         } else if self.sh.completed {
             theme::STATUS_DONE
         } else {
             theme::STATUS_IDLE
         };
-        frame::status_bar(kit, &self.sh.status, fill);
+        kit.round_box(
+            CONTENT_X,
+            10.0,
+            cbw,
+            32.0,
+            8.0,
+            fill,
+            Some(theme::BOX_BORDER),
+        );
+        kit.text_center(
+            CONTENT_X,
+            10.0,
+            cbw,
+            32.0,
+            &self.sh.status,
+            theme::arial_bold(14.0),
+            theme::WHITE,
+            None,
+        );
 
-        self.draw_sidebar(kit);
+        self.draw_sidebar(kit, section_y + 10.0);
 
         // The TipBox last among tip-bearing widgets, so it sees this frame's hover.
         self.sh.tipbox.draw(kit, tip_x, tip_y);
     }
 
-    fn draw_bar(&mut self, kit: &mut Kit, pulse: f32) {
+    fn draw_bar(&mut self, kit: &mut Kit, cbw: f32, pulse: f32) {
         let n = self.flow.step_count();
-        let labels: Vec<&str> = (0..n).map(|i| self.flow.chip(i)).collect();
-        let states: Vec<Chip> = (0..n)
+        let chip_font = theme::conthrax(9.0);
+        let widths: Vec<f32> = (0..n)
             .map(|i| {
-                if i < self.sh.step {
-                    Chip::Done
-                } else if i == self.sh.step {
-                    if self.sh.in_progress {
-                        Chip::Busy(pulse)
-                    } else {
-                        Chip::Current
-                    }
-                } else {
-                    Chip::Upcoming
-                }
+                (kit.text_size(self.flow.chip(i), chip_font.clone())
+                    .x
+                    .round()
+                    + 16.0)
+                    .clamp(40.0, 74.0)
             })
             .collect();
-        let (_, total) = frame::chip_widths(kit, &labels);
+        let gap = 12.0;
+        let total = widths.iter().sum::<f32>() + gap * (n - 1) as f32;
 
-        frame::bottom_bar(kit);
-        let chips_x = CONTENT_X + ((CONTENT_W - total) / 2.0).floor();
-        if let Some(i) = frame::chips(kit, "chip", chips_x, &labels, &states, true, &[]) {
-            self.sh.go(Nav::Chip(i));
+        kit.section_box(CONTENT_X, BAR_Y, cbw, BAR_H, 15.0, theme::SIDEBAR_FILL);
+
+        let chips_x = CONTENT_X + ((cbw - total) / 2.0).floor();
+        let chip_h = 24.0;
+        let chip_y = BAR_Y + ((BAR_H - chip_h) / 2.0).floor();
+        let mut x = chips_x;
+        for (i, w) in widths.iter().enumerate() {
+            let (bg, fg) = if i < self.sh.step {
+                (theme::CHIP_DONE_BG, theme::LIGHT_GRAY)
+            } else if i == self.sh.step {
+                if self.sh.in_progress {
+                    (
+                        Color32::from_rgb(0, (140.0 + pulse * 80.0).min(255.0) as u8, 0),
+                        theme::WHITE,
+                    )
+                } else {
+                    (theme::CHIP_CURRENT_BG, theme::WHITE)
+                }
+            } else {
+                (theme::CHIP_UPCOMING_BG, theme::WHITE)
+            };
+            kit.round_box(x, chip_y, *w, chip_h, 8.0, bg, None);
+            kit.text_center(
+                x,
+                chip_y,
+                *w,
+                chip_h,
+                self.flow.chip(i),
+                chip_font.clone(),
+                fg,
+                None,
+            );
+            if i + 1 < n {
+                kit.text_left(
+                    x + w + 5.0,
+                    chip_y,
+                    chip_h,
+                    ">",
+                    theme::arial(12.0),
+                    theme::GRAY,
+                );
+            }
+            if kit
+                .area(&format!("chip{i}"), x, chip_y, *w, chip_h, "")
+                .clicked
+            {
+                self.sh.go(Nav::Chip(i));
+            }
+            x += w + gap;
         }
 
-        let btn_y = frame::bar_button_y();
+        let btn_y = BAR_Y + ((BAR_H - 25.0) / 2.0).floor();
         let chip_right = chips_x + total;
         let left_gap = chips_x - CONTENT_X;
-        let right_gap = CONTENT_X + CONTENT_W - chip_right;
+        let right_gap = CONTENT_X + cbw - chip_right;
         let bw = Btn::Small.w();
         let back_x = (CONTENT_X + ((left_gap - bw) / 2.0).floor()).max(CONTENT_X);
-        let next_x =
-            (chip_right + ((right_gap - bw) / 2.0).floor()).min(CONTENT_X + CONTENT_W - bw);
+        let next_x = (chip_right + ((right_gap - bw) / 2.0).floor()).min(CONTENT_X + cbw - bw);
         if kit.button(
             "back",
             Btn::Small,
@@ -368,66 +483,103 @@ impl<F: Flow> Wizard<F> {
         }
     }
 
-    fn draw_sidebar(&mut self, kit: &mut Kit) {
+    fn draw_sidebar(&mut self, kit: &mut Kit, panel_y: f32) {
+        let px = 15.0;
+        kit.text_left_bold(
+            px + 8.0,
+            panel_y + 12.0,
+            20.0,
+            &format!("Step {}", self.sh.step + 1),
+            theme::conthrax(13.0),
+            theme::WHITE,
+        );
+        let wrap_w = SIDEBAR_W - 16.0;
+        let prefix_w = 14.0;
+        let mut y = panel_y + 38.0;
         let sc = self.flow.substep_count(self.sh.step);
-        let names: Vec<String> = (0..sc)
-            .map(|i| self.flow.substep_name(self.sh.step, i))
-            .collect();
-        let rows: Vec<SideRow> = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| SideRow {
-                label: name,
-                mark: if i < self.sh.sub {
-                    Mark::Done
-                } else if i == self.sh.sub {
-                    Mark::Current
-                } else {
-                    Mark::Open
-                },
-                clickable: i < self.sh.sub,
-                tip: "",
-            })
-            .collect();
-        let heading = format!("Step {}", self.sh.step + 1);
-        let (clicked, _) = frame::side_list(kit, "side", frame::SECTION_Y + 10.0, &heading, &rows);
-        if let Some(i) = clicked {
-            let step = self.sh.step;
-            self.sh.go(Nav::Show(step, i));
-        }
-        if frame::side_link(kit, "to-launcher", "< Launcher", "Back to the launcher") {
-            self.sh.go(Nav::Close);
+        for i in 0..sc {
+            let name = self.flow.substep_name(self.sh.step, i);
+            let (color, glyph) = if i < self.sh.sub {
+                (theme::GRAY, 0)
+            } else if i == self.sh.sub {
+                (theme::CURRENT_GREEN, 1)
+            } else {
+                (theme::WHITE, 2)
+            };
+            let font = theme::arial(14.0);
+            let mut job = egui::text::LayoutJob::simple(name, font, color, wrap_w - 4.0 - prefix_w);
+            job.halign = egui::Align::LEFT;
+            let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
+            let h = g.size().y.max(22.0);
+            let row_x = px + 8.0;
+            // Prefix glyph, drawn so it looks the same on every OS.
+            let gy = y + 11.0;
+            let c = kit.origin + egui::vec2(row_x + 5.0, gy - 11.0 + (22.0 - 0.0) / 2.0);
+            match glyph {
+                0 => kit.mark(true, color, 11.0, row_x, gy - 6.0),
+                1 => {
+                    kit.ui.painter().circle_filled(c, 4.5, color);
+                }
+                _ => {
+                    kit.ui
+                        .painter()
+                        .circle_stroke(c, 4.5, egui::Stroke::new(1.2, color));
+                }
+            }
+            let text_top =
+                y + ((22.0 - g.rows.first().map_or(16.0, |r| r.height())) / 2.0).max(0.0);
+            kit.ui.painter().galley(
+                kit.origin + egui::vec2(row_x + prefix_w, text_top),
+                g,
+                color,
+            );
+            if i < self.sh.sub {
+                let clicked = kit
+                    .hand_area(&format!("side{i}"), row_x, y, wrap_w, h, "")
+                    .clicked;
+                if clicked {
+                    let step = self.sh.step;
+                    self.sh.go(Nav::Show(step, i));
+                }
+            }
+            y += h + 4.0;
         }
     }
 }
 
 /// Type-erased wizard for the app to hold.
 pub trait WizardWindow {
-    /// One frame inside the launcher window; `Some` once the wizard closed.
-    fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets) -> Option<Exit>;
-    /// The app window is closing: true to keep it open while work runs (the wizard
-    /// asks to abort first, then exits with [`Exit::Quit`]).
-    fn hold_close(&mut self) -> bool;
+    fn show(
+        &mut self,
+        ctx: &egui::Context,
+        assets: &Assets,
+        parent: Option<egui::Rect>,
+    ) -> Option<Exit>;
+    fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets);
+    fn width(&self) -> f32;
     /// Snapshot harness: jump straight to a step.
     fn debug_goto(&mut self, step: usize, sub: usize);
 }
 
 impl<F: Flow> WizardWindow for Wizard<F> {
-    fn hold_close(&mut self) -> bool {
-        if !self.sh.in_progress {
-            return false;
-        }
-        if !self.sh.dialogs.is_open() {
-            self.sh.go(Nav::Quit);
-        }
-        true
+    fn show(
+        &mut self,
+        ctx: &egui::Context,
+        assets: &Assets,
+        parent: Option<egui::Rect>,
+    ) -> Option<Exit> {
+        Wizard::show(self, ctx, assets, parent)
     }
 
     fn debug_goto(&mut self, step: usize, sub: usize) {
         self.show_step(step, sub);
     }
 
-    fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets) -> Option<Exit> {
-        Wizard::frame(self, ui, assets)
+    fn frame(&mut self, ui: &mut egui::Ui, assets: &Assets) {
+        Wizard::frame(self, ui, assets);
+    }
+
+    fn width(&self) -> f32 {
+        self.sh.fw
     }
 }

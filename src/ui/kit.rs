@@ -38,15 +38,6 @@ impl Btn {
         self.size().0
     }
 
-    /// Width of the cut corner at each end of the image, in image pixels.
-    fn cap(self) -> f32 {
-        match self {
-            Btn::Big => 16.0,
-            Btn::Middle => 13.0,
-            Btn::Small => 9.0,
-        }
-    }
-
     fn images(self) -> [&'static str; 3] {
         match self {
             Btn::Big => ["button_up.png", "button_highlighted.png", "button_down.png"],
@@ -78,13 +69,6 @@ pub struct Kit<'a> {
 pub struct Clicked {
     pub clicked: bool,
     pub hovered: bool,
-}
-
-pub struct ButtonState {
-    pub clicked: bool,
-    pub rect: Rect,
-    /// The label colour for the button's state.
-    pub text_color: Color32,
 }
 
 pub struct FieldResponse {
@@ -367,48 +351,7 @@ impl<'a> Kit<'a> {
         enabled: bool,
         tip: &str,
     ) -> bool {
-        self.button_w(key, kind, text, size, x, y, kind.w(), enabled, tip)
-    }
-
-    /// [`Kit::button`] at its native height but `w` wide: the cut corners stay as drawn
-    /// and only the middle of the image stretches.
-    #[allow(clippy::too_many_arguments)]
-    pub fn button_w(
-        &mut self,
-        key: &str,
-        kind: Btn,
-        text: &str,
-        size: f32,
-        x: f32,
-        y: f32,
-        w: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> bool {
-        let b = self.button_frame(key, kind, x, y, w, enabled, tip);
-        let g = self.galley(text, theme::conthrax(size), b.text_color, None);
-        let top = b.rect.center().y - g.size().y / 2.0;
-        self.ui.painter().with_clip_rect(b.rect).galley(
-            pos2(b.rect.center().x, top),
-            g,
-            b.text_color,
-        );
-        b.clicked
-    }
-
-    /// The button image and its interaction, without a label.
-    #[allow(clippy::too_many_arguments)]
-    pub fn button_frame(
-        &mut self,
-        key: &str,
-        kind: Btn,
-        x: f32,
-        y: f32,
-        w: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> ButtonState {
-        let (nw, h) = kind.size();
+        let (w, h) = kind.size();
         let rect = self.rect(x, y, w, h);
         let [up, hi, down] = kind.images();
         let (mut hovered, mut pressed, mut clicked) = (false, false, false);
@@ -438,30 +381,27 @@ impl<'a> Kit<'a> {
         } else {
             up
         };
+        let tex = self.assets.tex(self.ui.ctx(), img, w as u32, h as u32);
         let tint = if enabled {
             Color32::WHITE
         } else {
             Color32::from_gray(140)
         };
-        let tex = self.assets.tex(self.ui.ctx(), img, nw as u32, h as u32);
-        if (w - nw).abs() < 0.5 {
-            self.paint_tex(&tex, rect, tint);
-        } else {
-            let cap = kind.cap();
-            stretch_h(self.painter(), tex.id(), nw, rect, cap, tint);
-        }
-        let text_color = if !enabled {
+        self.paint_tex(&tex, rect, tint);
+        let color = if !enabled {
             Color32::from_gray(150)
         } else if hovered {
             theme::BUTTON_TEXT_HOVER
         } else {
             theme::BUTTON_TEXT
         };
-        ButtonState {
-            clicked,
-            rect,
-            text_color,
-        }
+        let g = self.galley(text, theme::conthrax(size), color, None);
+        let top = rect.center().y - g.size().y / 2.0;
+        self.ui
+            .painter()
+            .with_clip_rect(rect)
+            .galley(pos2(rect.center().x, top), g, color);
+        clicked
     }
 
     /// `makeHeader`: the tipbox banner scaled to 450 wide, with centered Conthrax 14 text
@@ -656,34 +596,5 @@ impl<'a> Kit<'a> {
             crate::core::platform::open_url(url);
         }
         s.y
-    }
-}
-
-/// Draws `tex` (`tex_w` wide, drawn at its native height) into `r`, keeping `cap` pixels
-/// at each end as they are and stretching only the middle.
-fn stretch_h(
-    p: &egui::Painter,
-    tex: egui::TextureId,
-    tex_w: f32,
-    r: Rect,
-    cap: f32,
-    tint: Color32,
-) {
-    let c = cap.min(r.width() / 2.0);
-    let u = cap / tex_w;
-    let parts = [
-        (r.min.x, r.min.x + c, 0.0, u),
-        (r.min.x + c, r.max.x - c, u, 1.0 - u),
-        (r.max.x - c, r.max.x, 1.0 - u, 1.0),
-    ];
-    for (x0, x1, u0, u1) in parts {
-        if x1 > x0 {
-            p.image(
-                tex,
-                Rect::from_min_max(pos2(x0, r.min.y), pos2(x1, r.max.y)),
-                Rect::from_min_max(pos2(u0, 0.0), pos2(u1, 1.0)),
-                tint,
-            );
-        }
     }
 }

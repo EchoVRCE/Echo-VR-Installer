@@ -59,12 +59,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(defs);
 }
 
-/// The window is 1280x720 on screen; the UI is laid out on the wizard's 1056x594 canvas.
-pub const SCALE: f32 = 720.0 / 594.0;
-
 pub fn install_style(ctx: &egui::Context) {
-    ctx.set_zoom_factor(SCALE);
-    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     ctx.all_styles_mut(|style| {
         style.interaction.selectable_labels = false;
         style.visuals = egui::Visuals::dark();
@@ -97,7 +92,6 @@ pub const STATUS_DONE: Color32 = Color32::from_rgb(40, 130, 40);
 pub const CHIP_DONE_BG: Color32 = Color32::from_rgb(60, 60, 60);
 pub const CHIP_CURRENT_BG: Color32 = Color32::from_rgb(0, 180, 0);
 pub const CHIP_UPCOMING_BG: Color32 = Color32::from_rgb(40, 40, 40);
-pub const CHIP_HOVER_BG: Color32 = Color32::from_rgb(75, 75, 75);
 
 pub const BUTTON_TEXT: Color32 = Color32::from_rgb(230, 230, 230);
 pub const BUTTON_TEXT_HOVER: Color32 = Color32::from_rgb(250, 250, 250);
@@ -115,5 +109,3 @@ pub const MARK_BAD: Color32 = Color32::from_rgb(255, 80, 80);
 pub const QUEST_OK: Color32 = Color32::from_rgb(0, 200, 0);
 pub const DONE_GREEN: Color32 = Color32::from_rgb(0, 255, 0);
 pub const CURRENT_GREEN: Color32 = Color32::from_rgb(0, 180, 0);
-/// A hovered sidebar row.
-pub const HOVER_GREEN: Color32 = Color32::from_rgb(140, 235, 140);
