@@ -26,6 +26,14 @@ const IMAGES: &[(&str, &[u8])] = &[
     ),
     ("icon.png", include_bytes!("../../assets/img/icon.png")),
     (
+        "hero_pc.jpg",
+        include_bytes!("../../assets/img/hero_pc.jpg"),
+    ),
+    (
+        "hero_quest.jpg",
+        include_bytes!("../../assets/img/hero_quest.jpg"),
+    ),
+    (
         "button_up.png",
         include_bytes!("../../assets/img/button_up.png"),
     ),
@@ -144,6 +152,40 @@ impl Assets {
         let t = ctx.load_texture(
             format!("{name}@{w}x{h}"),
             to_color_image(&img),
+            TextureOptions::LINEAR,
+        );
+        self.textures.borrow_mut().insert(key, t.clone());
+        t
+    }
+
+    /// Hero art, cover-fitted to `w`x`h` (logical) at the display's pixel density and
+    /// softly blurred so text on top stays readable. Cached.
+    pub fn hero(&self, ctx: &Context, name: &str, w: u32, h: u32) -> TextureHandle {
+        let ppp = ctx.pixels_per_point();
+        let (tw, th) = (
+            (w as f32 * ppp).round().max(1.0) as u32,
+            (h as f32 * ppp).round().max(1.0) as u32,
+        );
+        let key = (format!("hero:{name}"), tw, th);
+        if let Some(t) = self.textures.borrow().get(&key) {
+            return t.clone();
+        }
+        let img = decode(name);
+        let (iw, ih) = (img.width() as f32, img.height() as f32);
+        let scale = (tw as f32 / iw).max(th as f32 / ih);
+        let (sw, sh) = ((iw * scale).ceil() as u32, (ih * scale).ceil() as u32);
+        let scaled = image::imageops::resize(
+            &img,
+            sw.max(tw),
+            sh.max(th),
+            image::imageops::FilterType::Triangle,
+        );
+        let (cx, cy) = ((scaled.width() - tw) / 2, (scaled.height() - th) / 2);
+        let cropped = image::imageops::crop_imm(&scaled, cx, cy, tw, th).to_image();
+        let blurred = image::imageops::blur(&cropped, 1.2 * ppp);
+        let t = ctx.load_texture(
+            format!("hero:{name}@{tw}x{th}"),
+            to_color_image(&blurred),
             TextureOptions::LINEAR,
         );
         self.textures.borrow_mut().insert(key, t.clone());

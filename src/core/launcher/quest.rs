@@ -92,7 +92,6 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

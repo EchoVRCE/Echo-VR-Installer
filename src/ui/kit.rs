@@ -129,42 +129,6 @@ impl<'a> Kit<'a> {
         *offset = offset.clamp(0.0, (content_h - h).max(0.0));
     }
 
-    /// A selectable chip, like the wizard's step chips (green when selected).
-    #[allow(clippy::too_many_arguments)]
-    pub fn chip(
-        &mut self,
-        key: &str,
-        text: &str,
-        size: f32,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        selected: bool,
-        tip: &str,
-    ) -> bool {
-        let c = self.area(key, x, y, w, h, tip);
-        let bg = if selected {
-            theme::CHIP_CURRENT_BG
-        } else if c.hovered {
-            Color32::from_rgb(70, 70, 70)
-        } else {
-            theme::CHIP_UPCOMING_BG
-        };
-        self.round_box(x, y, w, h, 8.0, bg, Some(theme::BOX_BORDER));
-        self.text_center(
-            x,
-            y,
-            w,
-            h,
-            text,
-            theme::conthrax(size),
-            theme::WHITE,
-            Some(w - 8.0),
-        );
-        c.clicked
-    }
-
     pub fn ctx(&self) -> egui::Context {
         self.ui.ctx().clone()
     }

@@ -34,7 +34,8 @@ directory (`%LOCALAPPDATA%\EchoVR_Installer\logs` on Windows,
 `~/.local/share/EchoVR_Installer/logs` on Linux).
 
 `ECHOVR_SNAPSHOTS=<dir> cargo run` renders every screen to PNGs in `<dir>` and exits, which is
-handy for checking UI changes.
+handy for checking UI changes. Add `ECHOVR_SNAPSHOTS_DEMO=1` to render the launcher with
+two made-up versions (nothing is saved).
 
 ## License
 

@@ -11,6 +11,7 @@ mod pc_update;
 mod quest_install;
 mod quest_update;
 mod snapshot;
+mod style;
 mod theme;
 mod tipbox;
 mod wizard;
@@ -35,10 +36,13 @@ pub fn run() -> anyhow::Result<()> {
         Box::new(|cc| {
             theme::install_fonts(&cc.egui_ctx);
             theme::install_style(&cc.egui_ctx);
-            Ok(Box::new(App {
-                snapshots: snapshot::Snapshotter::from_env(),
+            let snapshots = snapshot::Snapshotter::from_env();
+            let mut app = App {
                 ..Default::default()
-            }))
+            };
+            app.menu.demo = snapshots.as_ref().is_some_and(|s| s.demo);
+            app.snapshots = snapshots;
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))

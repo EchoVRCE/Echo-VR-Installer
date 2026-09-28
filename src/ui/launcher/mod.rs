@@ -1,5 +1,6 @@
-//! The launcher dashboard: the root window. Left navigation, status bar, a page area,
-//! the TipBox and the credits badge. The installer wizards open from it.
+//! The launcher dashboard (root window): a left icon rail, a transparent top bar with
+//! status pills, and full-bleed pages over darkened game art. See `ui/style.rs` for the
+//! design system. The installer wizards open from here and keep their classic look.
 
 mod play;
 mod settings;
@@ -10,13 +11,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use egui::{vec2, Color32, Stroke};
-
 use super::dialogs::DialogHost;
-use super::kit::{Btn, Kit};
+use super::kit::Kit;
 use super::parts::{QuestConn, Worker};
-use super::theme;
-use super::tipbox::{self, TipBox};
+use super::style::{self, Icon};
+use super::tipbox::Clippy;
+use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Catalog, Platform};
 use crate::core::launcher::game::{GameState, Monitor};
@@ -44,10 +44,11 @@ If you have problems, contact me on Discord 'marshmallow_mia'.";
 
 pub const W: f32 = 1280.0;
 pub const H: f32 = 720.0;
-/// The page area inside the content box.
-const PAGE_X: f32 = 250.0;
-const PAGE_Y: f32 = 62.0;
-const PAGE_W: f32 = 1010.0;
+/// Width of the left navigation rail.
+const RAIL: f32 = 72.0;
+/// Left edge and width of page content.
+const X0: f32 = RAIL + 32.0;
+const CW: f32 = W - X0 - 32.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
@@ -60,31 +61,13 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 5] = [
-        Page::Play,
-        Page::Versions,
-        Page::Mods,
-        Page::Servers,
-        Page::Settings,
-    ];
-
-    fn label(self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
             Page::Play => "Play",
             Page::Versions => "Versions",
             Page::Mods => "Mods",
             Page::Servers => "Servers",
             Page::Settings => "Settings",
-        }
-    }
-
-    fn tip(self) -> &'static str {
-        match self {
-            Page::Play => "Pick a version and a launch mode, then play",
-            Page::Versions => "Install, update, verify and remove Echo VR versions",
-            Page::Mods => "Enable and disable plugins and tweaks (coming soon)",
-            Page::Servers => "Browse, join and create lobbies (coming soon)",
-            Page::Settings => "Library folder, cache and logs",
         }
     }
 }
@@ -108,6 +91,7 @@ enum Msg {
 
 struct Job {
     label: String,
+    fraction: Option<f32>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -119,7 +103,6 @@ pub struct Dashboard {
     catalog_loading: bool,
     jobs: HashMap<String, Job>,
     pub dialogs: DialogHost,
-    tipbox: TipBox,
     worker: Worker<Msg>,
     monitor: Option<Monitor>,
     child: Option<std::process::Child>,
@@ -128,20 +111,27 @@ pub struct Dashboard {
     /// Versions page: PC or Quest.
     versions_platform: Platform,
     quest_conn: QuestConn,
-    quest_conn_started: bool,
     quest_info: Option<QuestInfo>,
     quest_busy: bool,
-    list_scroll: f32,
     versions_scroll: f32,
     library_field: String,
     pending_remove: Option<String>,
     pending_repair: Option<String>,
+    /// Last update result per version, shown on the Play page's Updates card.
+    update_note: HashMap<String, String>,
+    options_open: bool,
+    clippy: Clippy,
+    /// Snapshot mode: made-up state, never saved.
+    pub demo: bool,
     started: bool,
     deleting_cache: bool,
 }
 
 impl Dashboard {
     fn save(&self) {
+        if self.demo {
+            return;
+        }
         if let Err(e) = self.state.save() {
             tracing::error!("saving launcher state failed: {e:#}");
         }
@@ -150,7 +140,12 @@ impl Dashboard {
     /// First frame: load state, import existing installs, start the monitor and catalogue.
     fn start(&mut self, ctx: &egui::Context) {
         self.started = true;
-        self.state = LauncherState::load();
+        self.dialogs.modern = true;
+        self.state = if self.demo {
+            demo_state()
+        } else {
+            LauncherState::load()
+        };
         if !self.state.imported {
             let n = self.state.import_existing();
             tracing::info!("imported {n} existing install(s)");
@@ -184,7 +179,12 @@ impl Dashboard {
         self.monitor.as_ref().map(Monitor::get).unwrap_or_default()
     }
 
-    fn poll(&mut self) {
+    fn check_quest(&mut self, ctx: &egui::Context, interactive: bool) {
+        self.quest_info = None;
+        self.quest_conn.check(ctx, interactive);
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
         // Forget our child once it exited.
         if let Some(c) = self.child.as_mut() {
             if !matches!(c.try_wait(), Ok(None)) {
@@ -199,10 +199,20 @@ impl Dashboard {
                 }
                 Msg::JobStep(id, step) => {
                     if let Some(j) = self.jobs.get_mut(&id) {
-                        j.label = match step {
-                            Step::Status(s) => s,
-                            Step::Percent(p) => format!("{p:.2}%"),
-                        };
+                        match step {
+                            Step::Status(s) => {
+                                // The downloader reports progress as "12.34%" status lines too.
+                                j.fraction = s
+                                    .strip_suffix('%')
+                                    .and_then(|p| p.parse::<f32>().ok())
+                                    .map(|p| p / 100.0);
+                                j.label = s;
+                            }
+                            Step::Percent(p) => {
+                                j.fraction = Some(p as f32 / 100.0);
+                                j.label = format!("Downloading... {p:.1}%");
+                            }
+                        }
                     }
                 }
                 Msg::JobDone(id, r) => {
@@ -239,13 +249,23 @@ impl Dashboard {
             }
         }
         self.quest_conn.poll(&mut self.dialogs);
+        // Read the headset's version once it is connected.
+        let ready = self.quest_conn.status == Some(Status::Ready);
+        if ready && self.quest_info.is_none() && !self.quest_busy {
+            self.quest_busy = true;
+            self.worker.spawn(ctx, |tx| {
+                let r = crate::core::launcher::quest::info()
+                    .map_err(|e| UiError::from_anyhow(&e, "Quest"));
+                tx.send(Msg::QuestInfo(r));
+            });
+        }
     }
 
     fn job_done(&mut self, id: &str, r: JobResult) {
         match r {
             JobResult::Installed(v) => {
                 let name = v.name.clone();
-                if self.state.selected.is_none() {
+                if self.state.selected_version().is_none() {
                     self.state.selected = Some(v.id.clone());
                 }
                 self.state.upsert(v);
@@ -256,15 +276,11 @@ impl Dashboard {
                 );
             }
             JobResult::Updated => {
-                let name = self
-                    .state
-                    .version(id)
-                    .map(|v| v.name.clone())
-                    .unwrap_or_default();
-                self.dialogs
-                    .info("Up to date", &format!("{name} is up to date."));
+                self.update_note.insert(id.to_string(), "Up to date".into());
             }
             JobResult::Verified(bad) if bad.is_empty() => {
+                self.update_note
+                    .insert(id.to_string(), "All files intact".into());
                 self.dialogs.info("Verify", "All game files are intact.");
             }
             JobResult::Verified(bad) => {
@@ -279,7 +295,11 @@ impl Dashboard {
                 versions::ask_repair(self, id, &msg);
             }
             JobResult::Failed(None) => {}
-            JobResult::Failed(Some(e)) => self.dialogs.error_ui(&e),
+            JobResult::Failed(Some(e)) => {
+                self.update_note
+                    .insert(id.to_string(), "Last update failed".into());
+                self.dialogs.error_ui(&e);
+            }
         }
     }
 
@@ -295,6 +315,7 @@ impl Dashboard {
             id.to_string(),
             Job {
                 label: label.to_string(),
+                fraction: None,
                 cancel: cancel.clone(),
             },
         );
@@ -322,185 +343,195 @@ impl Dashboard {
         if !self.started {
             self.start(&ctx);
         }
-        self.poll();
+        self.poll(&ctx);
 
-        let tip_x = PAGE_X - 10.0 + ((PAGE_W + 20.0 - tipbox::W) / 2.0).floor();
-        let tip_y = 527.0;
-        kit.image("Echox720.png", 0.0, 0.0, W, H);
-        self.tipbox.draw_clippy(kit, tip_x, tip_y);
-
-        // Status bar.
-        let game = self.game();
-        let fill = if game.is_running() {
-            theme::STATUS_DONE
-        } else {
-            theme::STATUS_IDLE
-        };
-        kit.round_box(
-            240.0,
-            10.0,
-            1030.0,
-            32.0,
-            8.0,
-            fill,
-            Some(theme::BOX_BORDER),
-        );
-        let mut status = game.label();
-        if let Some(v) = self.state.selected_version() {
-            status = format!("{status}   •   {}", v.name);
-        }
-        kit.text_center(
-            240.0,
-            10.0,
-            1030.0,
-            32.0,
-            &status,
-            theme::arial_bold(14.0),
-            theme::WHITE,
-            None,
-        );
-
-        // Navigation.
-        kit.section_box(10.0, 52.0, 220.0, 658.0, 15.0, theme::SIDEBAR_FILL);
-        kit.text_center(
-            10.0,
-            60.0,
-            220.0,
-            30.0,
-            "Echo VR",
-            theme::conthrax(22.0),
-            theme::WHITE,
-            None,
-        );
-        kit.text_center(
-            10.0,
-            88.0,
-            220.0,
-            20.0,
-            "Launcher",
-            theme::conthrax(13.0),
-            theme::LIGHT_GRAY,
-            None,
-        );
-        for (i, p) in Page::ALL.iter().enumerate() {
-            let y = 124.0 + i as f32 * 54.0;
-            if *p == self.page {
-                kit.round_box(
-                    11.0,
-                    y - 4.0,
-                    218.0,
-                    46.0,
-                    10.0,
-                    theme::rgba(0, 180, 0, 150),
-                    None,
-                );
+        // Backdrop: hero art on Play, a calm gradient elsewhere.
+        match (self.page, self.play_platform) {
+            (Page::Play, Platform::Pc) => kit.hero_backdrop("hero_pc.jpg", RAIL, 0.0, W - RAIL, H),
+            (Page::Play, Platform::Quest) => {
+                kit.hero_backdrop("hero_quest.jpg", RAIL, 0.0, W - RAIL, H)
             }
-            if kit.button(
-                &format!("nav-{i}"),
-                Btn::Middle,
-                p.label(),
-                16.0,
-                14.0,
-                y,
-                true,
-                p.tip(),
-            ) {
-                self.page = *p;
-            }
+            _ => kit.plain_backdrop(RAIL, 0.0, W - RAIL, H),
         }
-        kit.text_center(
-            10.0,
-            684.0,
-            220.0,
-            20.0,
-            crate::version::VERSION_TITLE,
-            theme::arial(11.0),
-            theme::LIGHT_GRAY,
-            None,
-        );
 
-        // Page.
-        kit.section_box(240.0, 52.0, 1030.0, 460.0, 15.0, theme::SECTION_FILL);
         let mut open = None;
-        kit.at(PAGE_X, PAGE_Y, |k| {
-            open = match self.page {
-                Page::Play => play::show(self, k, &ctx),
-                Page::Versions => versions::show(self, k, &ctx),
-                Page::Settings => settings::show(self, k, &ctx),
-                Page::Mods => {
-                    coming_soon(k, "Mods", "Enable and disable DLL plugins and game tweaks per version.\nComing in the next launcher update.");
-                    None
-                }
-                Page::Servers => {
-                    coming_soon(k, "Servers", "Browse, join and create EchoVRCE lobbies.\nComing in a later launcher update.");
-                    None
-                }
-            };
-        });
+        match self.page {
+            Page::Play => open = play::show(self, kit, &ctx),
+            Page::Versions => open = versions::show(self, kit, &ctx),
+            Page::Settings => settings::show(self, kit, &ctx),
+            Page::Mods => empty_state(
+                kit,
+                Icon::Mods,
+                "Mods & plugins",
+                "Enable and disable DLL plugins and game tweaks per version.",
+            ),
+            Page::Servers => empty_state(
+                kit,
+                Icon::Globe,
+                "Servers",
+                "Browse, join and create EchoVRCE lobbies right from the launcher.",
+            ),
+        }
 
-        self.credits(kit);
-        self.tipbox.draw(kit, tip_x, tip_y);
+        self.top_bar(kit, &ctx);
+        self.rail(kit);
         if self.any_job() || self.quest_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         open
     }
 
-    fn credits(&mut self, kit: &mut Kit) {
-        let (bx, by, s) = (W - 40.0 - 20.0, 660.0, 40.0);
-        let c = kit.rect(bx, by, s, s).center();
-        let p = kit.ui.painter();
-        p.circle_filled(c, s / 2.0 - 1.0, Color32::from_rgb(200, 0, 150));
-        p.circle_stroke(
-            c,
-            s / 2.0 - 1.5,
-            Stroke::new(1.8, theme::rgba(255, 255, 255, 190)),
+    fn rail(&mut self, kit: &mut Kit) {
+        kit.fill(0.0, 0.0, RAIL, H, style::with_alpha(style::BG, 246));
+        kit.fill(RAIL - 1.0, 0.0, 1.0, H, style::BORDER);
+        kit.image("icon.png", 18.0, 18.0, 36.0, 36.0);
+        let items = [
+            (Page::Play, Icon::Play, "Play", "Play Echo VR"),
+            (
+                Page::Versions,
+                Icon::Download,
+                "Versions",
+                "Install and manage Echo VR versions",
+            ),
+            (Page::Mods, Icon::Mods, "Mods", "Plugins and tweaks"),
+            (Page::Servers, Icon::Globe, "Servers", "Lobbies and servers"),
+        ];
+        for (i, (page, icon, label, tip)) in items.iter().enumerate() {
+            if kit.nav_item(
+                &format!("nav-{i}"),
+                *icon,
+                label,
+                0.0,
+                84.0 + i as f32 * 68.0,
+                RAIL,
+                60.0,
+                self.page == *page,
+                tip,
+            ) {
+                self.page = *page;
+            }
+        }
+        if kit.nav_item(
+            "nav-settings",
+            Icon::Gear,
+            "Settings",
+            0.0,
+            H - 76.0,
+            RAIL,
+            60.0,
+            self.page == Page::Settings,
+            "Settings and about",
+        ) {
+            self.page = Page::Settings;
+        }
+    }
+
+    fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+        kit.text(
+            X0,
+            24.0,
+            self.page.title(),
+            style::display(16.0),
+            style::TEXT,
         );
-        p.circle_filled(
-            c + vec2(0.0, (s * 0.27).round() - s / 2.0),
-            3.0,
-            Color32::WHITE,
-        );
-        p.line_segment(
-            [
-                c + vec2(0.0, (s * 0.43).round() - s / 2.0),
-                c + vec2(0.0, (s * 0.73).round() - s / 2.0),
-            ],
-            Stroke::new(4.4, Color32::WHITE),
-        );
+        // Right-aligned status pills.
+        let game = self.game();
+        let (gtext, gcolor) = match &game {
+            GameState::NotRunning => ("Not running", style::TEXT_MUTED),
+            GameState::InMatch { .. } => ("In a match", style::OK),
+            _ => ("Running", style::OK),
+        };
+        let (qtext, qcolor) = match (self.quest_conn.checking, self.quest_conn.status) {
+            (true, _) => ("Quest: checking...", style::TEXT_MUTED),
+            (_, Some(Status::Ready)) => ("Quest connected", style::ACCENT),
+            (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", style::WARN),
+            (_, Some(Status::Ambiguous)) => ("Several devices", style::WARN),
+            (_, Some(Status::None)) => ("No Quest", style::TEXT_MUTED),
+            (_, None) => ("Quest: check", style::TEXT_MUTED),
+        };
+        let gw = kit.pill_width(gtext, true);
+        let qw = kit.pill_width(qtext, true);
+        let qx = W - 32.0 - qw;
+        let gx = qx - 8.0 - gw;
+        kit.pill(gx, 21.0, gtext, gcolor, true);
+        let gr = kit.rect(gx, 21.0, gw, 22.0);
+        kit.hot("game-pill", gr, false, &game.label());
+        kit.pill(qx, 21.0, qtext, qcolor, true);
+        let r = kit.rect(qx, 21.0, qw, 22.0);
         if kit
-            .hand_area("credits", bx, by, s, s, "About this launcher & credits")
+            .hot(
+                "quest-pill",
+                r,
+                !self.quest_conn.checking,
+                "Check the Quest connection",
+            )
+            .0
             .clicked
         {
-            self.dialogs.info("Credits", CREDITS);
-        }
-        if kit.area("easter-egg", 10.0, 60.0, 220.0, 30.0, "").clicked {
-            // Kept from the installer's main menu (now hidden in the title).
-            self.dialogs
-                .info("You found an Easter Egg", "Never divide by 0!");
+            self.check_quest(ctx, true);
         }
     }
 }
 
-fn header(kit: &Kit, text: &str) {
-    kit.header(text, ((PAGE_W - 450.0) / 2.0).floor(), 0.0, 450.0, 46.0);
-}
-
-fn coming_soon(kit: &mut Kit, title: &str, text: &str) {
-    header(kit, title);
+/// A centered card for pages that are not built yet.
+fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
+    let (w, h) = (520.0, 224.0);
+    let x = X0 + (CW - w) / 2.0;
+    let y = 200.0;
+    kit.card(x, y, w, h);
+    let top = kit.rect(x + w / 2.0 - 20.0, y + 32.0, 40.0, 40.0).min;
+    style::icon_at(kit.ui.painter(), icon, top, 40.0, style::ACCENT);
     kit.text_center(
-        0.0,
-        120.0,
-        PAGE_W,
-        120.0,
+        x,
+        y + 88.0,
+        w,
+        28.0,
+        title,
+        style::display(18.0),
+        style::TEXT,
+        None,
+    );
+    kit.text_center(
+        x + 40.0,
+        y + 122.0,
+        w - 80.0,
+        40.0,
         text,
-        theme::arial(16.0),
-        theme::WHITE,
-        Some(700.0),
+        style::body(14.0),
+        style::TEXT_DIM,
+        Some(w - 80.0),
+    );
+    let pw = kit.pill_width("Coming soon", false);
+    kit.pill(
+        x + (w - pw) / 2.0,
+        y + 176.0,
+        "Coming soon",
+        style::ACCENT_2,
+        false,
     );
 }
 
-/// A small label/value text row helper.
-fn label(kit: &Kit, x: f32, y: f32, text: &str) {
-    kit.text_left(x, y, 20.0, text, theme::arial_bold(14.0), theme::WHITE);
+/// Two made-up versions for UI snapshots.
+fn demo_state() -> LauncherState {
+    let mut s = LauncherState {
+        imported: true,
+        ..Default::default()
+    };
+    s.versions.push(InstalledVersion {
+        id: "pc-latest".into(),
+        name: "Echo VR (PC, latest)".into(),
+        root: "C:/EchoVR/versions/pc-latest".into(),
+        catalog_id: Some("pc-latest".into()),
+        ..Default::default()
+    });
+    s.versions.push(InstalledVersion {
+        id: "existing".into(),
+        name: "Existing install".into(),
+        root: "C:/Program Files/Oculus/Software/Software".into(),
+        external: true,
+        ..Default::default()
+    });
+    s.selected = Some("pc-latest".into());
+    s.profile.windowed = true;
+    s
 }

@@ -33,11 +33,14 @@ pub struct Shot {
 }
 
 pub struct Snapshotter {
+    /// `ECHOVR_SNAPSHOTS_DEMO=1`: render the dashboard with made-up versions.
+    pub demo: bool,
     dir: PathBuf,
     shots: Vec<Shot>,
     idx: usize,
     frames: u32,
     requested: bool,
+    shown_at: Option<std::time::Instant>,
 }
 
 impl Snapshotter {
@@ -86,12 +89,22 @@ impl Snapshotter {
             }
         }
         Some(Snapshotter {
+            demo: std::env::var_os("ECHOVR_SNAPSHOTS_DEMO").is_some(),
             dir,
             shots,
             idx: 0,
             frames: 0,
             requested: false,
+            shown_at: None,
         })
+    }
+
+    fn next(&mut self) {
+        self.idx += 1;
+        self.frames = 0;
+        self.requested = false;
+        self.shown_at = None;
+        *LAST.lock().unwrap() = None;
     }
 
     pub fn current(&self) -> Option<&Shot> {
@@ -104,12 +117,20 @@ impl Snapshotter {
         let Some(shot) = self.shots.get(self.idx).cloned() else {
             return true;
         };
-        ctx.request_repaint();
-        self.frames += 1;
-        // Re-request if a reply got lost (e.g. the window was resized meanwhile).
-        if self.frames % 60 == 20 {
+        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        let since = *self.shown_at.get_or_insert_with(std::time::Instant::now);
+        let age = since.elapsed().as_millis();
+        if age > 10_000 {
+            tracing::warn!("snapshot {} never arrived; skipping", shot.name);
+            self.next();
+            return self.idx >= self.shots.len();
+        }
+        // Let the page settle (fonts, textures, fades), then ask; re-ask every 1.5 s in
+        // case a reply was lost to a window resize.
+        let slot = (age.saturating_sub(500) / 1500) as u32;
+        if age >= 500 && self.frames != slot + 1 {
+            self.frames = slot + 1;
             self.requested = true;
-            *LAST.lock().unwrap() = None;
             ctx.send_viewport_cmd_to(
                 target,
                 egui::ViewportCommand::Screenshot(Default::default()),
@@ -126,9 +147,7 @@ impl Snapshotter {
                     let _ = buf.save(&path);
                 }
                 tracing::info!("snapshot {}", path.display());
-                self.idx += 1;
-                self.frames = 0;
-                self.requested = false;
+                self.next();
             }
         }
         self.idx >= self.shots.len()
