@@ -1,0 +1,122 @@
+//! OS integration: registry lookups, shortcuts, opening folders, admin detection.
+//!
+//! Registry values are read with the registry API instead of scraping PowerShell output
+//! (which returned the string "null" on any failure), and `.lnk` files are written with
+//! `mslnk` instead of a PowerShell script whose quoting broke on the Revive arguments.
+
+use std::path::Path;
+
+use anyhow::Result;
+
+/// `HKLM\SOFTWARE\WOW6432Node\Oculus VR, LLC\Oculus` -> `Base` (e.g. `C:\Program Files\Oculus\`).
+/// Reading it does not need admin.
+#[cfg(windows)]
+pub fn oculus_base_path() -> Option<String> {
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    let key = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("SOFTWARE\\WOW6432Node\\Oculus VR, LLC\\Oculus")
+        .ok()?;
+    let base: String = key.get_value("Base").ok()?;
+    let base = base.trim().to_string();
+    (!base.is_empty()).then_some(base)
+}
+
+#[cfg(not(windows))]
+pub fn oculus_base_path() -> Option<String> {
+    None
+}
+
+/// InstallLocation of an uninstall entry whose DisplayName contains "Revive".
+#[cfg(windows)]
+pub fn revive_install_location() -> Option<String> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    let hklm = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        let Ok(uninstall) = hklm.open_subkey_with_flags(
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            KEY_READ | view,
+        ) else {
+            continue;
+        };
+        for name in uninstall.enum_keys().filter_map(Result::ok) {
+            let Ok(k) = uninstall.open_subkey_with_flags(&name, KEY_READ | view) else {
+                continue;
+            };
+            let display: String = k.get_value("DisplayName").unwrap_or_default();
+            if display.to_lowercase().contains("revive") {
+                let loc: String = k.get_value("InstallLocation").unwrap_or_default();
+                if !loc.trim().is_empty() {
+                    return Some(loc.trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+pub fn revive_install_location() -> Option<String> {
+    None
+}
+
+/// Creates a desktop shortcut (Windows `.lnk`) or an application entry (Linux `.desktop`).
+pub fn create_shortcut(
+    name: &str,
+    target: &Path,
+    args: Option<&str>,
+    working_dir: Option<&Path>,
+    icon: Option<&Path>,
+) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use anyhow::Context;
+        let desktop = dirs::desktop_dir().context("Couldn't find your Desktop folder")?;
+        let lnk = desktop.join(format!("{name}.lnk"));
+        let mut sl = mslnk::ShellLink::new(target)
+            .map_err(|e| anyhow::anyhow!("Couldn't create the shortcut: {e:?}"))?;
+        sl.set_arguments(args.map(str::to_string));
+        sl.set_working_dir(working_dir.map(|p| p.to_string_lossy().into_owned()));
+        sl.set_icon_location(icon.map(|p| p.to_string_lossy().into_owned()));
+        sl.create_lnk(&lnk)
+            .map_err(|e| anyhow::anyhow!("Couldn't write {}: {e:?}", lnk.display()))?;
+        tracing::info!("shortcut: {} -> {}", lnk.display(), target.display());
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use anyhow::Context;
+        let _ = icon;
+        let quote = |p: &str| format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\""));
+        let exec = match args {
+            Some(a) if !a.is_empty() => format!("{} {a}", quote(&target.to_string_lossy())),
+            _ => quote(&target.to_string_lossy()),
+        };
+        let entry = format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\nPath={}\nTerminal=false\n",
+            working_dir.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+        );
+        let dir = dirs::data_local_dir()
+            .context("no data dir")?
+            .join("applications");
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join(format!("{}.desktop", name.to_lowercase().replace(' ', "-")));
+        std::fs::write(&file, entry)?;
+        tracing::info!("shortcut: {}", file.display());
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (name, target, args, working_dir, icon);
+        anyhow::bail!("Desktop shortcuts are only supported on Windows and Linux.")
+    }
+}
+
+pub fn open_folder(path: &Path) -> Result<()> {
+    open::that_detached(path).map_err(|e| anyhow::anyhow!("Couldn't open {}: {e}", path.display()))
+}
+
+pub fn open_url(url: &str) {
+    if let Err(e) = open::that_detached(url) {
+        tracing::warn!("couldn't open {url}: {e}");
+    }
+}

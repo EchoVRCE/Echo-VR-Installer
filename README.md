@@ -15,6 +15,27 @@ After joining the server, look [here](https://discord.com/channels/7793491598527
 
 However, before you ask for help, please consult the pinned messages/threads and or channels for help on your issue because there is a good chance that your error is already documented in one of those places within the server.
 
+
+## Building from source
+
+The installer is written in Rust (GUI: [egui](https://github.com/emilk/egui)). With a stable
+[Rust toolchain](https://rustup.rs):
+
+```sh
+cargo run              # debug build
+cargo build --release  # target/release/EchoVR_Installer(.exe)
+cargo test             # unit tests (add `-- --ignored` for the network tests)
+```
+
+The bundled `adb` lives in `assets/platform-tools/`; `scripts/fetch-platform-tools.sh <version>`
+refreshes it from Google's platform-tools release. Logs are written to the per-user data
+directory (`%LOCALAPPDATA%\EchoVR_Installer\logs` on Windows,
+`~/Library/Application Support/EchoVR_Installer/logs` on macOS,
+`~/.local/share/EchoVR_Installer/logs` on Linux).
+
+`ECHOVR_SNAPSHOTS=<dir> cargo run` renders every screen to PNGs in `<dir>` and exits, which is
+handy for checking UI changes.
+
 ## License
 
 Copyright (C) 2024-2026 the Echo VR Installer contributors

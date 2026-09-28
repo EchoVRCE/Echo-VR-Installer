@@ -1,12 +1,8 @@
-build/
-.gradle/
+/target/
 .idea/
 .opencode/
 .sisyphus/
-log.log
+.android/
 echo_ideas.md
-*.class
-*.jar
 *.kate-swp
 echovr/
-.jdks/
