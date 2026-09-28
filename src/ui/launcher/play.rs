@@ -3,7 +3,7 @@
 
 use egui::{pos2, vec2, Order, Rect, Sense};
 
-use super::{versions, Dashboard, Msg, CW, X0};
+use super::{versions, Dashboard, Msg, BESIDE_TITLE, CW, X0};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::Platform;
@@ -30,9 +30,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         "play-platform",
         &["PC", "Quest"],
         sel,
-        X0 + 84.0,
-        17.0,
-        170.0,
+        BESIDE_TITLE,
+        61.0,
+        190.0,
         30.0,
     ) {
         d.play_platform = if i == 0 {

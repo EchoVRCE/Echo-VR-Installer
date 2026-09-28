@@ -1,6 +1,6 @@
 //! Versions page: installed versions and the catalogue as a list of cards.
 
-use super::{Dashboard, JobResult, Page, CW, X0};
+use super::{Dashboard, JobResult, Page, BESIDE_TITLE, CW, X0};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
@@ -14,8 +14,8 @@ use crate::ui::style::{self, Icon, Variant};
 
 const REMOVE_KEY: &str = "remove-version";
 const REPAIR_KEY: &str = "repair-version";
-const LIST_Y: f32 = 112.0;
-const LIST_H: f32 = 528.0;
+const LIST_Y: f32 = 140.0;
+const LIST_H: f32 = 500.0;
 const ROW_H: f32 = 76.0;
 const ROW_GAP: f32 = 10.0;
 
@@ -136,9 +136,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         "versions-platform",
         &["PC", "Quest"],
         sel,
-        X0 + 132.0,
-        17.0,
-        170.0,
+        BESIDE_TITLE,
+        61.0,
+        190.0,
         30.0,
     ) {
         d.versions_platform = if i == 0 {
@@ -152,7 +152,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
     }
     kit.text(
         X0,
-        72.0,
+        108.0,
         "Every version lives in its own folder, so you can keep several side by side.",
         style::body(14.0),
         style::TEXT_DIM,
@@ -213,7 +213,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
             "Add existing folder",
             X0,
             fy,
-            210.0,
+            250.0,
             40.0,
             true,
             "Use an Echo VR install that is already on this PC",
@@ -228,9 +228,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
             Variant::Secondary,
             Some(Icon::Refresh),
             "Refresh",
-            X0 + 222.0,
+            X0 + 262.0,
             fy,
-            130.0,
+            150.0,
             40.0,
             !d.catalog_loading,
             "Reload the list of available versions",
@@ -246,9 +246,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
             Variant::Ghost,
             None,
             "Classic installer",
-            X0 + CW - 360.0,
+            X0 + CW - 432.0,
             fy,
-            170.0,
+            210.0,
             40.0,
             true,
             "Step-by-step installer: licence patch and Revive setup",
@@ -263,9 +263,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
             Variant::Ghost,
             None,
             "Classic updater",
-            X0 + CW - 180.0,
+            X0 + CW - 210.0,
             fy,
-            180.0,
+            210.0,
             40.0,
             true,
             "Step-by-step updater for any Echo VR folder",
@@ -358,10 +358,10 @@ fn installed_row(
     );
     let selected = d.state.selected_version().is_some_and(|s| s.id == v.id);
     if selected {
-        bx += k.pill(bx, y + 16.0, "Selected", style::ACCENT, false) + 6.0;
+        bx += k.pill(bx, y + 16.0, "Selected", style::OK, false) + 6.0;
     }
     if v.external {
-        k.pill(bx, y + 16.0, "Existing folder", style::TEXT_DIM, false);
+        k.pill(bx, y + 16.0, "Existing folder", style::CHIP_OFF, false);
     }
     if job_status(d, k, &v.id, y) {
         return;

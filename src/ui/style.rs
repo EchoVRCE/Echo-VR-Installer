@@ -1,39 +1,47 @@
-//! The launcher's design system: colour tokens, flat widgets, icons and backdrops.
-//!
-//! Dark, calm surfaces over darkened game art; one cyan accent for primary actions and
-//! the active state, magenta for highlights. Conthrax is reserved for headings; body text
-//! and labels use Liberation Sans. The installer wizards keep their classic bitmap look
-//! (`kit.rs`); everything here is additive.
+//! The launcher's widgets, drawn in the installer's visual language: slanted bitmap
+//! buttons (9-slice stretched to any width), magenta translucent panels with the dark
+//! 1px rim, the wine sidebar colour, banner headers with cyan stripes, the blue status
+//! bar and the green/grey step chips. Page layout is the launcher's; the look is the
+//! installer's (`kit.rs`, `wizard.rs`).
 
 use egui::{
-    pos2, vec2, Color32, CornerRadius, CursorIcon, Id, Mesh, Order, Pos2, Rect, Sense, Shape,
-    Stroke, StrokeKind,
+    pos2, vec2, Color32, CursorIcon, Id, Mesh, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
+    TextureId,
 };
 
+use super::assets;
 use super::kit::Kit;
 use super::theme;
 
-// ---- tokens ----
+// ---- palette (the installer's) ----
 
+/// Base behind the art.
 pub const BG: Color32 = Color32::from_rgb(0x0D, 0x0B, 0x14);
-pub const SURFACE: Color32 = Color32::from_rgba_unmultiplied_const(0x16, 0x13, 0x1F, 224);
-pub const SURFACE_SOLID: Color32 = Color32::from_rgb(0x16, 0x13, 0x1F);
-pub const SURFACE_HI: Color32 = Color32::from_rgb(0x22, 0x1D, 0x30);
-pub const SURFACE_LO: Color32 = Color32::from_rgb(0x0F, 0x0D, 0x17);
-pub const BORDER: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 20);
-pub const BORDER_HI: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 44);
-pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF0, 0xF7);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xA3, 0x9F, 0xB3);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x6E, 0x6A, 0x7E);
-pub const ACCENT: Color32 = Color32::from_rgb(0x3F, 0xD5, 0xE0);
-pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0x06, 0x1A, 0x1D);
-pub const ACCENT_2: Color32 = Color32::from_rgb(0xC8, 0x00, 0x96);
-pub const OK: Color32 = Color32::from_rgb(0x3D, 0xDC, 0x84);
-pub const WARN: Color32 = Color32::from_rgb(0xFF, 0xB5, 0x47);
-pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x5C, 0x7A);
+/// Section box fill: the installer's magenta, a little stronger over the dark art.
+pub const SURFACE: Color32 = Color32::from_rgba_unmultiplied_const(200, 0, 150, 70);
+/// Wine sidebar / popup colour.
+pub const SURFACE_SOLID: Color32 = Color32::from_rgba_unmultiplied_const(100, 0, 50, 240);
+/// Hover rows.
+pub const SURFACE_HI: Color32 = Color32::from_rgba_unmultiplied_const(200, 0, 150, 150);
+/// Text field background (`SpecialTextfield`).
+pub const SURFACE_LO: Color32 = Color32::from_rgba_unmultiplied_const(30, 30, 30, 200);
+/// `BOX_BORDER`
+pub const BORDER: Color32 = theme::BOX_BORDER;
+pub const BORDER_HI: Color32 = Color32::from_rgba_unmultiplied_const(50, 50, 50, 230);
+pub const TEXT: Color32 = Color32::WHITE;
+pub const TEXT_DIM: Color32 = Color32::from_rgb(225, 215, 228);
+pub const TEXT_MUTED: Color32 = Color32::from_rgb(192, 180, 198);
+/// The cyan of the banner stripes.
+pub const ACCENT: Color32 = Color32::from_rgb(63, 193, 201);
+pub const ACCENT_2: Color32 = Color32::from_rgb(200, 0, 150);
+/// Step-chip green.
+pub const OK: Color32 = theme::CHIP_CURRENT_BG;
+pub const CHIP_OFF: Color32 = theme::CHIP_UPCOMING_BG;
+pub const WARN: Color32 = Color32::from_rgb(210, 140, 20);
+pub const DANGER: Color32 = theme::MARK_BAD;
 
-pub const R_CARD: u8 = 10;
-pub const R_CONTROL: u8 = 8;
+pub const R_CARD: u8 = 8; // arc 15
+pub const R_CONTROL: u8 = 4; // arc 8
 pub const ANIM: f32 = 0.12;
 
 pub fn body(size: f32) -> egui::FontId {
@@ -64,6 +72,12 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// The installer's status-bar pulse (`phase += 0.15` per 50 ms), 0..1.
+pub fn pulse(ctx: &egui::Context) -> f32 {
+    let t = ctx.input(|i| i.time) as f32;
+    (t * 3.0).sin() * 0.5 + 0.5
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Play,
@@ -83,7 +97,7 @@ pub enum Icon {
     Info,
 }
 
-/// What a flat control reports back.
+/// What a control reports back.
 #[derive(Default, Clone, Copy)]
 pub struct Resp {
     pub clicked: bool,
@@ -92,15 +106,91 @@ pub struct Resp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
+    /// The big slanted button (PLAY, INSTALL).
     Primary,
+    /// Primary, tinted magenta (STOP).
     Danger,
+    /// A regular slanted button.
     Secondary,
+    /// A regular slanted button, slightly transparent (minor actions).
     Ghost,
+}
+
+// ---- 9-slice ----
+
+/// Draws `tex` into `r`, keeping the left/right caps (in texture pixels) unstretched
+/// relative to the height and stretching only the middle horizontally.
+pub fn nine_h(
+    p: &egui::Painter,
+    tex: TextureId,
+    tex_size: (f32, f32),
+    r: Rect,
+    caps: (f32, f32),
+    tint: Color32,
+) {
+    let (tw, th) = tex_size;
+    let s = r.height() / th;
+    let (mut l, mut rr) = (caps.0 * s, caps.1 * s);
+    if l + rr > r.width() {
+        let k = r.width() / (l + rr);
+        l *= k;
+        rr *= k;
+    }
+    let (ul, ur) = (caps.0 / tw, 1.0 - caps.1 / tw);
+    let parts = [
+        (r.min.x, r.min.x + l, 0.0, ul),
+        (r.min.x + l, r.max.x - rr, ul, ur),
+        (r.max.x - rr, r.max.x, ur, 1.0),
+    ];
+    for (x0, x1, u0, u1) in parts {
+        if x1 > x0 {
+            p.image(
+                tex,
+                Rect::from_min_max(pos2(x0, r.min.y), pos2(x1, r.max.y)),
+                Rect::from_min_max(pos2(u0, 0.0), pos2(u1, 1.0)),
+                tint,
+            );
+        }
+    }
+}
+
+/// Button image set for a target height, with its cut-corner cap width (px in the image).
+fn button_set(h: f32) -> ([&'static str; 3], f32) {
+    if h < 32.0 {
+        (
+            [
+                "button_up_small.png",
+                "button_highlighted_small.png",
+                "button_down_small.png",
+            ],
+            9.0,
+        )
+    } else if h < 44.0 {
+        (
+            [
+                "button_up_middle.png",
+                "button_highlighted_middle.png",
+                "button_down_middle.png",
+            ],
+            13.0,
+        )
+    } else {
+        (
+            ["button_up.png", "button_highlighted.png", "button_down.png"],
+            16.0,
+        )
+    }
 }
 
 impl Kit<'_> {
     fn sid(&self, key: &str) -> Id {
         Id::new(("style", key))
+    }
+
+    fn native_tex(&self, name: &str) -> (TextureId, (f32, f32)) {
+        let (w, h) = assets::native_size(name);
+        let t = self.assets.tex(self.ui.ctx(), name, w, h);
+        (t.id(), (w as f32, h as f32))
     }
 
     /// A hover/click area with an animated hover amount (0..1) and an egui tooltip.
@@ -136,6 +226,7 @@ impl Kit<'_> {
 
     // ---- surfaces ----
 
+    /// The installer's section box: translucent magenta, dark 1px rim, arc 15.
     pub fn card(&self, x: f32, y: f32, w: f32, h: f32) {
         let r = self.rect(x, y, w, h);
         self.ui.painter().rect_filled(r, R_CARD, SURFACE);
@@ -144,20 +235,35 @@ impl Kit<'_> {
             .rect_stroke(r, R_CARD, Stroke::new(1.0, BORDER), StrokeKind::Inside);
     }
 
-    /// A card with a small upper-case title at its top-left.
-    pub fn titled_card(&self, x: f32, y: f32, w: f32, h: f32, title: &str) {
-        self.card(x, y, w, h);
-        self.caps(x + 20.0, y + 18.0, title, TEXT_MUTED);
+    /// The `tipbox_top` banner (cyan-striped caps, dark slanted middle) with Conthrax text.
+    pub fn banner(&self, x: f32, y: f32, w: f32, h: f32, text: &str, size: f32) {
+        let (tex, sz) = self.native_tex("tipbox_top.png");
+        nine_h(
+            self.ui.painter(),
+            tex,
+            sz,
+            self.rect(x, y, w, h),
+            (150.0, 170.0),
+            Color32::WHITE,
+        );
+        self.text_center(x, y, w, h, text, display(size), TEXT, None);
     }
 
-    /// Small letter-spaced upper-case label (section headers, card titles).
+    /// Banner width that fits `text` at `h` (caps plus the text).
+    pub fn banner_width(&self, text: &str, h: f32, size: f32) -> f32 {
+        self.text_width(text, display(size)) + h * 4.4
+    }
+
+    /// A section box with a banner title strip at its top-left.
+    pub fn titled_card(&self, x: f32, y: f32, w: f32, h: f32, title: &str) {
+        self.card(x, y, w, h);
+        let bw = self.banner_width(title, 26.0, 12.0).min(w - 24.0);
+        self.banner(x + 12.0, y + 10.0, bw, 26.0, title, 12.0);
+    }
+
+    /// Section label: Conthrax, like the installer's small headings.
     pub fn caps(&self, x: f32, y: f32, text: &str, color: Color32) {
-        let spaced: String = text
-            .to_uppercase()
-            .chars()
-            .flat_map(|c| [c, '\u{200A}'])
-            .collect();
-        self.text_left(x, y, 14.0, spaced.trim_end(), bold(11.0), color);
+        self.text_left(x, y, 14.0, text, display(11.0), color);
     }
 
     pub fn text(&self, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) {
@@ -186,7 +292,7 @@ impl Kit<'_> {
 
     // ---- buttons ----
 
-    /// A flat button; `icon` is drawn before the label.
+    /// The installer's slanted bitmap button, stretched to `w`x`h`, with an optional icon.
     #[allow(clippy::too_many_arguments)]
     pub fn flat_button(
         &mut self,
@@ -203,65 +309,35 @@ impl Kit<'_> {
     ) -> Resp {
         let r = self.rect(x, y, w, h);
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
-        let radius = if h >= 48.0 {
-            CornerRadius::from(h / 2.0)
+        let ([up, hi, down], cap) = button_set(h);
+        let img = if pressed {
+            down
+        } else if t > 0.5 {
+            hi
         } else {
-            CornerRadius::from(R_CONTROL)
+            up
         };
-        let (fill, fg, border) = match variant {
-            Variant::Primary | Variant::Danger => {
-                let base = if variant == Variant::Primary {
-                    ACCENT
-                } else {
-                    ACCENT_2
-                };
-                let fg = if variant == Variant::Primary {
-                    ACCENT_TEXT
-                } else {
-                    TEXT
-                };
-                let mut f = mix(base, Color32::WHITE, 0.18 * t);
-                if pressed {
-                    f = mix(base, Color32::BLACK, 0.18);
-                }
-                (f, fg, None)
-            }
-            Variant::Secondary => {
-                let f = mix(
-                    SURFACE_SOLID,
-                    SURFACE_HI,
-                    t + if pressed { 0.5 } else { 0.0 },
-                );
-                (f, TEXT, Some(mix(BORDER, BORDER_HI, t)))
-            }
-            Variant::Ghost => (
-                with_alpha(Color32::WHITE, (14.0 * t) as u8),
-                mix(TEXT_DIM, TEXT, t),
-                None,
-            ),
+        let (tex, sz) = self.native_tex(img);
+        let tint = match (enabled, variant) {
+            (false, _) => Color32::from_gray(140),
+            (true, Variant::Danger) => Color32::from_rgb(255, 150, 215),
+            (true, Variant::Ghost) => Color32::from_rgba_unmultiplied(255, 255, 255, 215),
+            _ => Color32::WHITE,
         };
-        let (fill, fg) = if enabled {
-            (fill, fg)
+        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
+        let fg = if !enabled {
+            Color32::from_gray(150)
         } else {
-            (mix(SURFACE_SOLID, BG, 0.3), TEXT_MUTED)
+            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
         };
-        self.ui.painter().rect_filled(r, radius, fill);
-        if let Some(b) = border {
-            self.ui
-                .painter()
-                .rect_stroke(r, radius, Stroke::new(1.0, b), StrokeKind::Inside);
-        }
-        if variant == Variant::Primary && enabled && h >= 48.0 {
-            // Soft glow under the hero button.
-            let glow = r.expand(4.0 + 3.0 * t);
-            self.ui.painter().rect_stroke(
-                glow,
-                CornerRadius::from(glow.height() / 2.0),
-                Stroke::new(6.0, with_alpha(ACCENT, (28.0 + 30.0 * t) as u8)),
-                StrokeKind::Inside,
-            );
-        }
-        let font = if h >= 48.0 { display(16.0) } else { bold(14.0) };
+        let size = if h >= 48.0 {
+            22.0
+        } else if h >= 36.0 {
+            13.0
+        } else {
+            11.0
+        };
+        let font = display(size);
         let tw = if label.is_empty() {
             0.0
         } else {
@@ -286,7 +362,7 @@ impl Kit<'_> {
             cx += isz + gap;
         }
         if !label.is_empty() {
-            self.ui.painter().text(
+            self.ui.painter().with_clip_rect(r).text(
                 pos2(cx, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 label,
@@ -297,7 +373,7 @@ impl Kit<'_> {
         resp
     }
 
-    /// A square icon-only button.
+    /// A square slanted button with just an icon.
     pub fn icon_button(
         &mut self,
         key: &str,
@@ -321,7 +397,8 @@ impl Kit<'_> {
         )
     }
 
-    /// A left-rail navigation item: icon over a small label; active = cyan bar + tint.
+    /// A rail item: icon over a small label. Active = green step chip, hover = magenta.
+    #[allow(clippy::too_many_arguments)]
     pub fn nav_item(
         &mut self,
         key: &str,
@@ -340,16 +417,24 @@ impl Kit<'_> {
             .ui
             .ctx()
             .animate_bool_with_time(self.sid(key).with("active"), active, ANIM);
-        let fill = with_alpha(Color32::WHITE, (10.0 * t + 12.0 * a) as u8);
-        self.ui
-            .painter()
-            .rect_filled(r.shrink2(vec2(8.0, 2.0)), R_CONTROL, fill);
-        if a > 0.01 {
-            let bar =
-                Rect::from_min_size(pos2(r.min.x, r.center().y - 14.0 * a), vec2(3.0, 28.0 * a));
-            self.ui.painter().rect_filled(bar, 2.0, ACCENT);
+        let inner = r.shrink2(vec2(8.0, 2.0));
+        let fill = mix(
+            with_alpha(ACCENT_2, (110.0 * t) as u8),
+            theme::CHIP_CURRENT_BG,
+            a,
+        );
+        if t > 0.01 || a > 0.01 {
+            self.ui.painter().rect_filled(inner, R_CONTROL, fill);
         }
-        let fg = mix(mix(TEXT_MUTED, TEXT_DIM, t), ACCENT, a);
+        if a > 0.01 {
+            self.ui.painter().rect_stroke(
+                inner,
+                R_CONTROL,
+                Stroke::new(1.0, BORDER),
+                StrokeKind::Inside,
+            );
+        }
+        let fg = mix(TEXT_MUTED, TEXT, t.max(a));
         icon_at(
             self.ui.painter(),
             icon,
@@ -357,18 +442,18 @@ impl Kit<'_> {
             22.0,
             fg,
         );
-        let lc = mix(mix(TEXT_MUTED, TEXT_DIM, t), TEXT, a);
         self.ui.painter().text(
             pos2(r.center().x, r.max.y - 12.0),
             egui::Align2::CENTER_CENTER,
             label,
-            bold(11.0),
-            lc,
+            display(8.5),
+            fg,
         );
         resp.clicked
     }
 
-    /// Segmented control; returns the newly picked index.
+    /// A row of step chips; returns the newly picked index.
+    #[allow(clippy::too_many_arguments)]
     pub fn segmented(
         &mut self,
         key: &str,
@@ -379,39 +464,33 @@ impl Kit<'_> {
         w: f32,
         h: f32,
     ) -> Option<usize> {
-        let r = self.rect(x, y, w, h);
-        self.ui.painter().rect_filled(r, R_CONTROL, SURFACE_LO);
-        self.ui
-            .painter()
-            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, BORDER), StrokeKind::Inside);
-        let seg = (w - 6.0) / options.len() as f32;
-        let sel_x =
-            self.ui
-                .ctx()
-                .animate_value_with_time(self.sid(key).with("sel"), selected as f32, ANIM);
-        let pill = Rect::from_min_size(
-            pos2(r.min.x + 3.0 + sel_x * seg, r.min.y + 3.0),
-            vec2(seg, h - 6.0),
-        );
-        self.ui
-            .painter()
-            .rect_filled(pill, R_CONTROL - 2, SURFACE_HI);
+        let gap = 8.0;
+        let cw = (w - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
         let mut picked = None;
         for (i, o) in options.iter().enumerate() {
-            let sr = Rect::from_min_size(
-                pos2(r.min.x + 3.0 + i as f32 * seg, r.min.y + 3.0),
-                vec2(seg, h - 6.0),
-            );
-            let (resp, t, _) = self.hot(&format!("{key}-{i}"), sr, true, "");
-            let c = if i == selected {
-                TEXT
+            let cx = x + i as f32 * (cw + gap);
+            let r = self.rect(cx, y, cw, h);
+            let (resp, t, _) = self.hot(&format!("{key}-{i}"), r, i != selected, "");
+            let bg = if i == selected {
+                theme::CHIP_CURRENT_BG
             } else {
-                mix(TEXT_MUTED, TEXT_DIM, t)
+                mix(theme::CHIP_UPCOMING_BG, theme::CHIP_DONE_BG, t)
             };
-            self.ui
-                .painter()
-                .text(sr.center(), egui::Align2::CENTER_CENTER, *o, bold(13.0), c);
-            if resp.clicked && i != selected {
+            self.ui.painter().rect_filled(r, R_CONTROL, bg);
+            self.ui.painter().rect_stroke(
+                r,
+                R_CONTROL,
+                Stroke::new(1.0, BORDER),
+                StrokeKind::Inside,
+            );
+            self.ui.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                *o,
+                display(11.0),
+                TEXT,
+            );
+            if resp.clicked {
                 picked = Some(i);
             }
         }
@@ -420,72 +499,83 @@ impl Kit<'_> {
 
     // ---- small parts ----
 
-    /// A rounded pill with an optional status dot; returns its width.
+    /// A step-chip badge in `color` (green = on, grey = neutral); returns its width.
     pub fn pill(&self, x: f32, y: f32, text: &str, color: Color32, dot: bool) -> f32 {
-        let font = bold(11.0);
+        let font = display(9.5);
         let tw = self.text_width(text, font.clone());
-        let w = tw + if dot { 30.0 } else { 20.0 };
+        let w = tw + if dot { 28.0 } else { 18.0 };
         let r = self.rect(x, y, w, 22.0);
+        self.ui.painter().rect_filled(r, R_CONTROL, color);
         self.ui
             .painter()
-            .rect_filled(r, 11.0, with_alpha(color, 36));
-        self.ui.painter().rect_stroke(
-            r,
-            11.0,
-            Stroke::new(1.0, with_alpha(color, 90)),
-            StrokeKind::Inside,
-        );
-        let mut tx = r.min.x + 10.0;
+            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        let mut tx = r.min.x + 9.0;
         if dot {
             self.ui
                 .painter()
-                .circle_filled(pos2(tx + 3.0, r.center().y), 3.5, color);
-            tx += 11.0;
+                .circle_filled(pos2(tx + 3.0, r.center().y), 3.5, TEXT);
+            tx += 10.0;
         }
         self.ui.painter().text(
             pos2(tx, r.center().y),
             egui::Align2::LEFT_CENTER,
             text,
             font,
-            mix(color, TEXT, 0.35),
+            TEXT,
         );
         w
     }
 
-    /// Width a pill will take.
     pub fn pill_width(&self, text: &str, dot: bool) -> f32 {
-        self.text_width(text, bold(11.0)) + if dot { 30.0 } else { 20.0 }
+        self.text_width(text, display(9.5)) + if dot { 28.0 } else { 18.0 }
     }
 
+    /// The installer's progress label (white box, black Conthrax) with a green fill.
     pub fn progress(&self, x: f32, y: f32, w: f32, fraction: Option<f32>, label: &str) {
-        let track = self.rect(x, y + 20.0, w, 6.0);
-        self.ui.painter().rect_filled(track, 3.0, SURFACE_HI);
+        let r = self.rect(x, y + 4.0, w, 26.0);
+        self.ui.painter().rect_filled(r, 0.0, theme::PROGRESS_BG);
         match fraction {
             Some(f) => {
-                let fill = Rect::from_min_size(track.min, vec2(w * f.clamp(0.0, 1.0), 6.0));
-                self.ui.painter().rect_filled(fill, 3.0, ACCENT);
+                let fill = Rect::from_min_size(r.min, vec2(w * f.clamp(0.0, 1.0), r.height()));
+                self.ui
+                    .painter()
+                    .rect_filled(fill, 0.0, with_alpha(theme::STATUS_DONE, 200));
             }
             None => {
-                // Indeterminate: a sliding segment.
+                // Indeterminate: a sliding green segment.
                 let t = self.ui.input(|i| i.time) as f32;
                 let seg = w * 0.25;
                 let pos = ((t * 0.8).fract() * (w + seg)) - seg;
-                let a = (track.min.x + pos).max(track.min.x);
-                let b = (track.min.x + pos + seg).min(track.max.x);
+                let a = (r.min.x + pos).max(r.min.x);
+                let b = (r.min.x + pos + seg).min(r.max.x);
                 if b > a {
                     self.ui.painter().rect_filled(
-                        Rect::from_x_y_ranges(a..=b, track.y_range()),
-                        3.0,
-                        ACCENT,
+                        Rect::from_x_y_ranges(a..=b, r.y_range()),
+                        0.0,
+                        with_alpha(theme::STATUS_DONE, 170),
                     );
                 }
                 self.ui.ctx().request_repaint();
             }
         }
-        self.text_fit(x, y, w, label, body(12.0), TEXT_DIM);
+        self.ui
+            .painter()
+            .rect_stroke(r, 0.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            label.to_string(),
+            display(11.0),
+            theme::BLACK,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(w - 12.0);
+        let g = self.ui.ctx().fonts_mut(|f| f.layout_job(job));
+        let pos = pos2(
+            r.center().x - g.size().x / 2.0,
+            r.center().y - g.size().y / 2.0,
+        );
+        self.ui.painter().galley(pos, g, theme::BLACK);
     }
 
-    /// A switch toggle with a label to the right; returns true when flipped.
+    /// The installer's Metal checkbox with a Conthrax label; returns true when flipped.
     #[allow(clippy::too_many_arguments)]
     pub fn toggle(
         &mut self,
@@ -497,40 +587,11 @@ impl Kit<'_> {
         enabled: bool,
         tip: &str,
     ) -> bool {
-        let lw = self.text_width(label, body(14.0));
-        let r = self.rect(x, y, 40.0 + 12.0 + lw, 24.0);
-        let (resp, t, _) = self.hot(key, r, enabled, tip);
-        if resp.clicked {
-            *on = !*on;
-        }
-        let k = self
-            .ui
-            .ctx()
-            .animate_bool_with_time(self.sid(key).with("on"), *on, ANIM);
-        let track = self.rect(x, y + 2.0, 40.0, 20.0);
-        let off_c = mix(SURFACE_HI, with_alpha(Color32::WHITE, 40), t * 0.5);
-        let c = if enabled {
-            mix(off_c, ACCENT, k)
-        } else {
-            SURFACE_HI
-        };
-        self.ui.painter().rect_filled(track, 10.0, c);
-        let knob = pos2(track.min.x + 10.0 + 20.0 * k, track.center().y);
-        self.ui
-            .painter()
-            .circle_filled(knob, 7.0, if enabled { TEXT } else { TEXT_MUTED });
-        let lc = if enabled { TEXT } else { TEXT_MUTED };
-        self.ui.painter().text(
-            pos2(x + 52.0, y + 12.0) + self.origin.to_vec2(),
-            egui::Align2::LEFT_CENTER,
-            label,
-            body(14.0),
-            lc,
-        );
-        resp.clicked
+        let w = self.text_width(label, display(12.0)) + 24.0;
+        self.checkbox(key, on, label, 12.0, x, y, w, 24.0, false, enabled, tip)
     }
 
-    /// Flat single-line input with an accent focus ring and placeholder.
+    /// `SpecialTextfield`: dark translucent box, white Conthrax text, magenta focus rim.
     #[allow(clippy::too_many_arguments)]
     pub fn input(
         &mut self,
@@ -547,27 +608,26 @@ impl Kit<'_> {
         let r = self.rect(x, y, w, h);
         let id = self.sid(key);
         let focused = self.ui.memory(|m| m.has_focus(id));
-        self.ui.painter().rect_filled(r, R_CONTROL, SURFACE_LO);
-        let border = if invalid {
-            DANGER
-        } else if focused {
-            ACCENT
+        let bg = if invalid {
+            theme::FIELD_BG_INVALID
         } else {
-            BORDER_HI
+            SURFACE_LO
         };
+        self.ui.painter().rect_filled(r, R_CONTROL, bg);
+        let rim = if focused { ACCENT_2 } else { BORDER };
         self.ui
             .painter()
-            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, border), StrokeKind::Inside);
+            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, rim), StrokeKind::Inside);
         let edit = egui::TextEdit::singleline(text)
             .id(id)
-            .font(body(14.0))
+            .font(display(12.0))
             .text_color(TEXT)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center)
-            .desired_width(w - 24.0)
+            .desired_width(w - 20.0)
             .interactive(!self.blocked);
-        let resp = self.ui.put(r.shrink2(vec2(12.0, 2.0)), edit);
+        let resp = self.ui.put(r.shrink2(vec2(10.0, 2.0)), edit);
         let resp = if tip.is_empty() || self.blocked {
             resp
         } else {
@@ -575,11 +635,11 @@ impl Kit<'_> {
         };
         if text.is_empty() && !placeholder.is_empty() {
             self.ui.painter().with_clip_rect(r).text(
-                pos2(r.min.x + 12.0, r.center().y),
+                pos2(r.min.x + 10.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 placeholder,
-                body(14.0),
-                TEXT_MUTED,
+                display(12.0),
+                theme::PLACEHOLDER,
             );
         }
         resp.lost_focus()
@@ -587,7 +647,7 @@ impl Kit<'_> {
 
     // ---- dropdowns / popovers ----
 
-    /// A dropdown showing `options[selected]`; returns a newly picked index.
+    /// A slanted button showing `options[selected]` with a chevron; returns a new pick.
     #[allow(clippy::too_many_arguments)]
     pub fn dropdown(
         &mut self,
@@ -602,30 +662,32 @@ impl Kit<'_> {
     ) -> Option<usize> {
         let label = options.get(selected).cloned().unwrap_or_default();
         let r = self.rect(x, y, w, h);
-        let (resp, t, _) = self.hot(key, r, !options.is_empty(), tip);
-        self.ui
-            .painter()
-            .rect_filled(r, R_CONTROL, mix(SURFACE, SURFACE_HI, t));
-        self.ui.painter().rect_stroke(
-            r,
-            R_CONTROL,
-            Stroke::new(1.0, mix(BORDER_HI, with_alpha(ACCENT, 120), t * 0.6)),
-            StrokeKind::Inside,
-        );
+        let (resp, t, pressed) = self.hot(key, r, !options.is_empty(), tip);
+        let ([up, hi, down], cap) = button_set(h);
+        let img = if pressed {
+            down
+        } else if t > 0.5 {
+            hi
+        } else {
+            up
+        };
+        let (tex, sz) = self.native_tex(img);
+        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), Color32::WHITE);
+        let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
         self.text_fit(
-            x + 14.0,
-            y + (h - 17.0) / 2.0,
-            w - 44.0,
+            x + 22.0,
+            y + (h - 16.0) / 2.0,
+            w - 60.0,
             &label,
-            body(14.0),
-            TEXT,
+            display(13.0),
+            fg,
         );
         icon_at(
             self.ui.painter(),
             Icon::ChevronDown,
-            pos2(r.max.x - 26.0, r.center().y - 6.0),
+            pos2(r.max.x - 34.0, r.center().y - 6.0),
             12.0,
-            TEXT_DIM,
+            fg,
         );
         let open_id = self.sid(key).with("open");
         if resp.clicked {
@@ -667,12 +729,13 @@ impl Kit<'_> {
         }
         let r = self.rect(x, y, s, s);
         let entries: Vec<(String, bool)> = items.iter().map(|s| (s.to_string(), false)).collect();
-        let w = 200.0;
+        let w = 210.0;
         let anchor = Rect::from_min_size(pos2(r.max.x - w, r.min.y), vec2(w, s));
         self.menu_popup(key, anchor, w, &entries)
     }
 
-    /// The popup list under `anchor` if `key` is open. Closes on pick or outside click.
+    /// The popup list under `anchor` if `key` is open: a wine panel with magenta hover
+    /// rows. Closes on pick, outside click or Escape.
     fn menu_popup(
         &mut self,
         key: &str,
@@ -725,27 +788,24 @@ impl Kit<'_> {
                     );
                     let resp = ui.interact(rr, open_id.with(i), Sense::click());
                     if resp.hovered() {
-                        ui.painter().rect_filled(rr, R_CONTROL - 2, SURFACE_HI);
+                        ui.painter().rect_filled(rr, R_CONTROL, SURFACE_HI);
                         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                     }
-                    let c = if *current { ACCENT } else { TEXT };
-                    let mut job =
-                        egui::text::LayoutJob::simple_singleline(label.clone(), body(14.0), c);
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 44.0);
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        label.clone(),
+                        display(12.0),
+                        TEXT,
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 48.0);
                     let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
                     ui.painter().galley(
                         pos2(rr.min.x + 12.0, rr.center().y - g.size().y / 2.0),
                         g,
-                        c,
+                        TEXT,
                     );
                     if *current {
-                        icon_at(
-                            ui.painter(),
-                            Icon::Check,
-                            pos2(rr.max.x - 26.0, rr.center().y - 7.0),
-                            14.0,
-                            ACCENT,
-                        );
+                        let c = rr.max - vec2(24.0, row / 2.0 + 8.0);
+                        icon_at(ui.painter(), Icon::Check, c, 16.0, theme::MARK_OK);
                     }
                     if resp.clicked() {
                         picked = Some(i);
@@ -776,9 +836,7 @@ impl Kit<'_> {
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE,
         );
-        // Overall dim.
         self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 110));
-        // Left gradient for the text block: solid behind the text, fading out by 3/4.
         let solid = r.min.x + w * 0.28;
         self.ui.painter().rect_filled(
             Rect::from_min_max(r.min, pos2(solid, r.max.y)),
@@ -791,14 +849,12 @@ impl Kit<'_> {
             [with_alpha(BG, 200), with_alpha(BG, 0)],
             true,
         );
-        // Bottom fade for the cards row.
         gradient(
             self.ui.painter(),
             Rect::from_min_max(pos2(r.min.x, r.max.y - h * 0.42), r.max),
             [with_alpha(BG, 0), with_alpha(BG, 235)],
             false,
         );
-        // Top fade under the title bar.
         gradient(
             self.ui.painter(),
             Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 90.0)),
@@ -807,16 +863,19 @@ impl Kit<'_> {
         );
     }
 
-    /// Soft background for pages without art.
+    /// Pages without a hero: the same Echo art, dimmed further.
     pub fn plain_backdrop(&self, x: f32, y: f32, w: f32, h: f32) {
+        let tex = self
+            .assets
+            .hero(self.ui.ctx(), "hero_quest.jpg", w as u32, h as u32);
         let r = self.rect(x, y, w, h);
-        self.ui.painter().rect_filled(r, 0.0, BG);
-        gradient(
-            self.ui.painter(),
-            Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 260.0)),
-            [with_alpha(ACCENT_2, 26), with_alpha(ACCENT_2, 0)],
-            false,
+        self.ui.painter().image(
+            tex.id(),
+            r,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
         );
+        self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 190));
     }
 }
 
@@ -976,5 +1035,12 @@ mod tests {
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.0), Color32::BLACK);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 1.0), Color32::WHITE);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 2.0), Color32::WHITE);
+    }
+
+    #[test]
+    fn button_sets_by_height() {
+        assert_eq!(button_set(25.0).0[0], "button_up_small.png");
+        assert_eq!(button_set(38.0).0[0], "button_up_middle.png");
+        assert_eq!(button_set(56.0).0[0], "button_up.png");
     }
 }

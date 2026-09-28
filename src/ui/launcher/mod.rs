@@ -49,6 +49,10 @@ const RAIL: f32 = 72.0;
 /// Left edge and width of page content.
 const X0: f32 = RAIL + 32.0;
 const CW: f32 = W - X0 - 32.0;
+/// The page-title banner under the status bar, and where controls next to it start.
+const TITLE_Y: f32 = 56.0;
+const TITLE_W: f32 = 260.0;
+const BESIDE_TITLE: f32 = X0 + TITLE_W + 16.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
@@ -382,7 +386,9 @@ impl Dashboard {
     }
 
     fn rail(&mut self, kit: &mut Kit) {
-        kit.fill(0.0, 0.0, RAIL, H, style::with_alpha(style::BG, 246));
+        // The installer's wine sidebar.
+        kit.fill(0.0, 0.0, RAIL, H, style::with_alpha(style::BG, 200));
+        kit.fill(0.0, 0.0, RAIL, H, crate::ui::theme::SIDEBAR_FILL);
         kit.fill(RAIL - 1.0, 0.0, 1.0, H, style::BORDER);
         kit.image("icon.png", 18.0, 18.0, 36.0, 36.0);
         let items = [
@@ -426,38 +432,53 @@ impl Dashboard {
         }
     }
 
+    /// The installer's blue status bar (pulsing while busy, green while the game runs)
+    /// with the Quest chip at its right end, and the page's banner title below it.
     fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
-        kit.text(
-            X0,
-            24.0,
-            self.page.title(),
-            style::display(16.0),
-            style::TEXT,
-        );
-        // Right-aligned status pills.
         let game = self.game();
-        let (gtext, gcolor) = match &game {
-            GameState::NotRunning => ("Not running", style::TEXT_MUTED),
-            GameState::InMatch { .. } => ("In a match", style::OK),
-            _ => ("Running", style::OK),
+        let busy = self.any_job() || self.quest_busy || self.quest_conn.checking;
+        let fill = if game.is_running() {
+            crate::ui::theme::STATUS_DONE
+        } else if busy {
+            let p = style::pulse(ctx);
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            egui::Color32::from_rgb(
+                (50.0 + p * 40.0) as u8,
+                (90.0 + p * 50.0) as u8,
+                (150.0 + p * 60.0) as u8,
+            )
+        } else {
+            crate::ui::theme::STATUS_IDLE
         };
+        let (bx, bw) = (RAIL + 16.0, W - RAIL - 32.0);
+        kit.round_box(bx, 10.0, bw, 32.0, 8.0, fill, Some(style::BORDER));
+        let mut status = game.label();
+        if let Some(v) = self.state.selected_version() {
+            status = format!("{status}   •   {}", v.name);
+        }
+        kit.text_center(
+            bx,
+            10.0,
+            bw,
+            32.0,
+            &status,
+            style::bold(14.0),
+            style::TEXT,
+            None,
+        );
+
         let (qtext, qcolor) = match (self.quest_conn.checking, self.quest_conn.status) {
-            (true, _) => ("Quest: checking...", style::TEXT_MUTED),
-            (_, Some(Status::Ready)) => ("Quest connected", style::ACCENT),
+            (true, _) => ("Quest: checking", style::CHIP_OFF),
+            (_, Some(Status::Ready)) => ("Quest connected", style::OK),
             (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", style::WARN),
             (_, Some(Status::Ambiguous)) => ("Several devices", style::WARN),
-            (_, Some(Status::None)) => ("No Quest", style::TEXT_MUTED),
-            (_, None) => ("Quest: check", style::TEXT_MUTED),
+            (_, Some(Status::None)) => ("No Quest", style::CHIP_OFF),
+            (_, None) => ("Quest: check", style::CHIP_OFF),
         };
-        let gw = kit.pill_width(gtext, true);
         let qw = kit.pill_width(qtext, true);
-        let qx = W - 32.0 - qw;
-        let gx = qx - 8.0 - gw;
-        kit.pill(gx, 21.0, gtext, gcolor, true);
-        let gr = kit.rect(gx, 21.0, gw, 22.0);
-        kit.hot("game-pill", gr, false, &game.label());
-        kit.pill(qx, 21.0, qtext, qcolor, true);
-        let r = kit.rect(qx, 21.0, qw, 22.0);
+        let qx = bx + bw - qw - 5.0;
+        kit.pill(qx, 15.0, qtext, qcolor, true);
+        let r = kit.rect(qx, 15.0, qw, 22.0);
         if kit
             .hot(
                 "quest-pill",
@@ -470,6 +491,8 @@ impl Dashboard {
         {
             self.check_quest(ctx, true);
         }
+
+        kit.banner(X0, TITLE_Y, TITLE_W, 40.0, self.page.title(), 16.0);
     }
 }
 

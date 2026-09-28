@@ -12,7 +12,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let x = X0;
 
     // Library.
-    let y = 80.0;
+    let y = 112.0;
     kit.titled_card(x, y, W, 128.0, "Library");
     if kit.input(
         "library",
@@ -56,7 +56,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     );
 
     // Maintenance.
-    let y = 224.0;
+    let y = 256.0;
     kit.titled_card(x, y, W, 112.0, "Maintenance");
     let bw = (W - 40.0 - 24.0) / 3.0;
     if kit
@@ -115,7 +115,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     }
 
     // About -- Clippy rises from behind the card's top edge.
-    let y = 352.0;
+    let y = 384.0;
     d.clippy.draw(kit, x + W - 200.0, y, 180.0);
     kit.titled_card(x, y, W, 296.0, "About");
     kit.image("icon.png", x + 20.0, y + 46.0, 48.0, 48.0);
