@@ -1,6 +1,6 @@
 //! Versions page: installed versions and the catalogue as a list of cards.
 
-use super::{Dashboard, JobResult, Page, BESIDE_TITLE, CW, X0};
+use super::{setup, Dashboard, JobResult, Page, BESIDE_TITLE, CW, X0};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
@@ -25,7 +25,7 @@ pub(super) fn ask_repair(d: &mut Dashboard, id: &str, msg: &str) {
         .confirm(REPAIR_KEY, "Verify", msg, DlgIcon::Warning);
 }
 
-fn job_err(e: anyhow::Error, title: &str) -> JobResult {
+pub(super) fn job_err(e: anyhow::Error, title: &str) -> JobResult {
     if crate::core::http::is_cancelled(&e) {
         JobResult::Failed(None)
     } else {
@@ -42,7 +42,10 @@ pub(super) fn update(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion
         "Checking for updates...",
         move |cancel, on| match versions::update(&v, cancel, on) {
             Ok(()) => JobResult::Updated,
-            Err(e) => job_err(e, "Update Failed"),
+            Err(e) => {
+                let title = crate::core::pc_update::error_title(&e);
+                job_err(e, &title)
+            }
         },
     );
 }
@@ -382,20 +385,69 @@ fn installed_row(
         bx += k.pill(bx, y + 10.0, "Selected", style::OK, false) + 6.0;
     }
     if v.external {
-        k.pill(bx, y + 10.0, "Existing folder", style::CHIP_OFF, false);
+        bx += k.pill(bx, y + 10.0, "Existing folder", style::CHIP_OFF, false) + 6.0;
+    }
+    if v.patched {
+        k.pill(bx, y + 10.0, "Licence patched", style::CHIP_OFF, false);
     }
     if job_status(d, k, &v.id, y) {
         return;
     }
-    let menu = [
-        MenuItem::row("Update")
-            .tip("Download any changed game files")
-            .item(),
-        MenuItem::row("Verify files")
-            .tip("Check every game file against the update manifest")
-            .item(),
-        MenuItem::row("Open folder").item(),
-        MenuItem::Divider,
+    enum Act {
+        Update,
+        Verify,
+        Open,
+        Shortcut,
+        Patch,
+        PatchLink,
+        Unpatch,
+        Remove,
+    }
+    let mut menu = vec![
+        (
+            MenuItem::row("Update")
+                .tip("Download any changed game files")
+                .item(),
+            Some(Act::Update),
+        ),
+        (
+            MenuItem::row("Verify files")
+                .tip("Check every game file against the update manifest")
+                .item(),
+            Some(Act::Verify),
+        ),
+        (MenuItem::row("Open folder").item(), Some(Act::Open)),
+        (
+            MenuItem::row("Desktop shortcut")
+                .tip("A shortcut that starts this version directly")
+                .item(),
+            Some(Act::Shortcut),
+        ),
+        (MenuItem::Divider, None),
+    ];
+    if v.patched {
+        menu.push((
+            MenuItem::row("Remove licence patch")
+                .tip("Put the original pnsovr.dll back")
+                .item(),
+            Some(Act::Unpatch),
+        ));
+    } else {
+        menu.push((
+            MenuItem::row("Apply licence patch")
+                .tip("Authorize with Discord to get your personal patch")
+                .item(),
+            Some(Act::Patch),
+        ));
+        menu.push((
+            MenuItem::row("Licence patch from a link…")
+                .tip("Use a patch link you already have")
+                .item(),
+            Some(Act::PatchLink),
+        ));
+    }
+    menu.push((MenuItem::Divider, None));
+    menu.push((
         MenuItem::row(if v.external { "Forget" } else { "Remove" })
             .tip(if v.external {
                 "Remove from the launcher; the folder stays on disk"
@@ -403,19 +455,35 @@ fn installed_row(
                 "Delete this version from disk"
             })
             .item(),
-    ];
-    match k.menu_button(
-        &format!("menu-{}", v.id),
-        "Manage",
-        &menu,
-        RIGHT - 130.0,
-        y + BTN_DY,
-        130.0,
-        "Update, verify, open or remove",
-    ) {
-        Some(0) if ok => update(d, ctx, v.clone()),
-        Some(1) if ok => verify(d, ctx, v.clone()),
-        Some(2) => {
+        Some(Act::Remove),
+    ));
+    let (items, acts): (Vec<MenuItem>, Vec<Option<Act>>) = menu.into_iter().unzip();
+    let picked = k
+        .menu_button(
+            &format!("menu-{}", v.id),
+            "Manage",
+            &items,
+            RIGHT - 130.0,
+            y + BTN_DY,
+            130.0,
+            "Update, verify, patch, open or remove",
+        )
+        .and_then(|i| acts.into_iter().nth(i).flatten());
+    match picked {
+        Some(Act::Update) if ok => update(d, ctx, v.clone()),
+        Some(Act::Verify) if ok => verify(d, ctx, v.clone()),
+        Some(Act::Shortcut) if ok => setup::shortcut(d, &v.id),
+        Some(Act::Patch) if ok && !d.any_job() => {
+            setup::patch(d, ctx, &v.id, crate::core::launcher::patch::Source::Discord)
+        }
+        Some(Act::PatchLink) if ok => {
+            d.overlay = Some(setup::Overlay::PatchLink {
+                id: v.id.clone(),
+                url: String::new(),
+            })
+        }
+        Some(Act::Unpatch) => setup::unpatch(d, &v.id),
+        Some(Act::Open) => {
             if let Err(e) = platform::open_folder(&paths::bin_path(&v.root)) {
                 d.dialogs.error(
                     "Couldn't open folder",
@@ -424,7 +492,7 @@ fn installed_row(
                 );
             }
         }
-        Some(4) => {
+        Some(Act::Remove) => {
             d.pending_remove = Some(v.id.clone());
             let (title, msg) = if v.external {
                 (

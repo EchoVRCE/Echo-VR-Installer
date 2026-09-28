@@ -61,10 +61,32 @@ pub fn apply(
     cancel: &AtomicBool,
     status: &mut dyn FnMut(String),
 ) -> Result<()> {
+    apply_skipping(manifest_url, bin_path, &[], cancel, status)
+}
+
+/// True when the manifest path names one of the `skip` files (case-insensitive).
+pub fn skipped(path: &str, skip: &[&str]) -> bool {
+    skip.iter().any(|s| path.eq_ignore_ascii_case(s))
+}
+
+/// [`apply`], leaving the files in `skip` alone (a licence-patched `pnsovr.dll`).
+pub fn apply_skipping(
+    manifest_url: &str,
+    bin_path: &Path,
+    skip: &[&str],
+    cancel: &AtomicBool,
+    status: &mut dyn FnMut(String),
+) -> Result<()> {
     tracing::info!("UpdateService: downloading manifest {manifest_url}");
     let manifest = Manifest::fetch(manifest_url)?;
-    let dels: Vec<_> = manifest.dels().collect();
-    let adds: Vec<_> = manifest.adds().collect();
+    let dels: Vec<_> = manifest
+        .dels()
+        .filter(|e| !skipped(&e.path, skip))
+        .collect();
+    let adds: Vec<_> = manifest
+        .adds()
+        .filter(|e| !skipped(&e.path, skip))
+        .collect();
     let total = dels.len() + adds.len();
     let mut current = 0;
 

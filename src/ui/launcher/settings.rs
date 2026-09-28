@@ -116,23 +116,64 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         open_dir(d, &paths::data_dir());
     }
 
-    // Launching.
+    // Play setup: what the first-run setup asked, and launching.
     let y = 384.0;
-    kit.titled_card(x, y, W, 92.0, "Launching");
+    kit.titled_card(x, y, W, 132.0, "Play setup");
+    kit.caps(x + 20.0, y + 54.0, "Echo VR licence", style::TEXT_MUTED);
+    let owner = match d.state.owner {
+        Some(true) => 0,
+        Some(false) => 1,
+        None => usize::MAX,
+    };
+    if let Some(i) = kit.segmented(
+        "settings-owner",
+        &["I own it", "New player"],
+        owner,
+        x + 200.0,
+        y + 46.0,
+        300.0,
+        30.0,
+    ) {
+        d.state.owner = Some(i == 0);
+        d.state.setup_done = true;
+        d.save();
+    }
+    kit.text(
+        x + 516.0,
+        y + 53.0,
+        match d.state.owner {
+            Some(false) => "PLAY asks for the licence patch first.",
+            Some(true) => "Your own licence; the patch is optional.",
+            None => "Not set yet.",
+        },
+        style::body(12.0),
+        style::TEXT_MUTED,
+    );
     if kit.toggle(
         "minimize",
         &mut d.state.minimize_on_launch,
         "Minimize the launcher when Echo VR starts",
         x + 20.0,
-        y + 50.0,
+        y + 90.0,
         true,
         "Keeps the launcher out of the way while you play",
     ) {
         d.save();
     }
+    if kit.toggle(
+        "artwork",
+        &mut d.state.revive_artwork,
+        "SteamVR: add game artwork",
+        x + 440.0,
+        y + 90.0,
+        true,
+        "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
+    ) {
+        d.save();
+    }
 
     // About -- Clippy rises from behind the card's top edge.
-    let y = 492.0;
+    let y = 532.0;
     d.clippy.draw(kit, x + W - 200.0, y, 180.0);
     kit.titled_card(x, y, W, 116.0, "About");
     kit.image("icon.png", x + 20.0, y + 48.0, 48.0, 48.0);

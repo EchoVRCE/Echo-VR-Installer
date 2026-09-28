@@ -85,6 +85,7 @@ pub fn install(
         installed_at: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .ok(),
+        patched: false,
     })
 }
 
@@ -94,11 +95,21 @@ fn manifest_url(v: &InstalledVersion) -> &str {
         .unwrap_or(pc_update::PC_MANIFEST_URL)
 }
 
+/// Files an update must leave alone: the licence patch of a patched version.
+fn keep(v: &InstalledVersion) -> &'static [&'static str] {
+    if v.patched {
+        &[super::patch::DLL]
+    } else {
+        &[]
+    }
+}
+
 pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     ensure_present(v)?;
-    pc_update::apply(
+    pc_update::apply_skipping(
         manifest_url(v),
         &paths::bin_path(&v.root),
+        keep(v),
         cancel,
         &mut |s| on(Step::Status(s)),
     )
@@ -109,7 +120,10 @@ pub fn verify(v: &InstalledVersion, on: &mut dyn FnMut(Step)) -> Result<Vec<Stri
     ensure_present(v)?;
     let m = Manifest::fetch(manifest_url(v))?;
     let bin = paths::bin_path(&v.root);
-    let adds: Vec<_> = m.adds().collect();
+    let adds: Vec<_> = m
+        .adds()
+        .filter(|e| !pc_update::skipped(&e.path, keep(v)))
+        .collect();
     let mut bad = Vec::new();
     for (i, e) in adds.iter().enumerate() {
         on(Step::Percent(100.0 * i as f64 / adds.len().max(1) as f64));

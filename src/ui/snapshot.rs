@@ -67,6 +67,8 @@ impl Snapshotter {
             ("play_menu", SnapVariant::PlayMenu),
             ("play_not_installed", SnapVariant::NotInstalled),
             ("play_installing", SnapVariant::Installing),
+            ("play_needs_patch", SnapVariant::NeedsPatch),
+            ("setup", SnapVariant::Setup),
         ] {
             shots.push(Shot {
                 name: format!("launcher_{n}"),
@@ -102,6 +104,11 @@ impl Snapshotter {
                     wizard: Some((open, s, sub)),
                 });
             }
+        }
+        // `ECHOVR_SNAPSHOTS_ONLY=play,setup`: only shots whose name contains one of these.
+        if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
+            let terms: Vec<&str> = only.split(',').map(str::trim).collect();
+            shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
         }
         Some(Snapshotter {
             demo: std::env::var_os("ECHOVR_SNAPSHOTS_DEMO").is_some(),

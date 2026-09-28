@@ -70,6 +70,8 @@ pub struct InstalledVersion {
     pub catalog_id: Option<String>,
     pub update_manifest: Option<String>,
     pub installed_at: Option<String>,
+    /// The licence patch (`pnsovr.dll`) is applied; updates leave that file alone.
+    pub patched: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +88,13 @@ pub struct LauncherState {
     pub imported: bool,
     /// Minimize the launcher window once Echo VR has started.
     pub minimize_on_launch: bool,
+    /// Owns Echo VR on a Meta account (`Some(false)`: a new player, who needs the
+    /// licence patch). `None` until the setup was answered.
+    pub owner: Option<bool>,
+    /// The first-run setup was answered or skipped.
+    pub setup_done: bool,
+    /// SteamVR setup also installs the game artwork for the SteamVR library.
+    pub revive_artwork: bool,
 }
 
 /// What the PLAY button acts on: the selected version, installed or not.
@@ -110,6 +119,9 @@ impl Default for LauncherState {
             last_lobby: String::new(),
             imported: false,
             minimize_on_launch: true,
+            owner: None,
+            setup_done: false,
+            revive_artwork: true,
         }
     }
 }

@@ -4,7 +4,7 @@
 
 use egui::{pos2, vec2, Order, Rect, Sense};
 
-use super::{versions, Dashboard, Msg, Page, CW, X0};
+use super::{setup, versions, Dashboard, Msg, Page, CW, X0};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
@@ -99,6 +99,8 @@ enum Main {
     Stop,
     Install(VersionEntry),
     Reinstall(VersionEntry),
+    Patch(String),
+    SetUpRevive,
     Nothing,
 }
 
@@ -109,10 +111,18 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
         Target::Available(e) => Some(e.id.clone()),
         Target::None => None,
     };
-    let job = id
+    let job_id = id.clone().filter(|id| d.jobs.contains_key(id)).or_else(|| {
+        d.jobs
+            .contains_key(setup::REVIVE_JOB)
+            .then(|| setup::REVIVE_JOB.into())
+    });
+    let job = job_id
         .as_ref()
         .and_then(|id| d.jobs.get(id))
         .map(|j| (j.label.clone(), j.fraction));
+    let needs_revive = d.state.profile.runtime == Runtime::Revive
+        && (cfg!(windows) || d.demo)
+        && d.revive_dir().is_none();
     let running = d.game().is_running();
     let ours = d.child.is_some();
 
@@ -138,6 +148,24 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
                         Main::Nothing,
                         false,
                         "Echo VR was started outside the launcher.".into(),
+                    )
+                } else if d.state.owner == Some(false) && !v.patched {
+                    (
+                        "PATCH".into(),
+                        Some("Licence patch".into()),
+                        Main::Patch(v.id.clone()),
+                        !d.any_job(),
+                        "New players need a personal licence patch: authorize with Discord to get yours."
+                            .into(),
+                    )
+                } else if needs_revive {
+                    (
+                        "SET UP STEAMVR".into(),
+                        Some("Installs Revive".into()),
+                        Main::SetUpRevive,
+                        !d.any_job(),
+                        "SteamVR (Revive) isn't installed yet. Setting it up asks for administrator rights."
+                            .into(),
                     )
                 } else {
                     ("PLAY".into(), None, Main::Play, lobby_ok, String::new())
@@ -226,7 +254,7 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
     if let Some((jl, fraction)) = &job {
         kit.progress(X0, ROW_Y + 8.0, SPLIT_W, *fraction, jl);
         menu_rect = kit.rect(X0, ROW_Y, SPLIT_W, style::BIG);
-        let id = id.clone().unwrap_or_default();
+        let id = job_id.clone().unwrap_or_default();
         if kit
             .flat_button(
                 "job-cancel",
@@ -238,7 +266,7 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
                 120.0,
                 style::SMALL,
                 true,
-                "Stop the download",
+                "Stop this job",
             )
             .clicked
         {
@@ -250,6 +278,8 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
             Main::Stop => "Close Echo VR",
             Main::Install(_) => "Download and install this version into your library",
             Main::Reinstall(_) => "Download this version again into its folder",
+            Main::Patch(_) => "Opens Discord in your browser to get your personal patch",
+            Main::SetUpRevive => "Download and install Revive, which runs Echo VR on SteamVR",
             Main::Nothing => "",
         };
         let split = kit.split_button(
@@ -273,6 +303,10 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
                     }
                 }
                 Main::Install(e) | Main::Reinstall(e) => versions::install(d, ctx, e),
+                Main::Patch(id) => {
+                    setup::patch(d, ctx, &id, crate::core::launcher::patch::Source::Discord)
+                }
+                Main::SetUpRevive => setup::revive(d, ctx),
                 Main::Nothing => {}
             }
         }

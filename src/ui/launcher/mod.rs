@@ -4,6 +4,7 @@
 
 mod play;
 mod settings;
+mod setup;
 mod versions;
 
 use std::collections::HashMap;
@@ -82,6 +83,12 @@ enum JobResult {
     Verified(Vec<String>),
     /// `None` = cancelled.
     Failed(Option<UiError>),
+    /// The licence patch was applied.
+    Patched,
+    /// Discord authorization for the patch failed.
+    OAuthFailed(crate::core::oauth::OAuthError),
+    /// Revive (SteamVR) is installed.
+    ReviveReady,
 }
 
 enum Msg {
@@ -91,6 +98,8 @@ enum Msg {
     QuestInfo(Result<QuestInfo, UiError>),
     QuestAction(Result<(), UiError>),
     CacheDeleted(Vec<PathBuf>),
+    /// A job needs administrator rights: ask, then answer on the channel.
+    Consent(std::sync::mpsc::SyncSender<bool>),
 }
 
 struct Job {
@@ -111,6 +120,10 @@ pub enum SnapVariant {
     NotInstalled,
     /// That version is being installed.
     Installing,
+    /// The first-run setup card.
+    Setup,
+    /// A new player's version that still needs the licence patch.
+    NeedsPatch,
 }
 
 #[derive(Default)]
@@ -149,6 +162,12 @@ pub struct Dashboard {
     game_since: Option<std::time::Instant>,
     /// The Quest was checked quietly once already.
     quest_auto_checked: bool,
+    /// A full-window card on top (first-run setup, patch from a link).
+    overlay: Option<setup::Overlay>,
+    /// A job waiting for the administrator-rights answer.
+    consent: Option<std::sync::mpsc::SyncSender<bool>>,
+    /// Where Revive is installed (checked at most every 5 s).
+    revive_cache: Option<(Option<String>, std::time::Instant)>,
     /// Free space in the library: (library, bytes, when measured).
     free_cache: Option<(String, Option<u64>, std::time::Instant)>,
     started: bool,
@@ -180,6 +199,9 @@ impl Dashboard {
             self.save();
         }
         self.library_field = self.state.library.clone();
+        if !self.state.setup_done && !self.demo {
+            self.overlay = Some(setup::Overlay::Setup);
+        }
         if self.demo {
             self.catalog = Some(demo_catalog());
             return;
@@ -220,6 +242,21 @@ impl Dashboard {
         }
     }
 
+    /// Where Revive is installed, if it is.
+    fn revive_dir(&mut self) -> Option<String> {
+        if self.demo {
+            return None;
+        }
+        match &self.revive_cache {
+            Some((dir, at)) if at.elapsed().as_secs() < 5 => dir.clone(),
+            _ => {
+                let dir = crate::core::revive::find_revive_dir();
+                self.revive_cache = Some((dir.clone(), std::time::Instant::now()));
+                dir
+            }
+        }
+    }
+
     /// What PLAY acts on.
     fn target(&self) -> Target {
         let demo = self.demo;
@@ -235,6 +272,8 @@ impl Dashboard {
         }
         self.applied_variant = self.snap_variant;
         self.jobs.clear();
+        self.overlay = None;
+        self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
         let open = egui::Id::new(("style", "play-split")).with("open");
         ctx.data_mut(|d| d.insert_temp(open, false));
@@ -255,6 +294,11 @@ impl Dashboard {
                     },
                 );
             }
+            Some(SnapVariant::Setup) => {
+                self.state.owner = None;
+                self.overlay = Some(setup::Overlay::Setup);
+            }
+            Some(SnapVariant::NeedsPatch) => self.state.owner = Some(false),
             None => {}
         }
     }
@@ -337,6 +381,15 @@ impl Dashboard {
                         self.dialogs.error_ui(&e);
                     }
                 }
+                Msg::Consent(tx) => {
+                    self.consent = Some(tx);
+                    self.dialogs.confirm(
+                        setup::CONSENT_KEY,
+                        "Administrator rights required",
+                        "This step needs administrator rights (it installs into Program Files).\n\nStart the privileged helper now? Windows will ask you to confirm.",
+                        crate::ui::dialogs::Icon::Question,
+                    );
+                }
                 Msg::CacheDeleted(failed) => {
                     self.deleting_cache = false;
                     let mut msg = String::from("The cached files have been deleted.");
@@ -349,6 +402,18 @@ impl Dashboard {
                     self.dialogs.info("Deleting done", &msg);
                 }
             }
+        }
+        if let Some(a) = self.dialogs.take(setup::CONSENT_KEY) {
+            if let Some(tx) = self.consent.take() {
+                let _ = tx.send(a.is_yes());
+            }
+        }
+        if self
+            .dialogs
+            .take(setup::JOIN_KEY)
+            .is_some_and(|a| a.is_yes())
+        {
+            crate::core::platform::open_url(crate::core::oauth::INVITE_URL);
         }
         self.quest_conn.poll(&mut self.dialogs);
         // Read the headset's version once it is connected.
@@ -395,6 +460,37 @@ impl Dashboard {
                 }
                 msg.push_str("\n\nRepair them now?");
                 versions::ask_repair(self, id, &msg);
+            }
+            JobResult::Patched => {
+                if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
+                    v.patched = true;
+                }
+                self.save();
+                self.dialogs.info(
+                    "Licence patch applied",
+                    "Your personal licence patch is in place. Have fun!",
+                );
+            }
+            JobResult::OAuthFailed(e) => {
+                use crate::core::oauth::OAuthError;
+                match (&e, e.dialog()) {
+                    (OAuthError::NotInGuild(_), Some((title, msg))) => self.dialogs.options(
+                        setup::JOIN_KEY,
+                        title,
+                        &msg,
+                        crate::ui::dialogs::Icon::Info,
+                        &["Join Server", "Close"],
+                    ),
+                    (_, Some((title, msg))) => self.dialogs.error(title, &msg, Default::default()),
+                    (_, None) => {}
+                }
+            }
+            JobResult::ReviveReady => {
+                self.revive_cache = None;
+                self.dialogs.info(
+                    "SteamVR is ready",
+                    "Revive is installed. PLAY now starts Echo VR through SteamVR.",
+                );
             }
             JobResult::Failed(None) => {}
             JobResult::Failed(Some(e)) => {
@@ -474,6 +570,11 @@ impl Dashboard {
             _ => kit.plain_backdrop(RAIL, 0.0, W - RAIL, H),
         }
 
+        // The dashboard stays visible but inert under an overlay card.
+        let blocked = kit.blocked;
+        if self.overlay.is_some() {
+            kit.blocked = true;
+        }
         let mut open = None;
         match self.page {
             Page::Play => open = play::show(self, kit, &ctx),
@@ -495,6 +596,8 @@ impl Dashboard {
 
         self.top_bar(kit, &ctx);
         self.rail(kit);
+        kit.blocked = blocked;
+        setup::draw_overlay(self, kit, &ctx);
         if self.any_job() || self.quest_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
