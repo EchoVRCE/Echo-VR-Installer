@@ -159,14 +159,15 @@ impl eframe::App for App {
     }
 }
 
-/// Personalized patch files never outlive the session (the Java shutdown hook).
+/// Personal patch files never outlive the session (the Java shutdown hook).
 fn cleanup_staged_patches() {
     let dir = crate::core::paths::downloads_dir();
     let _ = std::fs::remove_file(dir.join("pnsovr.dll"));
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("echo_quest_") && name.ends_with(".apk") {
+            // Personal patched APKs go; the stock APK stays for the next install.
+            if name.ends_with(".patched.apk") {
                 let _ = std::fs::remove_file(e.path());
             }
         }

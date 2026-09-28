@@ -191,7 +191,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         };
     }
     if d.versions_platform == Platform::Quest {
-        return quest(kit);
+        return quest(d, kit, ctx);
     }
 
     let installed: Vec<InstalledVersion> = d.state.versions.clone();
@@ -478,7 +478,7 @@ fn installed_row(
         }
         Some(Act::PatchLink) if ok => {
             d.overlay = Some(setup::Overlay::PatchLink {
-                id: v.id.clone(),
+                target: setup::LinkFor::Pc(v.id.clone()),
                 url: String::new(),
             })
         }
@@ -573,7 +573,7 @@ fn available_row(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, e: &Versio
     }
 }
 
-fn quest(kit: &mut Kit) -> Option<Open> {
+fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
     let (w, h) = (640.0, 240.0);
     let x = X0 + (CW - w) / 2.0;
     let y = 180.0;
@@ -600,8 +600,8 @@ fn quest(kit: &mut Kit) -> Option<Open> {
         style::TEXT_DIM,
         Some(w - 80.0),
     );
-    let mut open = None;
     let bw = 220.0;
+    let busy = d.any_job();
     if kit
         .flat_button(
             "vq-install",
@@ -612,12 +612,14 @@ fn quest(kit: &mut Kit) -> Option<Open> {
             y + 176.0,
             bw,
             style::MID,
-            true,
+            !busy,
             "Install Echo VR on your Quest over USB",
         )
         .clicked
     {
-        open = Some(Open::QuestInstall);
+        d.page = Page::Play;
+        d.play_platform = Platform::Quest;
+        setup::ask_quest_install(d);
     }
     if kit
         .flat_button(
@@ -629,12 +631,14 @@ fn quest(kit: &mut Kit) -> Option<Open> {
             y + 176.0,
             bw,
             style::MID,
-            true,
+            !busy,
             "Copy the latest game files to your Quest",
         )
         .clicked
     {
-        open = Some(Open::QuestUpdate);
+        d.page = Page::Play;
+        d.play_platform = Platform::Quest;
+        setup::quest_update(d, ctx);
     }
-    open
+    None
 }

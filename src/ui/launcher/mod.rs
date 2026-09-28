@@ -89,6 +89,10 @@ enum JobResult {
     OAuthFailed(crate::core::oauth::OAuthError),
     /// Revive (SteamVR) is installed.
     ReviveReady,
+    QuestInstalled,
+    QuestUpdated,
+    /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
+    QuestNeedsReinstall(String),
 }
 
 enum Msg {
@@ -417,8 +421,22 @@ impl Dashboard {
         }
         self.quest_conn.poll(&mut self.dialogs);
         // Read the headset's version once it is connected.
+        if self
+            .dialogs
+            .take(setup::QUEST_INSTALL_KEY)
+            .is_some_and(|a| a.is_yes())
+            || self
+                .dialogs
+                .take(setup::QUEST_REINSTALL_KEY)
+                .is_some_and(|a| a.is_yes())
+        {
+            let source = setup::quest_source(self);
+            setup::quest_install(self, ctx, source);
+        }
         let ready = self.quest_conn.status == Some(Status::Ready);
-        if ready && self.quest_info.is_none() && !self.quest_busy {
+        // Probing while a Quest job runs would trip over its adb restarts.
+        let quest_job = self.jobs.contains_key(setup::QUEST_JOB);
+        if ready && self.quest_info.is_none() && !self.quest_busy && !quest_job {
             self.quest_busy = true;
             self.worker.spawn(ctx, |tx| {
                 let r = crate::core::launcher::quest::info()
@@ -429,6 +447,10 @@ impl Dashboard {
     }
 
     fn job_done(&mut self, id: &str, r: JobResult) {
+        if id == setup::QUEST_JOB {
+            // Read the headset again once the job is over.
+            self.quest_info = None;
+        }
         match r {
             JobResult::Installed(v) => {
                 let name = v.name.clone();
@@ -492,6 +514,20 @@ impl Dashboard {
                     "Revive is installed. PLAY now starts Echo VR through SteamVR.",
                 );
             }
+            JobResult::QuestInstalled => self.dialogs.info(
+                "Installed",
+                "Echo VR is installed on your Quest and up to date.",
+            ),
+            JobResult::QuestUpdated => self
+                .dialogs
+                .info("Up to date", "Your Quest has the latest update."),
+            JobResult::QuestNeedsReinstall(detail) => self.dialogs.options(
+                setup::QUEST_REINSTALL_KEY,
+                "Echo VR version mismatch",
+                &format!("{detail}\n\nReinstall Echo VR on your Quest to continue."),
+                crate::ui::dialogs::Icon::Warning,
+                &["Reinstall Echo VR", "Cancel"],
+            ),
             JobResult::Failed(None) => {}
             JobResult::Failed(Some(e)) => {
                 self.update_note

@@ -1,11 +1,187 @@
 //! Echo VR on the Quest: which version is installed, and starting/stopping it over adb.
 
-use anyhow::{bail, Result};
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
+use anyhow::{anyhow, bail, Result};
+
+use super::versions::Step;
 use crate::core::adb::{self, PACKAGE};
+use crate::core::download::{self, Progress};
 use crate::core::error::UiError;
-use crate::core::quest_install;
-use crate::core::quest_update::{self, Marker};
+use crate::core::manifest::Manifest;
+use crate::core::oauth::{self, OAuthError};
+use crate::core::quest_update::{self, Marker, VersionCheck};
+use crate::core::{paths, quest_install};
+
+/// Used when the update manifest (which names the current APK) can't be fetched.
+pub const FALLBACK_APK: &str = "echo_quest_16-07-2026.001.apk";
+pub const DATA_ZIP: &str = "_data.zip";
+
+/// Where the Quest APK comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApkSource {
+    /// The stock APK (owners).
+    Stock,
+    /// A personal patched APK through Discord (new players).
+    Discord,
+    /// A patched APK link the user already has.
+    Url(String),
+}
+
+#[derive(Debug)]
+pub enum JobError {
+    OAuth(OAuthError),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for JobError {
+    fn from(e: anyhow::Error) -> Self {
+        JobError::Other(e)
+    }
+}
+
+/// What an update found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateOutcome {
+    Updated,
+    /// The headset's APK is not the one the update is built for: reinstall. The text
+    /// says why.
+    NeedsReinstall(String),
+}
+
+/// A personal patched APK is saved apart from the stock one, so a resumed download can
+/// never mix the two.
+pub fn patched_name(base: &str) -> String {
+    format!("{}.patched.apk", base.trim_end_matches(".apk"))
+}
+
+fn staging() -> PathBuf {
+    paths::downloads_dir()
+}
+
+fn fetch(
+    url: &str,
+    name: &str,
+    mirror: bool,
+    fresh: bool,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<PathBuf> {
+    let job = download::Job {
+        url: url.into(),
+        dir: staging(),
+        filename: name.into(),
+        use_mirror: mirror,
+        fresh,
+        extract: false,
+    };
+    download::run(&job, cancel, &mut |p| match p {
+        Progress::Percent(v) => on(Step::Percent(v)),
+        Progress::Status(s) => on(Step::Status(s)),
+        _ => {}
+    })
+}
+
+/// Downloads the APK (stock or patched) and the game data, installs both over adb,
+/// records the install on the headset and applies the latest update.
+pub fn install(
+    source: &ApkSource,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<(), JobError> {
+    ready()?;
+    on(Step::Status("Checking for the latest version...".into()));
+    let manifest = Manifest::fetch(quest_update::QUEST_MANIFEST_URL)
+        .map_err(|e| tracing::warn!("quest manifest: {e:#}"))
+        .ok();
+    let base = manifest
+        .as_ref()
+        .and_then(|m| m.base_apk_name.clone())
+        .unwrap_or_else(|| FALLBACK_APK.into());
+
+    let (apk, patched) = match source {
+        ApkSource::Stock => {
+            on(Step::Status("Downloading Echo VR...".into()));
+            let apk = fetch(&base, &base, true, false, cancel, on)?;
+            if let Some(sha) = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref()) {
+                on(Step::Status("Verifying the download...".into()));
+                if !download::sha256_matches(&apk, sha) {
+                    let _ = std::fs::remove_file(&apk);
+                    return Err(anyhow!(
+                        "The downloaded APK is corrupt (checksum mismatch). Please try again."
+                    )
+                    .into());
+                }
+            }
+            (apk, false)
+        }
+        ApkSource::Discord | ApkSource::Url(_) => {
+            let url = match source {
+                ApkSource::Url(u) => oauth::validate_apk_url(u.trim()).ok_or_else(|| {
+                    anyhow!("That link is not a patched APK link. Please check it and try again.")
+                })?,
+                _ => oauth::run(oauth::FileType::Apk, cancel, &mut |s| on(Step::Status(s)))
+                    .map_err(JobError::OAuth)?,
+            };
+            on(Step::Status("Downloading your patched APK...".into()));
+            (
+                fetch(&url, &patched_name(&base), false, true, cancel, on)?,
+                true,
+            )
+        }
+    };
+    on(Step::Status("Downloading the game data...".into()));
+    fetch(DATA_ZIP, DATA_ZIP, true, false, cancel, on)?;
+
+    let apk_file = apk
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    quest_install::install(&staging(), &apk_file, DATA_ZIP, &mut |s| {
+        on(Step::Status(s))
+    })?;
+    // Record which base version this is before the update runs, so a failed update
+    // still leaves a correct marker.
+    quest_update::write_marker_after_install(
+        Some(base),
+        manifest.as_ref().and_then(|m| m.base_apk_sha.clone()),
+        download::sha256_file(&apk).ok(),
+        patched,
+    );
+    let _ = std::fs::remove_file(staging().join(DATA_ZIP));
+    if let Some(m) = manifest {
+        on(Step::Status("Applying the latest update...".into()));
+        quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s))).map_err(|e| {
+            e.context("Echo VR is installed, but applying the latest update failed. Use Update to try again.")
+        })?;
+    }
+    adb::exec(&["kill-server"]);
+    Ok(())
+}
+
+/// Checks that the headset has the APK the update is built for, then applies it.
+pub fn update(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<UpdateOutcome> {
+    let st = quest_update::check_version(quest_update::QUEST_MANIFEST_URL, &mut |s| {
+        on(Step::Status(s))
+    });
+    match st.result {
+        VersionCheck::Ok => {
+            let m = st
+                .manifest
+                .ok_or_else(|| anyhow!("The update list could not be loaded."))?;
+            quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s)))?;
+            Ok(UpdateOutcome::Updated)
+        }
+        VersionCheck::NotInstalled | VersionCheck::Mismatch => {
+            Ok(UpdateOutcome::NeedsReinstall(st.detail))
+        }
+        VersionCheck::NoDevice => {
+            Err(UiError::new(crate::core::error::QUEST_NOT_FOUND_TITLE, st.detail).into())
+        }
+        VersionCheck::ManifestError => Err(UiError::new("Update check failed", st.detail).into()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestInfo {
@@ -95,6 +271,15 @@ pub fn stop() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patched_apk_is_kept_apart() {
+        assert_eq!(
+            patched_name("echo_quest_27-08-2026.001.apk"),
+            "echo_quest_27-08-2026.001.patched.apk"
+        );
+        assert_ne!(patched_name(FALLBACK_APK), FALLBACK_APK);
+    }
 
     #[test]
     fn activity_parsing() {

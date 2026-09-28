@@ -924,8 +924,42 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
     };
     hero_text(kit, &title, &sub, style::TEXT_DIM);
 
-    let mut open = None;
-    if installed {
+    let job = d
+        .jobs
+        .get(setup::QUEST_JOB)
+        .map(|j| (j.label.clone(), j.fraction));
+    let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
+    let mid_y = ROW_Y + (style::BIG - style::MID) / 2.0;
+    let side_x = X0 + SPLIT_W + 16.0;
+    let mut hint = String::new();
+    if let Some((label, fraction)) = job {
+        kit.progress(X0, ROW_Y + 8.0, SPLIT_W, fraction, &label);
+        if kit
+            .flat_button(
+                "q-cancel",
+                Variant::Ghost,
+                None,
+                "Cancel",
+                X0,
+                HINT_Y,
+                120.0,
+                style::SMALL,
+                true,
+                "Stop after the current step",
+            )
+            .clicked
+        {
+            d.cancel_job(setup::QUEST_JOB);
+        }
+        kit.text_fit(
+            X0 + 136.0,
+            HINT_Y + 4.0,
+            700.0,
+            "Keep the headset connected until this finishes.",
+            style::body(13.0),
+            style::TEXT_MUTED,
+        );
+    } else if installed {
         if kit
             .flat_button(
                 "q-launch",
@@ -949,9 +983,9 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
                 Variant::Secondary,
                 Some(Icon::Stop),
                 "Stop",
-                X0 + SPLIT_W + 16.0,
-                ROW_Y + (style::BIG - style::MID) / 2.0,
-                160.0,
+                side_x,
+                mid_y,
+                150.0,
                 style::MID,
                 !d.quest_busy,
                 "Close Echo VR on the headset",
@@ -960,26 +994,65 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
         {
             quest_stop(d, ctx);
         }
+        if kit
+            .flat_button(
+                "q-update",
+                Variant::Secondary,
+                Some(Icon::Refresh),
+                "Update",
+                side_x + 162.0,
+                mid_y,
+                170.0,
+                style::MID,
+                !busy,
+                "Copy the latest game files to your Quest",
+            )
+            .clicked
+        {
+            setup::quest_update(d, ctx);
+        }
     } else if ready && d.quest_info.is_some() {
         if kit
             .flat_button(
                 "q-install",
                 Variant::Primary,
                 Some(Icon::Download),
-                "INSTALL",
+                "INSTALL ON QUEST",
                 X0,
                 ROW_Y,
                 SPLIT_W,
                 style::BIG,
-                true,
-                "Install Echo VR on your Quest",
+                !busy,
+                "Download Echo VR and install it on your Quest",
             )
             .clicked
         {
-            open = Some(Open::QuestInstall);
+            setup::ask_quest_install(d);
+        }
+        if d.state.owner == Some(false) {
+            if kit
+                .flat_button(
+                    "q-link",
+                    Variant::Secondary,
+                    None,
+                    "APK from a link…",
+                    side_x,
+                    mid_y,
+                    230.0,
+                    style::MID,
+                    !busy,
+                    "Install a patched APK from a link you already have",
+                )
+                .clicked
+            {
+                d.overlay = Some(setup::Overlay::PatchLink {
+                    target: setup::LinkFor::Quest,
+                    url: String::new(),
+                });
+            }
+            hint = "New players get a personal patched APK through Discord.".into();
         }
     } else {
-        let busy = d.quest_conn.checking || d.quest_busy;
         if kit
             .flat_button(
                 "q-connect",
@@ -990,13 +1063,24 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
                 ROW_Y,
                 SPLIT_W,
                 style::BIG,
-                !busy,
+                !d.quest_conn.checking && !d.quest_busy,
                 "Look for your Quest over USB",
             )
             .clicked
         {
             d.check_quest(ctx, true);
         }
+        hint = "Plug in your Quest by USB, with developer mode on.".into();
+    }
+    if !hint.is_empty() {
+        kit.text_fit(
+            X0,
+            HINT_Y + 4.0,
+            860.0,
+            &hint,
+            style::body(13.0),
+            style::TEXT_MUTED,
+        );
     }
 
     // Cards: install, update, help.
@@ -1007,7 +1091,11 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
         x0 + 20.0,
         CARDS_Y + 50.0,
         w - 40.0,
-        "Fresh install",
+        if installed {
+            "Reinstall"
+        } else {
+            "Fresh install"
+        },
         style::bold(16.0),
         style::TEXT,
     );
@@ -1024,17 +1112,21 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
             "qc-install",
             Variant::Secondary,
             Some(Icon::Download),
-            "Install on Quest",
+            if installed {
+                "Reinstall"
+            } else {
+                "Install on Quest"
+            },
             x0 + 20.0,
             by,
             260.0,
             style::MID,
-            true,
-            "Install Echo VR on your Quest over USB",
+            !busy,
+            "Download Echo VR and install it on your Quest over USB",
         )
         .clicked
     {
-        open = Some(Open::QuestInstall);
+        setup::ask_quest_install(d);
     }
     let (x1, _) = card_x(1);
     kit.titled_card(x1, CARDS_Y, w, CARD_H, "Update");
@@ -1064,12 +1156,12 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
             by,
             260.0,
             style::MID,
-            true,
+            !busy && (installed || !ready),
             "Copy the latest game files to your Quest",
         )
         .clicked
     {
-        open = Some(Open::QuestUpdate);
+        setup::quest_update(d, ctx);
     }
     let (x2, w2) = card_x(2);
     kit.titled_card(x2, CARDS_Y, w2, CARD_H, "Help");
@@ -1108,5 +1200,5 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
             "https://learn.adafruit.com/sideloading-on-oculus-quest/enable-developer-mode",
         );
     }
-    open
+    None
 }

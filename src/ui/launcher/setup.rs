@@ -9,6 +9,7 @@ use super::versions::job_err;
 use super::{Dashboard, JobResult, Msg, H, W};
 use crate::core::error::UiError;
 use crate::core::launcher::patch::{self, FetchError, Source};
+use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
 use crate::core::launcher::store::Runtime;
 use crate::core::launcher::versions::Step;
 use crate::core::{download, elevation, oauth, paths, platform, revive};
@@ -18,15 +19,27 @@ use crate::ui::style::{self, Variant};
 pub(super) const REVIVE_JOB: &str = "revive";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
 pub(super) const JOIN_KEY: &str = "join-server";
+pub(super) const QUEST_JOB: &str = "quest";
+pub(super) const QUEST_INSTALL_KEY: &str = "quest-install";
+pub(super) const QUEST_REINSTALL_KEY: &str = "quest-reinstall";
 
 /// A card over the whole window.
 pub(super) enum Overlay {
     Setup,
-    /// Apply the licence patch from a link to this version.
+    /// A patch from a link the user already has.
     PatchLink {
-        id: String,
+        target: LinkFor,
         url: String,
     },
+}
+
+/// What a patch link is for.
+#[derive(Clone)]
+pub(super) enum LinkFor {
+    /// The licence patch for this PC version.
+    Pc(String),
+    /// A patched APK, installed on the Quest.
+    Quest,
 }
 
 // ---- jobs ----
@@ -165,6 +178,61 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
             Default::default(),
         ),
     }
+}
+
+/// The Quest APK to install: stock for owners, a personal patched one for new players.
+pub(super) fn quest_source(d: &Dashboard) -> ApkSource {
+    if d.state.owner == Some(false) {
+        ApkSource::Discord
+    } else {
+        ApkSource::Stock
+    }
+}
+
+/// Asks before replacing Echo VR on the headset (the setup comes first if unanswered).
+pub(super) fn ask_quest_install(d: &mut Dashboard) {
+    if d.state.owner.is_none() {
+        d.overlay = Some(Overlay::Setup);
+        return;
+    }
+    d.dialogs.confirm(
+        QUEST_INSTALL_KEY,
+        "Install Echo VR",
+        "Installing replaces Echo VR on your Quest.\nThe installed app and its local data will be removed first.\n\nContinue?",
+        crate::ui::dialogs::Icon::Question,
+    );
+}
+
+pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkSource) {
+    let first = match source {
+        ApkSource::Discord => "Opening Discord in your browser...",
+        _ => "Checking for the latest version...",
+    };
+    d.start_job(
+        ctx,
+        QUEST_JOB,
+        "Installing Echo VR on your Quest",
+        first,
+        move |cancel, on| match quest_core::install(&source, cancel, on) {
+            Ok(()) => JobResult::QuestInstalled,
+            Err(JobError::OAuth(e)) => JobResult::OAuthFailed(e),
+            Err(JobError::Other(e)) => job_err(e, "Installation Failed"),
+        },
+    );
+}
+
+pub(super) fn quest_update(d: &mut Dashboard, ctx: &egui::Context) {
+    d.start_job(
+        ctx,
+        QUEST_JOB,
+        "Updating Echo VR on your Quest",
+        "Checking your Quest...",
+        move |cancel, on| match quest_core::update(cancel, on) {
+            Ok(UpdateOutcome::Updated) => JobResult::QuestUpdated,
+            Ok(UpdateOutcome::NeedsReinstall(detail)) => JobResult::QuestNeedsReinstall(detail),
+            Err(e) => job_err(e, "Update Failed"),
+        },
+    );
 }
 
 // ---- overlay cards ----
@@ -330,7 +398,21 @@ fn finish_setup(d: &mut Dashboard) {
 fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let (w, h) = (620.0, 250.0);
     let (x, y) = (((W - w) / 2.0).floor(), ((H - h) / 2.0).floor());
-    solid_card(k, x, y, w, h, "Licence patch from a link");
+    let Some(Overlay::PatchLink { target, url }) = &mut d.overlay else {
+        return;
+    };
+    let quest = matches!(target, LinkFor::Quest);
+    let validate = if quest {
+        oauth::validate_apk_url
+    } else {
+        oauth::validate_dll_url
+    };
+    let title = if quest {
+        "Patched APK from a link"
+    } else {
+        "Licence patch from a link"
+    };
+    solid_card(k, x, y, w, h, title);
     k.text(
         x + 24.0,
         y + 52.0,
@@ -338,11 +420,8 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         style::body(14.0),
         style::TEXT_DIM,
     );
-    let Some(Overlay::PatchLink { id, url }) = &mut d.overlay else {
-        return;
-    };
     let bw = 110.0;
-    let invalid = !url.trim().is_empty() && oauth::validate_dll_url(url.trim()).is_none();
+    let invalid = !url.trim().is_empty() && validate(url.trim()).is_none();
     k.input_with(
         "patch-url",
         url,
@@ -352,7 +431,7 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         style::MID,
         "https://files.echovr.de/...",
         invalid,
-        "The link to your personal pnsovr.dll",
+        "The link to your personal patch",
         style::body(14.0),
     );
     if k.flat_button(
@@ -380,13 +459,13 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         k.text(
             x + 24.0,
             y + 138.0,
-            "That doesn't look like a licence patch link.",
+            "That doesn't look like a patch link.",
             style::body(13.0),
             style::DANGER,
         );
     }
-    let valid = oauth::validate_dll_url(url.trim()).is_some();
-    let (id, link) = (id.clone(), url.trim().to_string());
+    let valid = validate(url.trim()).is_some();
+    let (target, link) = (target.clone(), url.trim().to_string());
     let by = y + h - 24.0 - style::MID;
     if k.flat_button(
         "patch-cancel",
@@ -410,17 +489,24 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "patch-apply",
         Variant::Primary,
         None,
-        "Apply patch",
+        if quest { "Install" } else { "Apply patch" },
         x + w - 24.0 - 220.0,
         by,
         220.0,
         style::MID,
         valid && !d.any_job(),
-        "Download the patch and put it into this version",
+        if quest {
+            "Download the patched APK and install it on your Quest"
+        } else {
+            "Download the patch and put it into this version"
+        },
     )
     .clicked
     {
         d.overlay = None;
-        patch(d, ctx, &id, Source::Url(link));
+        match target {
+            LinkFor::Pc(id) => patch(d, ctx, &id, Source::Url(link)),
+            LinkFor::Quest => quest_install(d, ctx, ApkSource::Url(link)),
+        }
     }
 }
