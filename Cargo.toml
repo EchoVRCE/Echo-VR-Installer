@@ -1,6 +1,6 @@
 [package]
 name = "echovr-installer"
-version = "0.9.5"
+version = "0.10.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Echo VR Installer / Launcher"
@@ -34,6 +34,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 url = "2.5.8"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 # TLS: the OS stack on Windows (SChannel) and macOS (Security.framework); rustls+ring on
 # Linux so the portable build does not depend on a particular libssl.so.

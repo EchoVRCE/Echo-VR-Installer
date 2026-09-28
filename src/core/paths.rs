@@ -26,11 +26,15 @@ pub fn temp_dir() -> PathBuf {
     cache_dir().join("tmp")
 }
 
-pub fn log_dir() -> PathBuf {
+/// Per-user application data (launcher state, logs).
+pub fn data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("EchoVR_Installer")
-        .join("logs")
+}
+
+pub fn log_dir() -> PathBuf {
+    data_dir().join("logs")
 }
 
 /// Backslashes to slashes, trailing slashes trimmed.

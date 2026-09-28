@@ -4,7 +4,7 @@
 mod assets;
 mod dialogs;
 mod kit;
-mod main_menu;
+mod launcher;
 mod parts;
 mod pc_install;
 mod pc_update;
@@ -15,14 +15,14 @@ mod theme;
 mod tipbox;
 mod wizard;
 
-use main_menu::{MainMenu, Open};
+use launcher::{Dashboard, Open};
 use wizard::{Exit, Wizard, WizardWindow};
 
 pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(crate::version::VERSION_TITLE)
-            .with_inner_size([main_menu::W, main_menu::H])
+            .with_inner_size([launcher::W, launcher::H])
             .with_resizable(false)
             .with_maximize_button(false)
             .with_icon(std::sync::Arc::new(assets::icon())),
@@ -47,7 +47,7 @@ pub fn run() -> anyhow::Result<()> {
 #[derive(Default)]
 struct App {
     assets: assets::Assets,
-    menu: MainMenu,
+    menu: Dashboard,
     wizard: Option<Box<dyn WizardWindow>>,
     wizard_kind: Option<Open>,
     snapshots: Option<snapshot::Snapshotter>,
@@ -79,6 +79,9 @@ impl App {
         let Some(snap) = self.snapshots.as_mut() else {
             return;
         };
+        if let Some(page) = snap.current().map(|s| s.page) {
+            self.menu.page = page;
+        }
         let want = snap.current().and_then(|s| s.wizard);
         if want != self.snap_at {
             match want {
@@ -99,7 +102,7 @@ impl App {
             // Wizards are drawn into the root window for snapshots (see `ui`).
             let size = match &self.wizard {
                 Some(w) if want.is_some() => egui::vec2(w.width(), wizard::FH),
-                _ => egui::vec2(main_menu::W, main_menu::H),
+                _ => egui::vec2(launcher::W, launcher::H),
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
         }
@@ -134,8 +137,12 @@ impl eframe::App for App {
                 Some(Exit::Closed) => {
                     self.wizard = None;
                     self.wizard_kind = None;
+                    self.menu.wizard_closed();
                 }
-                Some(Exit::OpenQuestInstall) => self.open(Open::QuestInstall),
+                Some(Exit::OpenQuestInstall) => {
+                    self.menu.wizard_closed();
+                    self.open(Open::QuestInstall);
+                }
                 None => {}
             }
         }

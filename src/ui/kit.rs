@@ -103,6 +103,68 @@ impl<'a> Kit<'a> {
         r
     }
 
+    /// Runs `f` with painting and interaction clipped to the rect (for scrolling lists).
+    pub fn clipped<R>(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        f: impl FnOnce(&mut Kit) -> R,
+    ) -> R {
+        let saved = self.ui.clip_rect();
+        let r = self.rect(x, y, w, h).intersect(saved);
+        self.ui.set_clip_rect(r);
+        let out = f(self);
+        self.ui.set_clip_rect(saved);
+        out
+    }
+
+    /// Mouse-wheel scrolling over a rect: updates `offset` within `0..=content_h - h`.
+    pub fn scroll(&self, x: f32, y: f32, w: f32, h: f32, content_h: f32, offset: &mut f32) {
+        let r = self.rect(x, y, w, h);
+        if !self.blocked && self.ui.rect_contains_pointer(r) {
+            *offset -= self.ui.input(|i| i.smooth_scroll_delta.y);
+        }
+        *offset = offset.clamp(0.0, (content_h - h).max(0.0));
+    }
+
+    /// A selectable chip, like the wizard's step chips (green when selected).
+    #[allow(clippy::too_many_arguments)]
+    pub fn chip(
+        &mut self,
+        key: &str,
+        text: &str,
+        size: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        selected: bool,
+        tip: &str,
+    ) -> bool {
+        let c = self.area(key, x, y, w, h, tip);
+        let bg = if selected {
+            theme::CHIP_CURRENT_BG
+        } else if c.hovered {
+            Color32::from_rgb(70, 70, 70)
+        } else {
+            theme::CHIP_UPCOMING_BG
+        };
+        self.round_box(x, y, w, h, 8.0, bg, Some(theme::BOX_BORDER));
+        self.text_center(
+            x,
+            y,
+            w,
+            h,
+            text,
+            theme::conthrax(size),
+            theme::WHITE,
+            Some(w - 8.0),
+        );
+        c.clicked
+    }
+
     pub fn ctx(&self) -> egui::Context {
         self.ui.ctx().clone()
     }

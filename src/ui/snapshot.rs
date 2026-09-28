@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{ColorImage, ViewportId};
 
-use super::main_menu::Open;
+use super::launcher::{Open, Page};
 
 static LAST: Mutex<Option<(ViewportId, Arc<ColorImage>)>> = Mutex::new(None);
 
@@ -28,6 +28,7 @@ pub fn capture(ui: &egui::Ui) {
 #[derive(Debug, Clone)]
 pub struct Shot {
     pub name: String,
+    pub page: Page,
     pub wizard: Option<(Open, usize, usize)>,
 }
 
@@ -43,10 +44,20 @@ impl Snapshotter {
     pub fn from_env() -> Option<Snapshotter> {
         let dir = PathBuf::from(std::env::var_os("ECHOVR_SNAPSHOTS")?);
         std::fs::create_dir_all(&dir).ok()?;
-        let mut shots = vec![Shot {
-            name: "main".into(),
+        let mut shots: Vec<Shot> = [
+            ("play", Page::Play),
+            ("versions", Page::Versions),
+            ("mods", Page::Mods),
+            ("servers", Page::Servers),
+            ("settings", Page::Settings),
+        ]
+        .into_iter()
+        .map(|(n, page)| Shot {
+            name: format!("launcher_{n}"),
+            page,
             wizard: None,
-        }];
+        })
+        .collect();
         let wiz = [
             (
                 Open::PcInstall,
@@ -69,6 +80,7 @@ impl Snapshotter {
             for (s, sub) in steps {
                 shots.push(Shot {
                     name: format!("{name}_{s}_{sub}"),
+                    page: Page::Play,
                     wizard: Some((open, s, sub)),
                 });
             }

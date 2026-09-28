@@ -7,6 +7,7 @@ pub mod download;
 pub mod elevation;
 pub mod error;
 pub mod http;
+pub mod launcher;
 pub mod log;
 pub mod manifest;
 pub mod oauth;

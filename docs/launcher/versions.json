@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "versions": [
+    {
+      "id": "pc-latest",
+      "name": "Echo VR (PC, latest)",
+      "channel": "stable",
+      "platform": "pc",
+      "url": "ready-at-dawn-echo-arena.zip",
+      "size": null,
+      "sha256": null,
+      "update_manifest": "https://files.echovr.de/updates/update.manifest",
+      "notes": "The current PC client with community updates."
+    },
+    {
+      "id": "quest-latest",
+      "name": "Echo VR (Quest, latest)",
+      "channel": "stable",
+      "platform": "quest",
+      "url": "echo_quest_27-08-2026.001.apk",
+      "data_url": "_data.zip",
+      "update_manifest": "https://files.echovr.de/updates/quest/update.manifest",
+      "notes": "Installed with the Quest wizard."
+    }
+  ]
+}
