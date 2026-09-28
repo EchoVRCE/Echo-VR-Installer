@@ -150,7 +150,7 @@ impl Catalog {
                     url: "echo_quest_latest.apk".into(),
                     data_url: Some("_data.zip".into()),
                     update_manifest: Some(quest_update::QUEST_MANIFEST_URL.into()),
-                    notes: "Installed with the Quest wizard.".into(),
+                    notes: "Installed over USB from the Quest side of Play.".into(),
                     ..Default::default()
                 },
             ],

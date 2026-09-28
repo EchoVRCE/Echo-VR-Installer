@@ -47,20 +47,6 @@ fn unescape(s: &str) -> String {
     out
 }
 
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' | ':' | '=' | '#' | '!' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 pub fn load_install_path() -> Option<String> {
     let text = std::fs::read_to_string(file()?).ok()?;
     parse(&text)
@@ -68,24 +54,6 @@ pub fn load_install_path() -> Option<String> {
         .find(|(k, _)| k == KEY)
         .map(|(_, v)| v)
         .filter(|v| !v.is_empty())
-}
-
-pub fn save_install_path(path: &str) {
-    let Some(f) = file() else { return };
-    let mut entries = std::fs::read_to_string(&f)
-        .map(|t| parse(&t))
-        .unwrap_or_default();
-    entries.retain(|(k, _)| k != KEY);
-    entries.push((KEY.to_string(), path.to_string()));
-    let mut text = String::from("#Echo VR Installer saved paths\n");
-    for (k, v) in entries {
-        text.push_str(&format!("{}={}\n", escape(&k), escape(&v)));
-    }
-    let result =
-        std::fs::create_dir_all(f.parent().unwrap_or(&f)).and_then(|()| std::fs::write(&f, text));
-    if let Err(e) = result {
-        tracing::warn!("Failed to save install path: {e}");
-    }
 }
 
 #[cfg(test)]
@@ -106,8 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_round_trip() {
-        let v = "C:/a=b#c\\d";
-        assert_eq!(unescape(&escape(v)), v);
+    fn unescapes_java_escapes() {
+        assert_eq!(unescape("C\\:/a\\=b\\#c\\\\d"), "C:/a=b#c\\d");
     }
 }

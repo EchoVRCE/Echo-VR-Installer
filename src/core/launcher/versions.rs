@@ -33,7 +33,7 @@ pub fn install(
     on: &mut dyn FnMut(Step),
 ) -> Result<InstalledVersion> {
     if entry.platform != Platform::Pc {
-        bail!("Quest versions are installed with the Quest wizard.");
+        bail!("Quest versions are installed from the Quest side of the Play page.");
     }
     let root = root_for(library, &entry.id);
     if paths::has_echo_install(&root) {

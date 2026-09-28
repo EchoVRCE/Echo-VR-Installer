@@ -1,6 +1,6 @@
-//! The launcher dashboard (root window): a left icon rail, a transparent top bar with
-//! status pills, and full-bleed pages over darkened game art. See `ui/style.rs` for the
-//! design system. The installer wizards open from here and keep their classic look.
+//! The launcher (root window): a left icon rail, the installer's blue status bar, and
+//! pages over the game art. See `ui/style.rs` for the widgets. Installing, patching,
+//! SteamVR setup and the Quest all run inline (`setup.rs`).
 
 mod play;
 mod settings;
@@ -24,15 +24,6 @@ use crate::core::launcher::game::{GameState, Monitor};
 use crate::core::launcher::quest::QuestInfo;
 use crate::core::launcher::store::{InstalledVersion, LauncherState, Target};
 use crate::core::launcher::versions::Step;
-
-/// Wizards the dashboard can open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Open {
-    PcInstall,
-    PcUpdate,
-    QuestInstall,
-    QuestUpdate,
-}
 
 pub const CREDITS: &str = "Copyright for Echo VR is by Meta/Ready at Dawn!\n\
 This launcher is not at all associated with them!\n\n\
@@ -191,7 +182,6 @@ impl Dashboard {
     /// First frame: load state, import existing installs, start the monitor and catalogue.
     fn start(&mut self, ctx: &egui::Context) {
         self.started = true;
-        self.dialogs.modern = true;
         self.state = if self.demo {
             demo_state()
         } else {
@@ -311,18 +301,6 @@ impl Dashboard {
         self.catalog_loading = true;
         self.worker
             .spawn(ctx, |tx| tx.send(Msg::Catalog(Catalog::load())));
-    }
-
-    /// After a wizard closes: pick up an install it made at the saved path.
-    pub fn wizard_closed(&mut self) {
-        if let Some(p) = crate::core::config::load_install_path() {
-            let root = crate::core::paths::resolve_install_root(&p);
-            if crate::core::paths::has_echo_install(&root)
-                && self.state.add_external(&root, None).is_some()
-            {
-                self.save();
-            }
-        }
     }
 
     fn game(&self) -> GameState {
@@ -573,8 +551,8 @@ impl Dashboard {
         !self.jobs.is_empty()
     }
 
-    /// Draws the dashboard; returns a wizard to open.
-    pub fn show(&mut self, kit: &mut Kit) -> Option<Open> {
+    /// Draws the launcher.
+    pub fn show(&mut self, kit: &mut Kit) {
         let ctx = kit.ctx();
         if !self.started {
             self.start(&ctx);
@@ -611,10 +589,9 @@ impl Dashboard {
         if self.overlay.is_some() {
             kit.blocked = true;
         }
-        let mut open = None;
         match self.page {
-            Page::Play => open = play::show(self, kit, &ctx),
-            Page::Versions => open = versions::show(self, kit, &ctx),
+            Page::Play => play::show(self, kit, &ctx),
+            Page::Versions => versions::show(self, kit, &ctx),
             Page::Settings => settings::show(self, kit, &ctx),
             Page::Mods => empty_state(
                 kit,
@@ -637,7 +614,6 @@ impl Dashboard {
         if self.any_job() || self.quest_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
-        open
     }
 
     fn rail(&mut self, kit: &mut Kit) {

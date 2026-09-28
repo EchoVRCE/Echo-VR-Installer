@@ -1,4 +1,4 @@
-//! Development aid: `ECHOVR_SNAPSHOTS=<dir>` walks the main menu and every wizard step,
+//! Development aid: `ECHOVR_SNAPSHOTS=<dir>` walks the launcher's pages and states,
 //! saves a PNG of each window into `<dir>`, and exits. Used to compare the port against
 //! the Java UI without screen-recording permissions.
 
@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{ColorImage, ViewportId};
 
-use super::launcher::{Open, Page, SnapVariant};
+use super::launcher::{Page, SnapVariant};
 
 static LAST: Mutex<Option<(ViewportId, Arc<ColorImage>)>> = Mutex::new(None);
 
@@ -30,7 +30,6 @@ pub struct Shot {
     pub name: String,
     pub page: Page,
     pub variant: Option<SnapVariant>,
-    pub wizard: Option<(Open, usize, usize)>,
 }
 
 pub struct Snapshotter {
@@ -60,7 +59,6 @@ impl Snapshotter {
             name: format!("launcher_{n}"),
             page,
             variant: None,
-            wizard: None,
         })
         .collect();
         for (n, v) in [
@@ -74,36 +72,7 @@ impl Snapshotter {
                 name: format!("launcher_{n}"),
                 page: Page::Play,
                 variant: Some(v),
-                wizard: None,
             });
-        }
-        let wiz = [
-            (
-                Open::PcInstall,
-                "pc_install",
-                vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)],
-            ),
-            (Open::PcUpdate, "pc_update", vec![(0, 0), (1, 0), (2, 0)]),
-            (
-                Open::QuestInstall,
-                "quest_install",
-                vec![(0, 0), (1, 0), (2, 0), (3, 0)],
-            ),
-            (
-                Open::QuestUpdate,
-                "quest_update",
-                vec![(0, 0), (1, 0), (2, 0)],
-            ),
-        ];
-        for (open, name, steps) in wiz {
-            for (s, sub) in steps {
-                shots.push(Shot {
-                    name: format!("{name}_{s}_{sub}"),
-                    page: Page::Play,
-                    variant: None,
-                    wizard: Some((open, s, sub)),
-                });
-            }
         }
         // `ECHOVR_SNAPSHOTS_ONLY=play,setup`: only shots whose name contains one of these.
         if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {

@@ -2,7 +2,7 @@
 //! buttons (9-slice stretched to any width), magenta translucent panels with the dark
 //! 1px rim, the wine sidebar colour, banner headers with cyan stripes, the blue status
 //! bar and the green/grey step chips. Page layout is the launcher's; the look is the
-//! installer's (`kit.rs`, `wizard.rs`).
+//! installer's (`kit.rs`).
 
 use egui::{
     pos2, vec2, Color32, CursorIcon, Id, Mesh, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,

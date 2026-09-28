@@ -94,7 +94,7 @@ pub fn build(
         }),
         Runtime::Revive => {
             let Some(dir) = revive_dir else {
-                bail!("Revive is not installed. Install it from the PC install wizard's Steam Patch step.");
+                bail!("Revive is not installed. Set up SteamVR from the PLAY button first.");
             };
             let mut a = vec![exe.to_string_lossy().into_owned(), "-nosymbollookup".into()];
             a.extend(args);

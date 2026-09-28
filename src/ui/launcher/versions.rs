@@ -8,7 +8,6 @@ use crate::core::launcher::versions;
 use crate::core::{paths, platform};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
-use crate::ui::launcher::Open;
 use crate::ui::parts;
 use crate::ui::style::{self, Icon, MenuItem, Variant};
 
@@ -154,7 +153,7 @@ fn remove(d: &mut Dashboard, id: &str) {
     d.save();
 }
 
-pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
+pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if let Some(a) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (a.is_yes(), d.pending_remove.take()) {
             remove(d, &id);
@@ -191,7 +190,8 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         };
     }
     if d.versions_platform == Platform::Quest {
-        return quest(d, kit, ctx);
+        quest(d, kit, ctx);
+        return;
     }
 
     let installed: Vec<InstalledVersion> = d.state.versions.clone();
@@ -304,7 +304,6 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
     {
         d.refresh_catalog(ctx);
     }
-    None
 }
 
 /// A row's box with the name (and badges after it) over a detail line; returns where
@@ -573,7 +572,7 @@ fn available_row(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, e: &Versio
     }
 }
 
-fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
+fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (w, h) = (640.0, 240.0);
     let x = X0 + (CW - w) / 2.0;
     let y = 180.0;
@@ -640,5 +639,4 @@ fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> 
         d.play_platform = Platform::Quest;
         setup::quest_update(d, ctx);
     }
-    None
 }

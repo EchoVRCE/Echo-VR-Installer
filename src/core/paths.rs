@@ -59,19 +59,6 @@ pub fn has_echo_install(root: &str) -> bool {
     !root.is_empty() && Path::new(&format!("{root}/{ARENA_MARKER}")).is_file()
 }
 
-pub fn default_install_root() -> String {
-    if cfg!(windows) {
-        "C:/EchoVR".into()
-    } else {
-        normalize(
-            &std::env::current_dir()
-                .unwrap_or_default()
-                .join("echovr")
-                .to_string_lossy(),
-        )
-    }
-}
-
 /// Resolves the Echo install ROOT from whatever folder the user picked: the root itself,
 /// the `ready-at-dawn-echo-arena` folder, a folder inside it, or a folder up to three
 /// levels above the install. Returns the cleaned selection unchanged when nothing is found

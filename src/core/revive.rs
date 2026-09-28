@@ -1,4 +1,4 @@
-//! Backend for the PC wizard's "Steam Patch (Revive)" stage: locating/installing Revive,
+//! SteamVR support through Revive: locating/installing Revive,
 //! the Revive-injector desktop shortcut, and the Meta Horizon store artwork.
 
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ pub fn needs_elevation(e: &anyhow::Error) -> bool {
     })
 }
 
-// ---- revive.vrmanifest (kept for the launcher; not wired into the wizard) ----
+// ---- revive.vrmanifest (not wired in yet) ----
 
 /// Extracts the shared library id from the first existing entry's `/library <id>`.
 #[allow(dead_code)] // for the launcher's revive.vrmanifest support

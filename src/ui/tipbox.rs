@@ -1,15 +1,10 @@
-//! The TipBox (316x147) and its Clippy easter egg (double-click the box).
+//! The Clippy easter egg from the installer's TipBox (double-click the About logo).
 
 use std::time::{Duration, Instant};
 
 use egui::{pos2, vec2, Color32, Rect};
 
 use super::kit::Kit;
-use super::theme::{self, rgba};
-
-pub const W: f32 = 316.0;
-pub const H: f32 = 147.0;
-const DEFAULT_TEXT: &str = "Hover over items for tips.";
 
 const TICK: Duration = Duration::from_millis(80);
 const RISE_FRAMES: usize = 10;
@@ -17,101 +12,6 @@ const FALL_FRAMES: usize = 10;
 const HOLD: Duration = Duration::from_millis(2000);
 const CLIPPY_W: f32 = 124.0;
 const CLIPPY_H: f32 = 93.0;
-
-#[derive(Default)]
-pub struct TipBox {
-    /// A tip set by an action (not a hover); shown until the pointer next leaves a widget.
-    sticky: Option<String>,
-    shown: Option<String>,
-    was_hovering: bool,
-    clippy: Clippy,
-}
-
-impl TipBox {
-    /// Shows `tip` until the user hovers something else (Swing `showTip` without a hover).
-    pub fn show_tip(&mut self, tip: &str) {
-        self.sticky = Some(tip.to_string());
-    }
-
-    /// Decides this frame's text from what the kit saw hovered.
-    fn update(&mut self, hovered_tip: Option<String>) {
-        match hovered_tip {
-            Some(t) => {
-                self.shown = Some(t);
-                self.sticky = None;
-                self.was_hovering = true;
-            }
-            None if self.was_hovering => {
-                self.shown = None;
-                self.was_hovering = false;
-            }
-            None => self.shown = self.sticky.clone(),
-        }
-    }
-
-    /// Clippy rises out from *behind* the box, so this is drawn before everything else.
-    pub fn draw_clippy(&mut self, kit: &mut Kit, x: f32, y: f32) {
-        self.clippy.draw(kit, x, y, W);
-    }
-
-    /// Draws the box at (x, y) with the tip of whatever the kit saw hovered this frame.
-    /// Call after all tip-bearing widgets of the frame.
-    pub fn draw(&mut self, kit: &mut Kit, x: f32, y: f32) {
-        let hovered = kit.tip.take();
-        self.update(hovered);
-
-        kit.round_box(
-            x,
-            y,
-            W,
-            H,
-            15.0,
-            rgba(200, 0, 150, 200),
-            Some(rgba(50, 50, 50, 255)),
-        );
-        kit.image("tipbox_top.png", x + 8.0, y + 8.0, 300.0, 26.0);
-        kit.text_center(
-            x + 8.0,
-            y + 8.0,
-            300.0,
-            26.0,
-            "Tipbox",
-            theme::conthrax(20.0),
-            theme::WHITE,
-            None,
-        );
-        kit.round_box(
-            x + 16.0,
-            y + 39.0,
-            284.0,
-            100.0,
-            8.0,
-            rgba(70, 70, 70, 180),
-            Some(rgba(50, 50, 50, 200)),
-        );
-        let text = self.shown.as_deref().unwrap_or(DEFAULT_TEXT);
-        kit.text_center(
-            x + 16.0,
-            y + 39.0,
-            284.0,
-            100.0,
-            text,
-            theme::arial(14.0),
-            theme::WHITE,
-            Some(278.0),
-        );
-
-        if !kit.blocked {
-            let rect = kit.rect(x, y, W, H);
-            let resp = kit
-                .ui
-                .interact(rect, egui::Id::new("tipbox-clippy"), egui::Sense::click());
-            if resp.double_clicked() {
-                self.clippy.trigger(kit.ui.ctx());
-            }
-        }
-    }
-}
 
 /// The Clippy easter egg: rises from behind an edge, idles, and sinks back.
 #[derive(Default)]

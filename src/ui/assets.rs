@@ -8,19 +8,6 @@ use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
 const IMAGES: &[(&str, &[u8])] = &[
     (
-        "Echox720.png",
-        include_bytes!("../../assets/img/Echox720.png"),
-    ),
-    (
-        "EchoArena.jpg",
-        include_bytes!("../../assets/img/EchoArena.jpg"),
-    ),
-    ("Echo2.jpg", include_bytes!("../../assets/img/Echo2.jpg")),
-    (
-        "Marcelus.png",
-        include_bytes!("../../assets/img/Marcelus.png"),
-    ),
-    (
         "tipbox_top.png",
         include_bytes!("../../assets/img/tipbox_top.png"),
     ),

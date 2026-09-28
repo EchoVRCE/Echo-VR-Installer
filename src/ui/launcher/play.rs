@@ -13,7 +13,6 @@ use crate::core::launcher::{launch, quest};
 use crate::core::{paths, revive};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
-use crate::ui::launcher::Open;
 use crate::ui::style::{self, Icon, MenuItem, Variant};
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
@@ -25,7 +24,7 @@ const SPLIT_W: f32 = 290.0;
 const CARDS_Y: f32 = 508.0;
 const CARD_H: f32 = 168.0;
 
-pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
+pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let sel = if d.play_platform == Platform::Pc {
         0
     } else {
@@ -104,7 +103,7 @@ enum Main {
     Nothing,
 }
 
-fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
+fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let target = d.target();
     let id = match &target {
         Target::Installed(v) | Target::Missing(v) => Some(v.id.clone()),
@@ -364,7 +363,6 @@ fn pc(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
         _ => updates_card(d, kit, ctx, None),
     }
     quest_card(d, kit, ctx, 2);
-    None
 }
 
 fn versions_root(d: &Dashboard, id: &str) -> String {
@@ -909,7 +907,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context) {
 
 // ---- Quest ----
 
-fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<Open> {
+fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let ready = d.quest_conn.status == Some(Status::Ready);
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
     let (title, sub) = quest_texts(d);
@@ -1200,5 +1198,4 @@ fn quest_hero(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Option<O
             "https://learn.adafruit.com/sideloading-on-oculus-quest/enable-developer-mode",
         );
     }
-    None
 }

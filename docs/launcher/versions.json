@@ -20,7 +20,7 @@
       "url": "echo_quest_27-08-2026.001.apk",
       "data_url": "_data.zip",
       "update_manifest": "https://files.echovr.de/updates/quest/update.manifest",
-      "notes": "Installed with the Quest wizard."
+      "notes": "Installed over USB from the Quest side of Play."
     }
   ]
 }

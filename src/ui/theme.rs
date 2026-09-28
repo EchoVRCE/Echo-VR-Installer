@@ -77,13 +77,8 @@ pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
 
 pub const WHITE: Color32 = Color32::WHITE;
 pub const BLACK: Color32 = Color32::BLACK;
-/// `Color.LIGHT_GRAY`
-pub const LIGHT_GRAY: Color32 = Color32::from_rgb(192, 192, 192);
-/// `Color.GRAY`
-pub const GRAY: Color32 = Color32::from_rgb(128, 128, 128);
 
 pub const BOX_BORDER: Color32 = rgba(50, 50, 50, 150);
-pub const SECTION_FILL: Color32 = rgba(200, 0, 150, 90);
 pub const SIDEBAR_FILL: Color32 = rgba(100, 0, 50, 220);
 
 pub const STATUS_IDLE: Color32 = Color32::from_rgb(50, 90, 150);
@@ -96,16 +91,10 @@ pub const CHIP_UPCOMING_BG: Color32 = Color32::from_rgb(40, 40, 40);
 pub const BUTTON_TEXT: Color32 = Color32::from_rgb(230, 230, 230);
 pub const BUTTON_TEXT_HOVER: Color32 = Color32::from_rgb(250, 250, 250);
 
-pub const FIELD_BG: Color32 = rgba(30, 30, 30, 200);
-pub const FIELD_BG_VALID: Color32 = rgba(40, 130, 40, 210);
 pub const FIELD_BG_INVALID: Color32 = rgba(150, 45, 45, 210);
 pub const PLACEHOLDER: Color32 = Color32::from_rgb(170, 170, 170);
 
-pub const LABEL_BG: Color32 = rgba(60, 70, 100, 200);
 pub const PROGRESS_BG: Color32 = rgba(255, 255, 255, 200);
 
 pub const MARK_OK: Color32 = Color32::from_rgb(80, 255, 0);
 pub const MARK_BAD: Color32 = Color32::from_rgb(255, 80, 80);
-pub const QUEST_OK: Color32 = Color32::from_rgb(0, 200, 0);
-pub const DONE_GREEN: Color32 = Color32::from_rgb(0, 255, 0);
-pub const CURRENT_GREEN: Color32 = Color32::from_rgb(0, 180, 0);
