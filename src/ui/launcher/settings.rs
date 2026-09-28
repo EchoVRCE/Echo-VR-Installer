@@ -14,16 +14,18 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // Library.
     let y = 112.0;
     kit.titled_card(x, y, W, 128.0, "Library");
-    if kit.input(
+    let tip = format!("Where new versions are installed:\n{}", d.library_field);
+    if kit.input_with(
         "library",
         &mut d.library_field,
         x + 20.0,
-        y + 46.0,
+        y + 47.0,
         W - 172.0,
-        40.0,
+        style::MID,
         "",
         false,
-        "Where new versions are installed",
+        &tip,
+        style::body(14.0),
     ) {
         set_library(d);
     }
@@ -34,9 +36,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Some(Icon::Folder),
             "Browse",
             x + W - 140.0,
-            y + 46.0,
+            y + 47.0,
             120.0,
-            40.0,
+            style::MID,
             !d.any_job(),
             "Pick the library folder",
         )
@@ -114,12 +116,27 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         open_dir(d, &paths::data_dir());
     }
 
-    // About -- Clippy rises from behind the card's top edge.
+    // Launching.
     let y = 384.0;
+    kit.titled_card(x, y, W, 92.0, "Launching");
+    if kit.toggle(
+        "minimize",
+        &mut d.state.minimize_on_launch,
+        "Minimize the launcher when Echo VR starts",
+        x + 20.0,
+        y + 50.0,
+        true,
+        "Keeps the launcher out of the way while you play",
+    ) {
+        d.save();
+    }
+
+    // About -- Clippy rises from behind the card's top edge.
+    let y = 492.0;
     d.clippy.draw(kit, x + W - 200.0, y, 180.0);
-    kit.titled_card(x, y, W, 296.0, "About");
-    kit.image("icon.png", x + 20.0, y + 46.0, 48.0, 48.0);
-    let logo = kit.rect(x + 20.0, y + 46.0, 48.0, 48.0);
+    kit.titled_card(x, y, W, 116.0, "About");
+    kit.image("icon.png", x + 20.0, y + 48.0, 48.0, 48.0);
+    let logo = kit.rect(x + 20.0, y + 48.0, 48.0, 48.0);
     if !kit.blocked {
         let r = kit
             .ui
@@ -130,31 +147,35 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     }
     kit.text(
         x + 84.0,
-        y + 48.0,
+        y + 50.0,
         "Echo VR Launcher",
         style::display(18.0),
         style::TEXT,
     );
     kit.text(
         x + 84.0,
-        y + 76.0,
+        y + 78.0,
         crate::version::VERSION_TITLE,
         style::body(13.0),
         style::TEXT_DIM,
     );
-    let mut job = egui::text::LayoutJob::simple(
-        CREDITS.to_string(),
-        style::body(13.0),
-        style::TEXT_DIM,
-        W - 40.0,
-    );
-    job.halign = egui::Align::LEFT;
-    let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
-    kit.ui.painter().galley(
-        kit.rect(x + 20.0, y + 114.0, 0.0, 0.0).min,
-        g,
-        style::TEXT_DIM,
-    );
+    if kit
+        .flat_button(
+            "credits",
+            Variant::Secondary,
+            None,
+            "Credits",
+            x + W - 150.0,
+            y + 60.0,
+            130.0,
+            style::SMALL,
+            true,
+            "Who made this possible",
+        )
+        .clicked
+    {
+        d.dialogs.info("Credits", CREDITS);
+    }
 }
 
 fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {

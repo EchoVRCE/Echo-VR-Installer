@@ -83,8 +83,9 @@ impl App {
         let Some(snap) = self.snapshots.as_mut() else {
             return;
         };
-        if let Some(page) = snap.current().map(|s| s.page) {
-            self.menu.page = page;
+        if let Some(shot) = snap.current() {
+            self.menu.page = shot.page;
+            self.menu.snap_variant = shot.variant;
         }
         let want = snap.current().and_then(|s| s.wizard);
         if want != self.snap_at {

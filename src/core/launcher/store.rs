@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::catalog::{Catalog, VersionEntry};
 use crate::core::paths;
 
 pub const SCHEMA: u32 = 1;
@@ -83,6 +84,19 @@ pub struct LauncherState {
     pub last_lobby: String,
     /// The one-time import of pre-existing installs has run.
     pub imported: bool,
+    /// Minimize the launcher window once Echo VR has started.
+    pub minimize_on_launch: bool,
+}
+
+/// What the PLAY button acts on: the selected version, installed or not.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Target {
+    Installed(InstalledVersion),
+    /// Installed, but `echovr.exe` is gone from its folder.
+    Missing(InstalledVersion),
+    /// A catalogue version that is not installed yet.
+    Available(VersionEntry),
+    None,
 }
 
 impl Default for LauncherState {
@@ -95,6 +109,7 @@ impl Default for LauncherState {
             profile: LaunchProfile::default(),
             last_lobby: String::new(),
             imported: false,
+            minimize_on_launch: true,
         }
     }
 }
@@ -145,11 +160,50 @@ impl LauncherState {
         self.versions.iter().find(|v| v.id == id)
     }
 
-    pub fn selected_version(&self) -> Option<&InstalledVersion> {
-        self.selected
-            .as_deref()
-            .and_then(|id| self.version(id))
-            .or(self.versions.first())
+    /// The PLAY target: the selected installed version, else the selected catalogue PC
+    /// version, else the first installed one, else the first catalogue PC version.
+    /// `present` tells whether an install root still holds the game.
+    pub fn target(&self, catalog: Option<&Catalog>, present: impl Fn(&str) -> bool) -> Target {
+        let installed = |v: &InstalledVersion| {
+            if present(&v.root) {
+                Target::Installed(v.clone())
+            } else {
+                Target::Missing(v.clone())
+            }
+        };
+        let available = |id: &str| {
+            catalog
+                .and_then(|c| c.pc().find(|e| e.id == id))
+                .map(|e| Target::Available(e.clone()))
+        };
+        if let Some(id) = self.selected.as_deref() {
+            if let Some(v) = self.version(id) {
+                return installed(v);
+            }
+            if let Some(t) = available(id) {
+                return t;
+            }
+        }
+        if let Some(v) = self.versions.first() {
+            return installed(v);
+        }
+        catalog
+            .and_then(|c| c.pc().next())
+            .map(|e| Target::Available(e.clone()))
+            .unwrap_or(Target::None)
+    }
+
+    /// Catalogue PC versions that are not installed yet.
+    pub fn not_installed<'a>(&self, catalog: &'a Catalog) -> Vec<&'a VersionEntry> {
+        catalog
+            .pc()
+            .filter(|e| {
+                !self
+                    .versions
+                    .iter()
+                    .any(|v| v.id == e.id || v.catalog_id.as_deref() == Some(&e.id))
+            })
+            .collect()
     }
 
     /// Adds or replaces (by id) a version, keeping the list stable.
@@ -281,5 +335,43 @@ mod tests {
         );
         assert_eq!(s.add_external("D:/Echo", None).unwrap(), "existing-2");
         assert_eq!(s.selected.as_deref(), Some("existing"));
+    }
+
+    fn catalog() -> Catalog {
+        let mut c = Catalog::builtin();
+        c.versions.push(VersionEntry {
+            id: "pc-old".into(),
+            name: "Old".into(),
+            ..Default::default()
+        });
+        c
+    }
+
+    #[test]
+    fn targets() {
+        let c = catalog();
+        let mut s = LauncherState::default();
+        // Nothing installed: the first catalogue PC version.
+        assert!(
+            matches!(s.target(Some(&c), |_| true), Target::Available(e) if e.id == "pc-latest")
+        );
+        assert_eq!(s.target(None, |_| true), Target::None);
+        // A selected catalogue version.
+        s.selected = Some("pc-old".into());
+        assert!(matches!(s.target(Some(&c), |_| true), Target::Available(e) if e.id == "pc-old"));
+        assert_eq!(s.not_installed(&c).len(), 2);
+        // Installed and selected; its folder may be gone.
+        s.upsert(InstalledVersion {
+            id: "pc-old".into(),
+            root: "/lib/pc-old".into(),
+            catalog_id: Some("pc-old".into()),
+            ..Default::default()
+        });
+        assert!(matches!(s.target(Some(&c), |_| true), Target::Installed(v) if v.id == "pc-old"));
+        assert!(matches!(s.target(Some(&c), |_| false), Target::Missing(_)));
+        assert_eq!(s.not_installed(&c).len(), 1);
+        // An unknown selection falls back to the first installed version.
+        s.selected = Some("gone".into());
+        assert!(matches!(s.target(Some(&c), |_| true), Target::Installed(v) if v.id == "pc-old"));
     }
 }

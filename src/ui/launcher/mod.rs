@@ -18,10 +18,10 @@ use super::style::{self, Icon};
 use super::tipbox::Clippy;
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
-use crate::core::launcher::catalog::{Catalog, Platform};
+use crate::core::launcher::catalog::{Catalog, Platform, VersionEntry};
 use crate::core::launcher::game::{GameState, Monitor};
 use crate::core::launcher::quest::QuestInfo;
-use crate::core::launcher::store::{InstalledVersion, LauncherState};
+use crate::core::launcher::store::{InstalledVersion, LauncherState, Target};
 use crate::core::launcher::versions::Step;
 
 /// Wizards the dashboard can open.
@@ -94,9 +94,23 @@ enum Msg {
 }
 
 struct Job {
+    /// What runs, for the status bar ("Installing Echo VR (PC, latest)").
+    title: String,
+    /// The latest progress line.
     label: String,
     fraction: Option<f32>,
     cancel: Arc<AtomicBool>,
+}
+
+/// Snapshot mode: extra states to capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapVariant {
+    /// The PLAY menu is open.
+    PlayMenu,
+    /// A version that is not installed is selected.
+    NotInstalled,
+    /// That version is being installed.
+    Installing,
 }
 
 #[derive(Default)]
@@ -127,6 +141,16 @@ pub struct Dashboard {
     clippy: Clippy,
     /// Snapshot mode: made-up state, never saved.
     pub demo: bool,
+    pub snap_variant: Option<SnapVariant>,
+    applied_variant: Option<SnapVariant>,
+    /// A lobby link found on the clipboard when the window gained focus.
+    clip_lobby: Option<String>,
+    /// When the game was first seen running.
+    game_since: Option<std::time::Instant>,
+    /// The Quest was checked quietly once already.
+    quest_auto_checked: bool,
+    /// Free space in the library: (library, bytes, when measured).
+    free_cache: Option<(String, Option<u64>, std::time::Instant)>,
     started: bool,
     deleting_cache: bool,
 }
@@ -156,9 +180,83 @@ impl Dashboard {
             self.save();
         }
         self.library_field = self.state.library.clone();
+        if self.demo {
+            self.catalog = Some(demo_catalog());
+            return;
+        }
         let c = ctx.clone();
         self.monitor = Some(Monitor::start(move || c.request_repaint()));
         self.refresh_catalog(ctx);
+        self.read_clipboard_lobby();
+    }
+
+    /// Offers a lobby link from the clipboard (checked when the window gains focus).
+    fn read_clipboard_lobby(&mut self) {
+        let clip = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut c| c.get_text().ok())
+            .map(|t| t.trim().to_string());
+        self.clip_lobby = clip.filter(|t| {
+            t.len() < 300
+                && crate::core::launcher::launch::lobby_uuid(t).is_some()
+                && crate::core::launcher::launch::lobby_uuid(t)
+                    != crate::core::launcher::launch::lobby_uuid(&self.state.last_lobby)
+        });
+    }
+
+    /// Free bytes where new versions are installed (measured at most every 10 s).
+    fn free_bytes(&mut self) -> Option<u64> {
+        if self.demo {
+            return Some(120_000_000_000);
+        }
+        let lib = self.state.library.clone();
+        match &self.free_cache {
+            Some((l, b, at)) if *l == lib && at.elapsed().as_secs() < 10 => *b,
+            _ => {
+                let b = crate::core::platform::free_space(std::path::Path::new(&lib));
+                self.free_cache = Some((lib, b, std::time::Instant::now()));
+                b
+            }
+        }
+    }
+
+    /// What PLAY acts on.
+    fn target(&self) -> Target {
+        let demo = self.demo;
+        self.state.target(self.catalog.as_ref(), |root| {
+            demo || crate::core::paths::has_echo_install(root)
+        })
+    }
+
+    /// Snapshot mode: puts the dashboard into `snap_variant`'s state.
+    fn apply_snap_variant(&mut self, ctx: &egui::Context) {
+        if self.snap_variant == self.applied_variant {
+            return;
+        }
+        self.applied_variant = self.snap_variant;
+        self.jobs.clear();
+        self.state.selected = Some("pc-latest".into());
+        let open = egui::Id::new(("style", "play-split")).with("open");
+        ctx.data_mut(|d| d.insert_temp(open, false));
+        match self.snap_variant {
+            Some(SnapVariant::PlayMenu) => {
+                ctx.data_mut(|d| d.insert_temp(open, true));
+            }
+            Some(SnapVariant::NotInstalled) => self.state.selected = Some("pc-34.4".into()),
+            Some(SnapVariant::Installing) => {
+                self.state.selected = Some("pc-34.4".into());
+                self.jobs.insert(
+                    "pc-34.4".into(),
+                    Job {
+                        title: "Installing Echo VR 34.4 (PC)".into(),
+                        label: "Downloading... 42.0%".into(),
+                        fraction: Some(0.42),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    },
+                );
+            }
+            None => {}
+        }
     }
 
     fn refresh_catalog(&mut self, ctx: &egui::Context) {
@@ -269,7 +367,7 @@ impl Dashboard {
         match r {
             JobResult::Installed(v) => {
                 let name = v.name.clone();
-                if self.state.selected_version().is_none() {
+                if self.state.selected.is_none() {
                     self.state.selected = Some(v.id.clone());
                 }
                 self.state.upsert(v);
@@ -311,6 +409,7 @@ impl Dashboard {
         &mut self,
         ctx: &egui::Context,
         id: &str,
+        title: &str,
         label: &str,
         f: impl FnOnce(&AtomicBool, &mut dyn FnMut(Step)) -> JobResult + Send + 'static,
     ) {
@@ -318,6 +417,7 @@ impl Dashboard {
         self.jobs.insert(
             id.to_string(),
             Job {
+                title: title.to_string(),
                 label: label.to_string(),
                 fraction: None,
                 cancel: cancel.clone(),
@@ -348,6 +448,22 @@ impl Dashboard {
             self.start(&ctx);
         }
         self.poll(&ctx);
+        if self.demo {
+            self.apply_snap_variant(&ctx);
+        } else if ctx.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::WindowFocused(true)))
+        }) {
+            self.read_clipboard_lobby();
+        }
+        // Track how long the game has been running.
+        match (self.game().is_running(), self.game_since) {
+            (true, None) => self.game_since = Some(std::time::Instant::now()),
+            (false, Some(_)) => self.game_since = None,
+            _ => {}
+        }
 
         // Backdrop: hero art on Play, a calm gradient elsewhere.
         match (self.page, self.play_platform) {
@@ -452,10 +568,22 @@ impl Dashboard {
         };
         let (bx, bw) = (RAIL + 16.0, W - RAIL - 32.0);
         kit.round_box(bx, 10.0, bw, 32.0, 8.0, fill, Some(style::BORDER));
-        let mut status = game.label();
-        if let Some(v) = self.state.selected_version() {
-            status = format!("{status}   •   {}", v.name);
-        }
+        let status = if let Some(j) = self.jobs.values().next() {
+            match j.fraction {
+                Some(f) => format!("{}   •   {:.0}%", j.title, f * 100.0),
+                None => format!("{}   •   {}", j.title, j.label),
+            }
+        } else if let (true, Some(since)) = (game.is_running(), self.game_since) {
+            let mins = since.elapsed().as_secs() / 60;
+            ctx.request_repaint_after(std::time::Duration::from_secs(20));
+            if mins == 0 {
+                game.label()
+            } else {
+                format!("{}   •   {mins} min", game.label())
+            }
+        } else {
+            game.label()
+        };
         kit.text_center(
             bx,
             10.0,
@@ -468,12 +596,12 @@ impl Dashboard {
         );
 
         let (qtext, qcolor) = match (self.quest_conn.checking, self.quest_conn.status) {
-            (true, _) => ("Quest: checking", style::CHIP_OFF),
+            (true, _) => ("Quest: checking...", style::CHIP_OFF),
             (_, Some(Status::Ready)) => ("Quest connected", style::OK),
             (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", style::WARN),
-            (_, Some(Status::Ambiguous)) => ("Several devices", style::WARN),
-            (_, Some(Status::None)) => ("No Quest", style::CHIP_OFF),
-            (_, None) => ("Quest: check", style::CHIP_OFF),
+            (_, Some(Status::Ambiguous)) => ("Quest: pick a device", style::WARN),
+            (_, Some(Status::None)) => ("Quest: not connected", style::CHIP_OFF),
+            (_, None) => ("Quest: not checked", style::CHIP_OFF),
         };
         let qw = kit.pill_width(qtext, true);
         let qx = bx + bw - qw - 5.0;
@@ -484,7 +612,7 @@ impl Dashboard {
                 "quest-pill",
                 r,
                 !self.quest_conn.checking,
-                "Check the Quest connection",
+                "Check the USB connection to your Quest",
             )
             .0
             .clicked
@@ -492,7 +620,9 @@ impl Dashboard {
             self.check_quest(ctx, true);
         }
 
-        kit.banner(X0, TITLE_Y, TITLE_W, 40.0, self.page.title(), 16.0);
+        if self.page != Page::Play {
+            kit.banner(X0, TITLE_Y, TITLE_W, 40.0, self.page.title(), 16.0);
+        }
     }
 }
 
@@ -557,4 +687,20 @@ fn demo_state() -> LauncherState {
     s.selected = Some("pc-latest".into());
     s.profile.windowed = true;
     s
+}
+
+/// The built-in catalogue plus an older build that is not installed, for snapshots.
+fn demo_catalog() -> Catalog {
+    let mut c = Catalog::builtin();
+    c.versions.push(VersionEntry {
+        id: "pc-34.4".into(),
+        name: "Echo VR 34.4 (PC)".into(),
+        channel: "archive".into(),
+        platform: Platform::Pc,
+        url: "ready-at-dawn-echo-arena.zip".into(),
+        size: Some(4_270_000_000),
+        notes: "The last official build.".into(),
+        ..Default::default()
+    });
+    c
 }

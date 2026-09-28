@@ -111,6 +111,18 @@ pub fn create_shortcut(
     }
 }
 
+/// Free bytes on the disk holding `path` (the longest matching mount point).
+pub fn free_space(path: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let path = std::path::absolute(path).ok()?;
+    disks
+        .list()
+        .iter()
+        .filter(|d| path.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
+}
+
 pub fn open_folder(path: &Path) -> Result<()> {
     open::that_detached(path).map_err(|e| anyhow::anyhow!("Couldn't open {}: {e}", path.display()))
 }

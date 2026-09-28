@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{ColorImage, ViewportId};
 
-use super::launcher::{Open, Page};
+use super::launcher::{Open, Page, SnapVariant};
 
 static LAST: Mutex<Option<(ViewportId, Arc<ColorImage>)>> = Mutex::new(None);
 
@@ -29,6 +29,7 @@ pub fn capture(ui: &egui::Ui) {
 pub struct Shot {
     pub name: String,
     pub page: Page,
+    pub variant: Option<SnapVariant>,
     pub wizard: Option<(Open, usize, usize)>,
 }
 
@@ -58,9 +59,22 @@ impl Snapshotter {
         .map(|(n, page)| Shot {
             name: format!("launcher_{n}"),
             page,
+            variant: None,
             wizard: None,
         })
         .collect();
+        for (n, v) in [
+            ("play_menu", SnapVariant::PlayMenu),
+            ("play_not_installed", SnapVariant::NotInstalled),
+            ("play_installing", SnapVariant::Installing),
+        ] {
+            shots.push(Shot {
+                name: format!("launcher_{n}"),
+                page: Page::Play,
+                variant: Some(v),
+                wizard: None,
+            });
+        }
         let wiz = [
             (
                 Open::PcInstall,
@@ -84,6 +98,7 @@ impl Snapshotter {
                 shots.push(Shot {
                     name: format!("{name}_{s}_{sub}"),
                     page: Page::Play,
+                    variant: None,
                     wizard: Some((open, s, sub)),
                 });
             }

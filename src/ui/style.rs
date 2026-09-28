@@ -40,6 +40,23 @@ pub const CHIP_OFF: Color32 = theme::CHIP_UPCOMING_BG;
 pub const WARN: Color32 = Color32::from_rgb(210, 140, 20);
 pub const DANGER: Color32 = theme::MARK_BAD;
 
+/// The installer's button image heights. Buttons are only ever drawn at these heights
+/// (stretched in width only), so their rims look exactly like the installer's.
+pub const BIG: f32 = 50.0;
+pub const MID: f32 = 38.0;
+pub const SMALL: f32 = 25.0;
+
+/// The native button height closest to `h`.
+pub fn snap(h: f32) -> f32 {
+    if h >= 44.0 {
+        BIG
+    } else if h >= 32.0 {
+        MID
+    } else {
+        SMALL
+    }
+}
+
 pub const R_CARD: u8 = 8; // arc 15
 pub const R_CONTROL: u8 = 4; // arc 8
 pub const ANIM: f32 = 0.12;
@@ -97,6 +114,84 @@ pub enum Icon {
     Info,
 }
 
+/// What the split PLAY button reports back.
+pub struct Split {
+    /// The main part was clicked.
+    pub main: bool,
+    /// The whole button, for anchoring its menu.
+    pub menu_rect: Rect,
+}
+
+/// One entry of a popup menu.
+pub enum MenuItem {
+    /// A small caps section title.
+    Header(String),
+    Divider,
+    Row(MenuRow),
+}
+
+#[derive(Default)]
+pub struct MenuRow {
+    pub label: String,
+    /// A second, smaller line.
+    pub sub: Option<String>,
+    /// Marked with a green check.
+    pub current: bool,
+    /// A chip after the label, in the given colour.
+    pub badge: Option<(String, Color32)>,
+    pub icon: Option<Icon>,
+    pub tip: String,
+}
+
+impl MenuItem {
+    pub fn row(label: &str) -> MenuRow {
+        MenuRow {
+            label: label.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn height(&self) -> f32 {
+        match self {
+            MenuItem::Header(_) => 26.0,
+            MenuItem::Divider => 9.0,
+            MenuItem::Row(r) if r.sub.is_some() => 46.0,
+            MenuItem::Row(_) => 34.0,
+        }
+    }
+}
+
+impl MenuRow {
+    pub fn current(mut self, on: bool) -> MenuItem {
+        self.current = on;
+        MenuItem::Row(self)
+    }
+
+    pub fn sub(mut self, sub: impl Into<String>) -> MenuRow {
+        self.sub = Some(sub.into());
+        self
+    }
+
+    pub fn badge(mut self, text: impl Into<String>, color: Color32) -> MenuRow {
+        self.badge = Some((text.into(), color));
+        self
+    }
+
+    pub fn icon(mut self, icon: Icon) -> MenuRow {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn tip(mut self, tip: impl Into<String>) -> MenuRow {
+        self.tip = tip.into();
+        self
+    }
+
+    pub fn item(self) -> MenuItem {
+        MenuItem::Row(self)
+    }
+}
+
 /// What a control reports back.
 #[derive(Default, Clone, Copy)]
 pub struct Resp {
@@ -108,8 +203,6 @@ pub struct Resp {
 pub enum Variant {
     /// The big slanted button (PLAY, INSTALL).
     Primary,
-    /// Primary, tinted magenta (STOP).
-    Danger,
     /// A regular slanted button.
     Secondary,
     /// A regular slanted button, slightly transparent (minor actions).
@@ -151,6 +244,17 @@ pub fn nine_h(
                 tint,
             );
         }
+    }
+}
+
+/// Conthrax label size for a button height.
+fn label_size(h: f32) -> f32 {
+    if h >= BIG {
+        20.0
+    } else if h >= MID {
+        13.0
+    } else {
+        11.0
     }
 }
 
@@ -307,6 +411,7 @@ impl Kit<'_> {
         enabled: bool,
         tip: &str,
     ) -> Resp {
+        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
         let r = self.rect(x, y, w, h);
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
         let ([up, hi, down], cap) = button_set(h);
@@ -320,7 +425,6 @@ impl Kit<'_> {
         let (tex, sz) = self.native_tex(img);
         let tint = match (enabled, variant) {
             (false, _) => Color32::from_gray(140),
-            (true, Variant::Danger) => Color32::from_rgb(255, 150, 215),
             (true, Variant::Ghost) => Color32::from_rgba_unmultiplied(255, 255, 255, 215),
             _ => Color32::WHITE,
         };
@@ -330,20 +434,13 @@ impl Kit<'_> {
         } else {
             mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
         };
-        let size = if h >= 48.0 {
-            22.0
-        } else if h >= 36.0 {
-            13.0
-        } else {
-            11.0
-        };
-        let font = display(size);
+        let font = display(label_size(h));
         let tw = if label.is_empty() {
             0.0
         } else {
             self.text_width(label, font.clone())
         };
-        let isz = if h >= 48.0 { 18.0 } else { 14.0 };
+        let isz = if h >= BIG { 18.0 } else { 14.0 };
         let gap = if icon.is_some() && !label.is_empty() {
             10.0
         } else {
@@ -390,7 +487,7 @@ impl Kit<'_> {
             "",
             x,
             y,
-            s,
+            s.max(50.0),
             s,
             true,
             tip,
@@ -417,7 +514,7 @@ impl Kit<'_> {
             .ui
             .ctx()
             .animate_bool_with_time(self.sid(key).with("active"), active, ANIM);
-        let inner = r.shrink2(vec2(8.0, 2.0));
+        let inner = r.shrink2(vec2(10.0, 4.0));
         let fill = mix(
             with_alpha(ACCENT_2, (110.0 * t) as u8),
             theme::CHIP_CURRENT_BG,
@@ -605,6 +702,35 @@ impl Kit<'_> {
         invalid: bool,
         tip: &str,
     ) -> bool {
+        self.input_with(
+            key,
+            text,
+            x,
+            y,
+            w,
+            h,
+            placeholder,
+            invalid,
+            tip,
+            display(12.0),
+        )
+    }
+
+    /// [`Kit::input`] in another font (paths read better in Arial).
+    #[allow(clippy::too_many_arguments)]
+    pub fn input_with(
+        &mut self,
+        key: &str,
+        text: &mut String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        placeholder: &str,
+        invalid: bool,
+        tip: &str,
+        font: egui::FontId,
+    ) -> bool {
         let r = self.rect(x, y, w, h);
         let id = self.sid(key);
         let focused = self.ui.memory(|m| m.has_focus(id));
@@ -620,7 +746,7 @@ impl Kit<'_> {
             .rect_stroke(r, R_CONTROL, Stroke::new(1.0, rim), StrokeKind::Inside);
         let edit = egui::TextEdit::singleline(text)
             .id(id)
-            .font(display(12.0))
+            .font(font.clone())
             .text_color(TEXT)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
@@ -638,7 +764,7 @@ impl Kit<'_> {
                 pos2(r.min.x + 10.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 placeholder,
-                display(12.0),
+                font,
                 theme::PLACEHOLDER,
             );
         }
@@ -661,6 +787,7 @@ impl Kit<'_> {
         tip: &str,
     ) -> Option<usize> {
         let label = options.get(selected).cloned().unwrap_or_default();
+        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
         let r = self.rect(x, y, w, h);
         let (resp, t, pressed) = self.hot(key, r, !options.is_empty(), tip);
         let ([up, hi, down], cap) = button_set(h);
@@ -674,14 +801,9 @@ impl Kit<'_> {
         let (tex, sz) = self.native_tex(img);
         nine_h(self.ui.painter(), tex, sz, r, (cap, cap), Color32::WHITE);
         let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
-        self.text_fit(
-            x + 22.0,
-            y + (h - 16.0) / 2.0,
-            w - 60.0,
-            &label,
-            display(13.0),
-            fg,
-        );
+        let font = display(label_size(h));
+        let lh = self.ui.ctx().fonts_mut(|f| f.row_height(&font));
+        self.text_fit(x + 22.0, y + (h - lh) / 2.0, w - 60.0, &label, font, fg);
         icon_at(
             self.ui.painter(),
             Icon::ChevronDown,
@@ -689,59 +811,181 @@ impl Kit<'_> {
             12.0,
             fg,
         );
-        let open_id = self.sid(key).with("open");
         if resp.clicked {
-            let open = self
-                .ui
-                .ctx()
-                .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-            self.ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
+            self.toggle_menu(key);
             return None;
         }
-        let entries: Vec<(String, bool)> = options
+        let items: Vec<MenuItem> = options
             .iter()
             .enumerate()
-            .map(|(i, o)| (o.clone(), i == selected))
+            .map(|(i, o)| MenuItem::row(o).current(i == selected))
             .collect();
-        self.menu_popup(key, r, w, &entries)
+        self.menu_popup(key, r, w, &items)
             .filter(|i| *i != selected)
     }
 
-    /// A `⋯` button with a menu of actions; returns the picked index.
+    /// Opens or closes the popup menu of `key`.
+    pub fn toggle_menu(&self, key: &str) {
+        let open_id = self.sid(key).with("open");
+        let open = self
+            .ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+        self.ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
+    }
+
+    /// The big PLAY button with a menu segment at its right end: `[ PLAY | ▾ ]`.
+    /// `sub` is an optional small second line under the label.
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_button(
+        &mut self,
+        key: &str,
+        label: &str,
+        sub: Option<&str>,
+        x: f32,
+        y: f32,
+        w: f32,
+        enabled: bool,
+        tip: &str,
+        menu_tip: &str,
+    ) -> Split {
+        let h = BIG;
+        let seg = 52.0;
+        let r = self.rect(x, y, w, h);
+        let main_r = self.rect(x, y, w - seg, h);
+        let menu_r = self.rect(x + w - seg, y, seg, h);
+        let (main, tm, pm) = self.hot(&format!("{key}-main"), main_r, enabled, tip);
+        let (menu, tn, pn) = self.hot(&format!("{key}-menu"), menu_r, true, menu_tip);
+        let ([up, hi, down], cap) = button_set(h);
+        let img = if pm || pn {
+            down
+        } else if tm.max(tn) > 0.5 {
+            hi
+        } else {
+            up
+        };
+        let (tex, sz) = self.native_tex(img);
+        let tint = if enabled || tn > 0.5 {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(170)
+        };
+        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
+        // Divider between the two parts.
+        let dx = menu_r.min.x;
+        self.ui.painter().line_segment(
+            [pos2(dx, r.min.y + 11.0), pos2(dx, r.max.y - 11.0)],
+            Stroke::new(1.5, with_alpha(Color32::WHITE, 110)),
+        );
+        let fg_main = if enabled {
+            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, tm)
+        } else {
+            Color32::from_gray(160)
+        };
+        let fg_menu = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, tn);
+        icon_at(
+            self.ui.painter(),
+            Icon::ChevronDown,
+            pos2(menu_r.center().x - 9.0, menu_r.center().y - 7.0),
+            16.0,
+            fg_menu,
+        );
+        let c = main_r.center();
+        match sub {
+            Some(sub) => {
+                self.ui.painter().with_clip_rect(main_r).text(
+                    pos2(c.x, c.y - 7.0),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    display(17.0),
+                    fg_main,
+                );
+                self.ui.painter().with_clip_rect(main_r).text(
+                    pos2(c.x, c.y + 13.0),
+                    egui::Align2::CENTER_CENTER,
+                    sub,
+                    body(11.0),
+                    fg_main,
+                );
+            }
+            None => {
+                self.ui.painter().with_clip_rect(main_r).text(
+                    c,
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    display(20.0),
+                    fg_main,
+                );
+            }
+        }
+        if menu.clicked {
+            self.toggle_menu(key);
+        }
+        Split {
+            main: main.clicked,
+            menu_rect: r,
+        }
+    }
+
+    /// A small slanted button with a label and a chevron that opens a menu of actions;
+    /// returns the picked index.
+    #[allow(clippy::too_many_arguments)]
     pub fn menu_button(
         &mut self,
         key: &str,
-        items: &[&str],
+        label: &str,
+        items: &[MenuItem],
         x: f32,
         y: f32,
-        s: f32,
+        w: f32,
         tip: &str,
     ) -> Option<usize> {
-        let resp = self.icon_button(key, Icon::More, x, y, s, tip);
-        let open_id = self.sid(key).with("open");
+        let h = SMALL;
+        let r = self.rect(x, y, w, h);
+        let (resp, t, pressed) = self.hot(key, r, true, tip);
+        let ([up, hi, down], cap) = button_set(h);
+        let img = if pressed {
+            down
+        } else if t > 0.5 {
+            hi
+        } else {
+            up
+        };
+        let (tex, sz) = self.native_tex(img);
+        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), Color32::WHITE);
+        let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
+        self.ui.painter().text(
+            pos2(r.center().x - 8.0, r.center().y),
+            egui::Align2::CENTER_CENTER,
+            label,
+            display(11.0),
+            fg,
+        );
+        icon_at(
+            self.ui.painter(),
+            Icon::ChevronDown,
+            pos2(r.max.x - 26.0, r.center().y - 5.0),
+            10.0,
+            fg,
+        );
         if resp.clicked {
-            let open = self
-                .ui
-                .ctx()
-                .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-            self.ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
+            self.toggle_menu(key);
             return None;
         }
-        let r = self.rect(x, y, s, s);
-        let entries: Vec<(String, bool)> = items.iter().map(|s| (s.to_string(), false)).collect();
-        let w = 210.0;
-        let anchor = Rect::from_min_size(pos2(r.max.x - w, r.min.y), vec2(w, s));
-        self.menu_popup(key, anchor, w, &entries)
+        let pw = 230.0f32.max(w);
+        let anchor = Rect::from_min_size(pos2(r.max.x - pw, r.min.y), vec2(pw, h));
+        self.menu_popup(key, anchor, pw, items)
     }
 
     /// The popup list under `anchor` if `key` is open: a wine panel with magenta hover
-    /// rows. Closes on pick, outside click or Escape.
-    fn menu_popup(
+    /// rows, section headers and dividers. Returns the index (into `items`) of the picked
+    /// row. Closes on pick, outside click or Escape.
+    pub fn menu_popup(
         &mut self,
         key: &str,
         anchor: Rect,
         w: f32,
-        entries: &[(String, bool)],
+        items: &[MenuItem],
     ) -> Option<usize> {
         let open_id = self.sid(key).with("open");
         let open = self
@@ -751,8 +995,7 @@ impl Kit<'_> {
         if !open || self.blocked {
             return None;
         }
-        let row = 34.0;
-        let h = entries.len() as f32 * row + 8.0;
+        let h = items.iter().map(MenuItem::height).sum::<f32>() + 8.0;
         let screen = self.ui.ctx().content_rect();
         let below = anchor.max.y + 6.0 + h <= screen.max.y;
         let pos = if below {
@@ -774,41 +1017,113 @@ impl Kit<'_> {
                     R_CARD,
                     with_alpha(Color32::BLACK, 90),
                 );
-                p.rect_filled(rect, R_CARD, SURFACE_SOLID);
+                p.rect_filled(rect, R_CARD, with_alpha(SURFACE_SOLID, 252));
                 p.rect_stroke(
                     rect,
                     R_CARD,
                     Stroke::new(1.0, BORDER_HI),
                     StrokeKind::Inside,
                 );
-                for (i, (label, current)) in entries.iter().enumerate() {
+                let mut y = rect.min.y + 4.0;
+                for (i, item) in items.iter().enumerate() {
                     let rr = Rect::from_min_size(
-                        pos2(rect.min.x + 4.0, rect.min.y + 4.0 + i as f32 * row),
-                        vec2(w - 8.0, row),
+                        pos2(rect.min.x + 4.0, y),
+                        vec2(w - 8.0, item.height()),
                     );
-                    let resp = ui.interact(rr, open_id.with(i), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(rr, R_CONTROL, SURFACE_HI);
-                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                    }
-                    let mut job = egui::text::LayoutJob::simple_singleline(
-                        label.clone(),
-                        display(12.0),
-                        TEXT,
-                    );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(w - 48.0);
-                    let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                    ui.painter().galley(
-                        pos2(rr.min.x + 12.0, rr.center().y - g.size().y / 2.0),
-                        g,
-                        TEXT,
-                    );
-                    if *current {
-                        let c = rr.max - vec2(24.0, row / 2.0 + 8.0);
-                        icon_at(ui.painter(), Icon::Check, c, 16.0, theme::MARK_OK);
-                    }
-                    if resp.clicked() {
-                        picked = Some(i);
+                    y += item.height();
+                    match item {
+                        MenuItem::Header(t) => {
+                            ui.painter().text(
+                                pos2(rr.min.x + 12.0, rr.center().y + 2.0),
+                                egui::Align2::LEFT_CENTER,
+                                t,
+                                display(9.5),
+                                TEXT_MUTED,
+                            );
+                        }
+                        MenuItem::Divider => {
+                            ui.painter().hline(
+                                rr.x_range().shrink(8.0),
+                                rr.center().y,
+                                Stroke::new(1.0, with_alpha(Color32::WHITE, 40)),
+                            );
+                        }
+                        MenuItem::Row(row) => {
+                            let mut resp = ui.interact(rr, open_id.with(i), Sense::click());
+                            if !row.tip.is_empty() {
+                                resp = resp.on_hover_text(&row.tip);
+                            }
+                            if resp.hovered() {
+                                ui.painter().rect_filled(rr, R_CONTROL, SURFACE_HI);
+                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                            }
+                            let mut tx = rr.min.x + 12.0;
+                            if let Some(icon) = row.icon {
+                                icon_at(
+                                    ui.painter(),
+                                    icon,
+                                    pos2(tx, rr.center().y - 8.0),
+                                    16.0,
+                                    ACCENT,
+                                );
+                                tx += 24.0;
+                            }
+                            let right = if row.current { 36.0 } else { 12.0 };
+                            let badge_w = row.badge.as_ref().map_or(0.0, |(b, _)| {
+                                ui.ctx().fonts_mut(|f| {
+                                    f.layout_no_wrap(b.clone(), display(9.0), TEXT).size().x
+                                }) + 22.0
+                            });
+                            let text_w = (rr.max.x - right - badge_w - tx).max(20.0);
+                            let (ly, sy) = if row.sub.is_some() {
+                                (rr.center().y - 8.0, rr.center().y + 10.0)
+                            } else {
+                                (rr.center().y, 0.0)
+                            };
+                            let mut job = egui::text::LayoutJob::simple_singleline(
+                                row.label.clone(),
+                                body(14.0),
+                                TEXT,
+                            );
+                            job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
+                            let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                            let lw = g.size().x;
+                            ui.painter()
+                                .galley(pos2(tx, ly - g.size().y / 2.0), g, TEXT);
+                            if let Some(sub) = &row.sub {
+                                let mut job = egui::text::LayoutJob::simple_singleline(
+                                    sub.clone(),
+                                    body(11.5),
+                                    TEXT_MUTED,
+                                );
+                                job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
+                                let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                                ui.painter()
+                                    .galley(pos2(tx, sy - g.size().y / 2.0), g, TEXT_MUTED);
+                            }
+                            if let Some((b, color)) = &row.badge {
+                                let bx = tx + lw + 10.0;
+                                let br = Rect::from_min_size(
+                                    pos2(bx, ly - 9.0),
+                                    vec2(badge_w - 10.0, 18.0),
+                                );
+                                ui.painter().rect_filled(br, R_CONTROL, *color);
+                                ui.painter().text(
+                                    br.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    b,
+                                    display(9.0),
+                                    TEXT,
+                                );
+                            }
+                            if row.current {
+                                let c = pos2(rr.max.x - 24.0, rr.center().y - 8.0);
+                                icon_at(ui.painter(), Icon::Check, c, 16.0, theme::MARK_OK);
+                            }
+                            if resp.clicked() {
+                                picked = Some(i);
+                            }
+                        }
                     }
                 }
             });
@@ -836,17 +1151,17 @@ impl Kit<'_> {
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE,
         );
-        self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 110));
-        let solid = r.min.x + w * 0.28;
+        self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 70));
+        let solid = r.min.x + w * 0.18;
         self.ui.painter().rect_filled(
             Rect::from_min_max(r.min, pos2(solid, r.max.y)),
             0.0,
-            with_alpha(BG, 200),
+            with_alpha(BG, 170),
         );
         gradient(
             self.ui.painter(),
-            Rect::from_min_max(pos2(solid, r.min.y), pos2(r.min.x + w * 0.78, r.max.y)),
-            [with_alpha(BG, 200), with_alpha(BG, 0)],
+            Rect::from_min_max(pos2(solid, r.min.y), pos2(r.min.x + w * 0.62, r.max.y)),
+            [with_alpha(BG, 170), with_alpha(BG, 0)],
             true,
         );
         gradient(
@@ -1035,6 +1350,14 @@ mod tests {
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.0), Color32::BLACK);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 1.0), Color32::WHITE);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 2.0), Color32::WHITE);
+    }
+
+    #[test]
+    fn heights_snap_to_images() {
+        assert_eq!(snap(56.0), BIG);
+        assert_eq!(snap(44.0), BIG);
+        assert_eq!(snap(40.0), MID);
+        assert_eq!(snap(30.0), SMALL);
     }
 
     #[test]
