@@ -1,6 +1,6 @@
-//! The launcher dashboard (root window): a left icon rail, a transparent top bar with
-//! status pills, and full-bleed pages over darkened game art. See `ui/style.rs` for the
-//! design system. The installer wizards open from here and keep their classic look.
+//! The launcher, in the installer's frame (`ui/frame.rs`): the blue status bar, a
+//! sidebar listing the pages and the installer wizards, the magenta section box with the
+//! page, and the bottom bar with the page's chips and buttons. Wizards open in its place.
 
 mod play;
 mod settings;
@@ -12,9 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::dialogs::DialogHost;
+use super::frame::{self, Mark, SideRow, CONTENT_W, CONTENT_X, SECTION_Y};
 use super::kit::Kit;
 use super::parts::{QuestConn, Worker};
-use super::style::{self, Icon};
+use super::style::{self, Tips};
+use super::theme;
 use super::tipbox::Clippy;
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
@@ -42,17 +44,12 @@ Special thanks to Leon(leon1273) for contributing and cleaning stuff in my code\
 This tool is still in early alpha!\n\
 If you have problems, contact me on Discord 'marshmallow_mia'.";
 
-pub const W: f32 = 1280.0;
-pub const H: f32 = 720.0;
-/// Width of the left navigation rail.
-const RAIL: f32 = 72.0;
-/// Left edge and width of page content.
-const X0: f32 = RAIL + 32.0;
-const CW: f32 = W - X0 - 32.0;
-/// The page-title banner under the status bar, and where controls next to it start.
-const TITLE_Y: f32 = 56.0;
-const TITLE_W: f32 = 260.0;
-const BESIDE_TITLE: f32 = X0 + TITLE_W + 16.0;
+/// Inner left edge and width of the section box, and its horizontal center.
+const IX: f32 = CONTENT_X + 20.0;
+const IW: f32 = CONTENT_W - 40.0;
+const CX: f32 = CONTENT_X + CONTENT_W / 2.0;
+/// Where a page's header banner sits (the wizards' content top + 8).
+const HEADER_Y: f32 = 72.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
@@ -125,6 +122,8 @@ pub struct Dashboard {
     update_note: HashMap<String, String>,
     options_open: bool,
     clippy: Clippy,
+    tips: Tips,
+    pulse: frame::Pulse,
     /// Snapshot mode: made-up state, never saved.
     pub demo: bool,
     started: bool,
@@ -144,7 +143,6 @@ impl Dashboard {
     /// First frame: load state, import existing installs, start the monitor and catalogue.
     fn start(&mut self, ctx: &egui::Context) {
         self.started = true;
-        self.dialogs.modern = true;
         self.state = if self.demo {
             demo_state()
         } else {
@@ -341,7 +339,7 @@ impl Dashboard {
         !self.jobs.is_empty()
     }
 
-    /// Draws the dashboard; returns a wizard to open.
+    /// Draws the launcher; returns a wizard to open.
     pub fn show(&mut self, kit: &mut Kit) -> Option<Open> {
         let ctx = kit.ctx();
         if !self.started {
@@ -349,189 +347,194 @@ impl Dashboard {
         }
         self.poll(&ctx);
 
-        // Backdrop: hero art on Play, a calm gradient elsewhere.
-        match (self.page, self.play_platform) {
-            (Page::Play, Platform::Pc) => kit.hero_backdrop("hero_pc.jpg", RAIL, 0.0, W - RAIL, H),
-            (Page::Play, Platform::Quest) => {
-                kit.hero_backdrop("hero_quest.jpg", RAIL, 0.0, W - RAIL, H)
+        let quest = match self.page {
+            Page::Play => self.play_platform == Platform::Quest,
+            Page::Versions => self.versions_platform == Platform::Quest,
+            _ => false,
+        };
+        frame::background(kit, if quest { "Echo2.jpg" } else { "EchoArena.jpg" });
+        frame::boxes(kit);
+        // Clippy climbs out from behind the bottom bar.
+        if self.page == Page::Settings {
+            kit.clipped(0.0, 0.0, frame::W, frame::BAR_Y, |k| {
+                self.clippy
+                    .draw(k, CONTENT_X + CONTENT_W - 220.0, frame::BAR_Y, 180.0)
+            });
+        }
+        frame::bottom_bar(kit);
+
+        let mut open = match self.page {
+            Page::Play => play::show(self, kit, &ctx),
+            Page::Versions => versions::show(self, kit, &ctx),
+            Page::Settings => {
+                settings::show(self, kit, &ctx);
+                None
             }
-            _ => kit.plain_backdrop(RAIL, 0.0, W - RAIL, H),
-        }
+            Page::Mods => {
+                coming_soon(
+                    kit,
+                    "Mods & plugins",
+                    "Turn DLL plugins and game tweaks on and off, per version.",
+                );
+                None
+            }
+            Page::Servers => {
+                coming_soon(
+                    kit,
+                    "Servers",
+                    "Browse, join and create EchoVRCE lobbies right from the launcher.",
+                );
+                None
+            }
+        };
 
-        let mut open = None;
-        match self.page {
-            Page::Play => open = play::show(self, kit, &ctx),
-            Page::Versions => open = versions::show(self, kit, &ctx),
-            Page::Settings => settings::show(self, kit, &ctx),
-            Page::Mods => empty_state(
-                kit,
-                Icon::Mods,
-                "Mods & plugins",
-                "Enable and disable DLL plugins and game tweaks per version.",
-            ),
-            Page::Servers => empty_state(
-                kit,
-                Icon::Globe,
-                "Servers",
-                "Browse, join and create EchoVRCE lobbies right from the launcher.",
-            ),
+        self.status_bar(kit, &ctx);
+        if let Some(o) = self.sidebar(kit) {
+            open = Some(o);
         }
-
-        self.top_bar(kit, &ctx);
-        self.rail(kit);
+        let tip = kit.tip.take();
+        self.tips.show(&ctx, tip);
         if self.any_job() || self.quest_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         open
     }
 
-    fn rail(&mut self, kit: &mut Kit) {
-        // The installer's wine sidebar.
-        kit.fill(0.0, 0.0, RAIL, H, style::with_alpha(style::BG, 200));
-        kit.fill(0.0, 0.0, RAIL, H, crate::ui::theme::SIDEBAR_FILL);
-        kit.fill(RAIL - 1.0, 0.0, 1.0, H, style::BORDER);
-        kit.image("icon.png", 18.0, 18.0, 36.0, 36.0);
-        let items = [
-            (Page::Play, Icon::Play, "Play", "Play Echo VR"),
-            (
-                Page::Versions,
-                Icon::Download,
-                "Versions",
-                "Install and manage Echo VR versions",
-            ),
-            (Page::Mods, Icon::Mods, "Mods", "Plugins and tweaks"),
-            (Page::Servers, Icon::Globe, "Servers", "Lobbies and servers"),
+    /// The sidebar: the launcher's pages, then the installer wizards.
+    fn sidebar(&mut self, kit: &mut Kit) -> Option<Open> {
+        let pages = [
+            (Page::Play, "Play Echo VR"),
+            (Page::Versions, "Install and manage Echo VR versions"),
+            (Page::Mods, "Plugins and tweaks"),
+            (Page::Servers, "Lobbies and servers"),
+            (Page::Settings, "Library folder, maintenance and about"),
         ];
-        for (i, (page, icon, label, tip)) in items.iter().enumerate() {
-            if kit.nav_item(
-                &format!("nav-{i}"),
-                *icon,
-                label,
-                0.0,
-                84.0 + i as f32 * 68.0,
-                RAIL,
-                60.0,
-                self.page == *page,
+        let rows: Vec<SideRow> = pages
+            .iter()
+            .map(|(p, tip)| SideRow {
+                label: p.title(),
+                mark: if self.page == *p {
+                    Mark::Current
+                } else {
+                    Mark::Open
+                },
+                clickable: self.page != *p,
                 tip,
-            ) {
-                self.page = *page;
-            }
+            })
+            .collect();
+        let (picked, y) = frame::side_list(kit, "nav", SECTION_Y + 10.0, "Launcher", &rows);
+        if let Some(i) = picked {
+            self.page = pages[i].0;
         }
-        if kit.nav_item(
-            "nav-settings",
-            Icon::Gear,
-            "Settings",
-            0.0,
-            H - 76.0,
-            RAIL,
-            60.0,
-            self.page == Page::Settings,
-            "Settings and about",
-        ) {
-            self.page = Page::Settings;
-        }
+
+        let wizards = [
+            (
+                Open::PcInstall,
+                "Install PC",
+                "The step-by-step PC installer: download, licence patch, Revive setup",
+            ),
+            (
+                Open::PcUpdate,
+                "Update PC",
+                "The step-by-step updater for any Echo VR folder",
+            ),
+            (
+                Open::QuestInstall,
+                "Install Quest",
+                "Install Echo VR on your Quest over USB",
+            ),
+            (
+                Open::QuestUpdate,
+                "Update Quest",
+                "Copy the latest game files to your Quest",
+            ),
+        ];
+        let rows: Vec<SideRow> = wizards
+            .iter()
+            .map(|(_, label, tip)| SideRow {
+                label,
+                mark: Mark::Open,
+                clickable: true,
+                tip,
+            })
+            .collect();
+        let (picked, _) = frame::side_list(kit, "wizards", y + 8.0, "Installer", &rows);
+        picked.map(|i| wizards[i].0)
     }
 
-    /// The installer's blue status bar (pulsing while busy, green while the game runs)
-    /// with the Quest chip at its right end, and the page's banner title below it.
-    fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+    /// The installer's blue status bar: pulsing while busy, green while the game runs,
+    /// with the Quest connection as a chip at its right end.
+    fn status_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
         let game = self.game();
         let busy = self.any_job() || self.quest_busy || self.quest_conn.checking;
+        let p = self.pulse.tick(busy);
         let fill = if game.is_running() {
-            crate::ui::theme::STATUS_DONE
+            theme::STATUS_DONE
         } else if busy {
-            let p = style::pulse(ctx);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            egui::Color32::from_rgb(
-                (50.0 + p * 40.0) as u8,
-                (90.0 + p * 50.0) as u8,
-                (150.0 + p * 60.0) as u8,
-            )
+            frame::pulse_fill(p)
         } else {
-            crate::ui::theme::STATUS_IDLE
+            theme::STATUS_IDLE
         };
-        let (bx, bw) = (RAIL + 16.0, W - RAIL - 32.0);
-        kit.round_box(bx, 10.0, bw, 32.0, 8.0, fill, Some(style::BORDER));
         let mut status = game.label();
         if let Some(v) = self.state.selected_version() {
             status = format!("{status}   •   {}", v.name);
         }
-        kit.text_center(
-            bx,
-            10.0,
-            bw,
-            32.0,
-            &status,
-            style::bold(14.0),
-            style::TEXT,
-            None,
-        );
+        frame::status_bar(kit, &status, fill);
 
-        let (qtext, qcolor) = match (self.quest_conn.checking, self.quest_conn.status) {
-            (true, _) => ("Quest: checking", style::CHIP_OFF),
-            (_, Some(Status::Ready)) => ("Quest connected", style::OK),
-            (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", style::WARN),
-            (_, Some(Status::Ambiguous)) => ("Several devices", style::WARN),
-            (_, Some(Status::None)) => ("No Quest", style::CHIP_OFF),
-            (_, None) => ("Quest: check", style::CHIP_OFF),
+        let (qtext, on) = match (self.quest_conn.checking, self.quest_conn.status) {
+            (true, _) => ("Quest: checking", false),
+            (_, Some(Status::Ready)) => ("Quest connected", true),
+            (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", false),
+            (_, Some(Status::Ambiguous)) => ("Several devices", false),
+            (_, Some(Status::None)) => ("No Quest", false),
+            (_, None) => ("Quest: check", false),
         };
-        let qw = kit.pill_width(qtext, true);
-        let qx = bx + bw - qw - 5.0;
-        kit.pill(qx, 15.0, qtext, qcolor, true);
-        let r = kit.rect(qx, 15.0, qw, 22.0);
-        if kit
-            .hot(
-                "quest-pill",
-                r,
-                !self.quest_conn.checking,
-                "Check the Quest connection",
-            )
-            .0
-            .clicked
+        let qw = frame::badge_width(kit, qtext);
+        let qx = CONTENT_X + CONTENT_W - qw - 6.0;
+        frame::badge(kit, qx, 16.0, qtext, on);
+        if !self.quest_conn.checking
+            && kit
+                .hand_area(
+                    "quest-chip",
+                    qx,
+                    16.0,
+                    qw,
+                    20.0,
+                    "Check the Quest connection",
+                )
+                .clicked
         {
             self.check_quest(ctx, true);
         }
-
-        kit.banner(X0, TITLE_Y, TITLE_W, 40.0, self.page.title(), 16.0);
     }
 }
 
-/// A centered card for pages that are not built yet.
-fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
-    let (w, h) = (520.0, 224.0);
-    let x = X0 + (CW - w) / 2.0;
-    let y = 200.0;
-    kit.card(x, y, w, h);
-    let top = kit.rect(x + w / 2.0 - 20.0, y + 32.0, 40.0, 40.0).min;
-    style::icon_at(kit.ui.painter(), icon, top, 40.0, style::ACCENT);
+/// A page's header banner, centered in the section box like the wizards'.
+fn header(kit: &Kit, text: &str, y: f32) {
+    kit.header(text, CX - 225.0, y, 450.0, 55.0);
+}
+
+/// Centered, wrapped Arial text in the section box.
+fn para(kit: &Kit, text: &str, y: f32, size: f32, color: egui::Color32) {
     kit.text_center(
-        x,
-        y + 88.0,
-        w,
-        28.0,
-        title,
-        style::display(18.0),
-        style::TEXT,
-        None,
-    );
-    kit.text_center(
-        x + 40.0,
-        y + 122.0,
-        w - 80.0,
-        40.0,
+        IX,
+        y,
+        IW,
+        size * 1.3,
         text,
-        style::body(14.0),
-        style::TEXT_DIM,
-        Some(w - 80.0),
+        theme::arial(size),
+        color,
+        Some(IW - 80.0),
     );
-    let pw = kit.pill_width("Coming soon", false);
-    kit.pill(
-        x + (w - pw) / 2.0,
-        y + 176.0,
-        "Coming soon",
-        style::ACCENT_2,
-        false,
-    );
+}
+
+/// Pages that are not built yet.
+fn coming_soon(kit: &mut Kit, title: &str, text: &str) {
+    header(kit, title, HEADER_Y);
+    para(kit, text, 150.0, 14.0, style::TEXT);
+    let w = frame::badge_width(kit, "Coming soon");
+    frame::badge(kit, CX - w / 2.0, 182.0, "Coming soon", false);
 }
 
 /// Two made-up versions for UI snapshots.

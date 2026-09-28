@@ -1,23 +1,30 @@
-//! Versions page: installed versions and the catalogue as a list of cards.
+//! Versions page: installed versions and the catalogue as rows in the section box, with
+//! PC | Quest chips and Add folder / Refresh in the bottom bar.
 
-use super::{Dashboard, JobResult, Page, BESIDE_TITLE, CW, X0};
+use super::{header, para, Dashboard, JobResult, Page, CX, HEADER_Y, IW, IX};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
 use crate::core::launcher::versions;
 use crate::core::{paths, platform};
 use crate::ui::dialogs::Icon as DlgIcon;
-use crate::ui::kit::Kit;
+use crate::ui::frame::{self, Chip, CONTENT_W, CONTENT_X, SECTION_H, SECTION_Y};
+use crate::ui::kit::{Btn, Kit};
 use crate::ui::launcher::Open;
 use crate::ui::parts;
-use crate::ui::style::{self, Icon, Variant};
+use crate::ui::style;
+use crate::ui::theme;
 
 const REMOVE_KEY: &str = "remove-version";
 const REPAIR_KEY: &str = "repair-version";
-const LIST_Y: f32 = 140.0;
-const LIST_H: f32 = 500.0;
-const ROW_H: f32 = 76.0;
-const ROW_GAP: f32 = 10.0;
+const LIST_Y: f32 = SECTION_Y + 8.0;
+const LIST_H: f32 = SECTION_H - 16.0;
+const ROW_H: f32 = 46.0;
+const ROW_GAP: f32 = 8.0;
+/// A small section title: the header banner at 300 wide.
+const TITLE_H: f32 = 40.0;
+/// Right edge of a row's buttons.
+const RIGHT: f32 = IX + IW - 11.0;
 
 pub(super) fn ask_repair(d: &mut Dashboard, id: &str, msg: &str) {
     d.pending_repair = Some(id.to_string());
@@ -127,19 +134,85 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         }
     }
 
-    let sel = if d.versions_platform == Platform::Pc {
-        0
+    bottom_bar(d, kit, ctx);
+    if d.versions_platform == Platform::Quest {
+        return quest(kit);
+    }
+
+    let installed: Vec<InstalledVersion> = d.state.versions.clone();
+    let available: Vec<VersionEntry> = d
+        .catalog
+        .as_ref()
+        .map(|c| c.pc().cloned().collect())
+        .unwrap_or_default();
+    let content_h = 2.0 * TITLE_H
+        + 12.0
+        + (installed.len().max(1) + available.len().max(1)) as f32 * (ROW_H + ROW_GAP);
+    kit.scroll(
+        CONTENT_X,
+        LIST_Y,
+        CONTENT_W,
+        LIST_H,
+        content_h,
+        &mut d.versions_scroll,
+    );
+    let scroll = d.versions_scroll;
+    kit.clipped(CONTENT_X, LIST_Y, CONTENT_W, LIST_H, |k| {
+        let mut y = LIST_Y - scroll;
+        title(k, "Installed versions", y);
+        y += TITLE_H;
+        if installed.is_empty() {
+            row_box(k, y);
+            k.text_fit_center(
+                IX,
+                y,
+                IW,
+                ROW_H,
+                "Nothing installed yet. Install a version below, or add a folder you already have.",
+                theme::arial(13.0),
+                style::TEXT,
+            );
+            y += ROW_H + ROW_GAP;
+        }
+        for v in &installed {
+            installed_row(d, k, ctx, v, y);
+            y += ROW_H + ROW_GAP;
+        }
+        y += 12.0;
+        let source = match &d.catalog {
+            None => "Available (loading...)",
+            Some(c) if c.builtin => "Available (built-in list)",
+            _ => "Available",
+        };
+        title(k, source, y);
+        y += TITLE_H;
+        for e in &available {
+            available_row(d, k, ctx, e, y);
+            y += ROW_H + ROW_GAP;
+        }
+    });
+    None
+}
+
+/// Add folder | PC · Quest | Refresh, laid out like the wizards' Back | chips | Next.
+fn bottom_bar(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    let labels = ["PC", "Quest"];
+    let states = if d.versions_platform == Platform::Pc {
+        [Chip::Current, Chip::Upcoming]
     } else {
-        1
+        [Chip::Upcoming, Chip::Current]
     };
-    if let Some(i) = kit.segmented(
+    let (_, total) = frame::chip_widths(kit, &labels);
+    let chips_x = CONTENT_X + ((CONTENT_W - total) / 2.0).floor();
+    let tips = ["Echo VR versions on this PC", "Echo VR on your Quest"];
+    if let Some(i) = frame::chips(
+        kit,
         "versions-platform",
-        &["PC", "Quest"],
-        sel,
-        BESIDE_TITLE,
-        61.0,
-        190.0,
-        30.0,
+        chips_x,
+        &labels,
+        &states,
+        false,
+        &tips,
     ) {
         d.versions_platform = if i == 0 {
             Platform::Pc
@@ -148,188 +221,96 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) -> Opt
         };
     }
     if d.versions_platform == Platform::Quest {
-        return quest(kit);
+        return;
     }
-    kit.text(
-        X0,
-        108.0,
-        "Every version lives in its own folder, so you can keep several side by side.",
-        style::body(14.0),
-        style::TEXT_DIM,
-    );
-
-    let installed: Vec<InstalledVersion> = d.state.versions.clone();
-    let available: Vec<VersionEntry> = d
-        .catalog
-        .as_ref()
-        .map(|c| c.pc().cloned().collect())
-        .unwrap_or_default();
-    let content_h = 30.0
-        + installed.len().max(1) as f32 * (ROW_H + ROW_GAP)
-        + 40.0
-        + available.len().max(1) as f32 * (ROW_H + ROW_GAP);
-    kit.scroll(X0, LIST_Y, CW, LIST_H, content_h, &mut d.versions_scroll);
-    let scroll = d.versions_scroll;
-    kit.clipped(X0 - 4.0, LIST_Y, CW + 8.0, LIST_H, |k| {
-        let mut y = LIST_Y - scroll;
-        k.caps(X0, y + 4.0, "Installed", style::TEXT_MUTED);
-        y += 30.0;
-        if installed.is_empty() {
-            k.card(X0, y, CW, ROW_H);
-            k.text(
-                X0 + 24.0,
-                y + 29.0,
-                "Nothing installed yet. Install a version below, or add a folder you already have.",
-                style::body(14.0),
-                style::TEXT_DIM,
-            );
-            y += ROW_H + ROW_GAP;
-        }
-        for v in &installed {
-            installed_row(d, k, ctx, v, y);
-            y += ROW_H + ROW_GAP;
-        }
-        y += 10.0;
-        let source = match &d.catalog {
-            None => "Available  ·  loading...",
-            Some(c) if c.builtin => "Available  ·  built-in list",
-            _ => "Available",
-        };
-        k.caps(X0, y + 4.0, source, style::TEXT_MUTED);
-        y += 30.0;
-        for e in &available {
-            available_row(d, k, ctx, e, y);
-            y += ROW_H + ROW_GAP;
-        }
-    });
-
-    // Footer.
-    let fy = 656.0;
-    if kit
-        .flat_button(
-            "add-existing",
-            Variant::Secondary,
-            Some(Icon::Folder),
-            "Add existing folder",
-            X0,
-            fy,
-            250.0,
-            40.0,
-            true,
-            "Use an Echo VR install that is already on this PC",
-        )
-        .clicked
-    {
+    let bw = Btn::Small.w();
+    let y = frame::bar_button_y();
+    let left_gap = chips_x - CONTENT_X;
+    let right_gap = CONTENT_X + CONTENT_W - chips_x - total;
+    if kit.button(
+        "add-existing",
+        Btn::Small,
+        "Add folder",
+        11.0,
+        CONTENT_X + ((left_gap - bw) / 2.0).floor(),
+        y,
+        true,
+        "Use an Echo VR install that is already on this PC",
+    ) {
         add_existing(d);
     }
-    if kit
-        .flat_button(
-            "refresh",
-            Variant::Secondary,
-            Some(Icon::Refresh),
-            "Refresh",
-            X0 + 262.0,
-            fy,
-            150.0,
-            40.0,
-            !d.catalog_loading,
-            "Reload the list of available versions",
-        )
-        .clicked
-    {
+    if kit.button(
+        "refresh",
+        Btn::Small,
+        "Refresh",
+        11.0,
+        chips_x + total + ((right_gap - bw) / 2.0).floor(),
+        y,
+        !d.catalog_loading,
+        "Reload the list of available versions",
+    ) {
         d.refresh_catalog(ctx);
     }
-    let mut open = None;
-    if kit
-        .flat_button(
-            "classic-install",
-            Variant::Ghost,
-            None,
-            "Classic installer",
-            X0 + CW - 432.0,
-            fy,
-            210.0,
-            40.0,
-            true,
-            "Step-by-step installer: licence patch and Revive setup",
-        )
-        .clicked
-    {
-        open = Some(Open::PcInstall);
-    }
-    if kit
-        .flat_button(
-            "classic-update",
-            Variant::Ghost,
-            None,
-            "Classic updater",
-            X0 + CW - 210.0,
-            fy,
-            210.0,
-            40.0,
-            true,
-            "Step-by-step updater for any Echo VR folder",
-        )
-        .clicked
-    {
-        open = Some(Open::PcUpdate);
-    }
-    open
 }
 
-fn row_base(k: &Kit, y: f32, icon: Icon, name: &str, sub: &str, sub_color: egui::Color32) -> f32 {
-    k.card(X0, y, CW, ROW_H);
-    let ib = k.rect(X0 + 16.0, y + 16.0, 44.0, 44.0);
-    k.ui.painter()
-        .rect_filled(ib, style::R_CONTROL, style::SURFACE_HI);
-    style::icon_at(
-        k.ui.painter(),
-        icon,
-        ib.min + egui::vec2(11.0, 11.0),
-        22.0,
-        style::ACCENT,
+fn title(k: &Kit, text: &str, y: f32) {
+    k.header(text, CX - 150.0, y, 300.0, TITLE_H - 6.0);
+}
+
+/// A row's box: the installer's `SpecialLabel` blue-grey, rounded like the boxes.
+fn row_box(k: &Kit, y: f32) {
+    k.round_box(
+        IX,
+        y,
+        IW,
+        ROW_H,
+        15.0,
+        theme::LABEL_BG,
+        Some(theme::BOX_BORDER),
     );
+}
+
+/// Name (Conthrax) over a detail line (Arial); returns where badges may start.
+fn row_base(k: &Kit, y: f32, name: &str, sub: &str, sub_color: egui::Color32) -> f32 {
+    row_box(k, y);
+    let font = theme::conthrax(12.0);
+    k.text_fit(IX + 16.0, y + 7.0, 360.0, name, font.clone(), style::TEXT);
     k.text_fit(
-        X0 + 76.0,
-        y + 18.0,
-        520.0,
-        name,
-        style::bold(16.0),
-        style::TEXT,
-    );
-    k.text_fit(
-        X0 + 76.0,
-        y + 44.0,
-        620.0,
+        IX + 16.0,
+        y + 26.0,
+        470.0,
         sub,
-        style::body(12.0),
+        theme::arial(12.0),
         sub_color,
     );
-    // Where badges may start (after the name).
-    X0 + 76.0 + k.text_width(name, style::bold(16.0)).min(520.0) + 10.0
+    IX + 16.0 + k.text_width(name, font).min(360.0) + 10.0
 }
 
-/// A running job in place of a row's actions; true if one is shown.
+/// A running job in place of a row's buttons; true if one is shown.
 fn job_status(d: &mut Dashboard, k: &mut Kit, id: &str, y: f32) -> bool {
     let Some(j) = d.jobs.get(id) else {
         return false;
     };
     let (label, fraction) = (j.label.clone(), j.fraction);
-    k.progress(X0 + CW - 440.0, y + 18.0, 320.0, fraction, &label);
-    if k.flat_button(
+    let bw = Btn::Small.w();
+    k.progress(
+        RIGHT - bw - 8.0 - 290.0,
+        y + 11.0,
+        290.0,
+        25.0,
+        fraction,
+        &label,
+    );
+    if k.button(
         &format!("cancel-{id}"),
-        Variant::Ghost,
-        None,
+        Btn::Small,
         "Cancel",
-        X0 + CW - 104.0,
-        y + 20.0,
-        88.0,
-        36.0,
+        11.0,
+        RIGHT - bw,
+        y + 11.0,
         true,
         "Stop this job",
-    )
-    .clicked
-    {
+    ) {
         d.cancel_job(id);
     }
     true
@@ -346,26 +327,26 @@ fn installed_row(
     let sub = if ok {
         v.root.clone()
     } else {
-        format!("{}  —  files missing", v.root)
+        format!("{}  --  files missing", v.root)
     };
     let mut bx = row_base(
         k,
         y,
-        Icon::Monitor,
         &v.name,
         &sub,
-        if ok { style::TEXT_MUTED } else { style::DANGER },
+        if ok { style::TEXT_DIM } else { theme::MARK_BAD },
     );
     let selected = d.state.selected_version().is_some_and(|s| s.id == v.id);
     if selected {
-        bx += k.pill(bx, y + 16.0, "Selected", style::OK, false) + 6.0;
+        bx += frame::badge(k, bx, y + 5.0, "Selected", true) + 6.0;
     }
     if v.external {
-        k.pill(bx, y + 16.0, "Existing folder", style::CHIP_OFF, false);
+        frame::badge(k, bx, y + 5.0, "Existing folder", false);
     }
     if job_status(d, k, &v.id, y) {
         return;
     }
+    let bw = Btn::Small.w();
     let menu = [
         "Update",
         "Verify files",
@@ -374,11 +355,12 @@ fn installed_row(
     ];
     match k.menu_button(
         &format!("menu-{}", v.id),
+        "Manage",
         &menu,
-        X0 + CW - 16.0 - 40.0,
-        y + 18.0,
-        40.0,
-        "More actions",
+        RIGHT - bw,
+        y + 11.0,
+        bw,
+        "Update, verify, open or remove",
     ) {
         Some(0) if ok => update(d, ctx, v.clone()),
         Some(1) if ok => verify(d, ctx, v.clone()),
@@ -411,20 +393,16 @@ fn installed_row(
         }
         _ => {}
     }
-    if k.flat_button(
+    if k.button(
         &format!("play-{}", v.id),
-        Variant::Secondary,
-        Some(Icon::Play),
+        Btn::Small,
         "Play",
-        X0 + CW - 16.0 - 40.0 - 8.0 - 104.0,
-        y + 18.0,
-        104.0,
-        40.0,
+        11.0,
+        RIGHT - 2.0 * bw - 8.0,
+        y + 11.0,
         ok,
         "Select this version and go to Play",
-    )
-    .clicked
-    {
+    ) {
         d.state.selected = Some(v.id.clone());
         d.save();
         d.page = Page::Play;
@@ -437,14 +415,9 @@ fn available_row(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, e: &Versio
     if let Some(s) = e.size {
         sub = format!("{:.1} GB  ·  {sub}", s as f64 / 1e9);
     }
-    let bx = row_base(k, y, Icon::Download, &e.name, &sub, style::TEXT_MUTED);
+    let bx = row_base(k, y, &e.name, &sub, style::TEXT_DIM);
     if !e.channel.is_empty() {
-        let color = if e.channel == "stable" {
-            style::OK
-        } else {
-            style::WARN
-        };
-        k.pill(bx, y + 16.0, &e.channel, color, false);
+        frame::badge(k, bx, y + 5.0, &e.channel, e.channel == "stable");
     }
     if job_status(d, k, &e.id, y) {
         return;
@@ -455,93 +428,62 @@ fn available_row(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, e: &Versio
         .iter()
         .any(|v| v.catalog_id.as_deref() == Some(&e.id));
     if installed {
-        let w = k.pill_width("Installed", true);
-        k.pill(X0 + CW - 16.0 - w, y + 27.0, "Installed", style::OK, true);
+        let w = frame::badge_width(k, "Installed");
+        frame::badge(k, RIGHT - w, y + 13.0, "Installed", true);
     } else {
         let tip = format!(
             "Install into {}",
             versions::root_for(&d.state.library, &e.id)
         );
-        if k.flat_button(
+        if k.button(
             &format!("inst-{}", e.id),
-            Variant::Primary,
-            Some(Icon::Download),
+            Btn::Small,
             "Install",
-            X0 + CW - 16.0 - 128.0,
-            y + 18.0,
-            128.0,
-            40.0,
+            11.0,
+            RIGHT - Btn::Small.w(),
+            y + 11.0,
             true,
             &tip,
-        )
-        .clicked
-        {
+        ) {
             install(d, ctx, e.clone());
         }
     }
 }
 
 fn quest(kit: &mut Kit) -> Option<Open> {
-    let (w, h) = (640.0, 240.0);
-    let x = X0 + (CW - w) / 2.0;
-    let y = 180.0;
-    kit.card(x, y, w, h);
-    let top = kit.rect(x + w / 2.0 - 20.0, y + 30.0, 40.0, 40.0).min;
-    style::icon_at(kit.ui.painter(), Icon::Headset, top, 40.0, style::ACCENT);
-    kit.text_center(
-        x,
-        y + 84.0,
-        w,
-        28.0,
-        "Echo VR on Quest",
-        style::display(18.0),
+    header(kit, "Echo VR on Quest", HEADER_Y);
+    para(
+        kit,
+        "The headset holds one version. Install or update it over USB;\nthe Play page shows what is installed.",
+        150.0,
+        14.0,
         style::TEXT,
-        None,
-    );
-    kit.text_center(
-        x + 40.0,
-        y + 116.0,
-        w - 80.0,
-        40.0,
-        "The headset holds one version. Install or update it over USB; the Play page shows what is installed.",
-        style::body(14.0),
-        style::TEXT_DIM,
-        Some(w - 80.0),
     );
     let mut open = None;
-    let bw = 200.0;
-    if kit
-        .flat_button(
-            "vq-install",
-            Variant::Primary,
-            Some(Icon::Download),
-            "Install on Quest",
-            x + w / 2.0 - bw - 8.0,
-            y + 172.0,
-            bw,
-            44.0,
-            true,
-            "Opens the Quest install wizard",
-        )
-        .clicked
-    {
+    let gap = 12.0;
+    let x0 = CX - (2.0 * Btn::Middle.w() + gap) / 2.0;
+    if kit.button(
+        "vq-install",
+        Btn::Middle,
+        "Install on Quest",
+        14.0,
+        x0,
+        206.0,
+        true,
+        "Opens the Quest install wizard",
+    ) {
         open = Some(Open::QuestInstall);
     }
-    if kit
-        .flat_button(
-            "vq-update",
-            Variant::Secondary,
-            Some(Icon::Refresh),
-            "Update on Quest",
-            x + w / 2.0 + 8.0,
-            y + 172.0,
-            bw,
-            44.0,
-            true,
-            "Opens the Quest update wizard",
-        )
-        .clicked
-    {
+    if kit.button(
+        "vq-update",
+        Btn::Middle,
+        "Update on Quest",
+        14.0,
+        x0 + Btn::Middle.w() + gap,
+        206.0,
+        true,
+        "Opens the Quest update wizard",
+    ) {
         open = Some(Open::QuestUpdate);
     }
     open

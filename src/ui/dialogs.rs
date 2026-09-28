@@ -10,7 +10,6 @@ use egui::{
 
 use super::assets::{self, Assets};
 use super::kit::{Btn, Kit};
-use super::style;
 use super::theme::{self, rgba};
 use crate::core::adb::devices::Device;
 use crate::core::error::{HelpLink, UiError};
@@ -53,8 +52,6 @@ struct Dialog {
 
 #[derive(Default)]
 pub struct DialogHost {
-    /// Dark launcher style instead of the installer's Marcelus/Metal look.
-    pub modern: bool,
     stack: Vec<Dialog>,
     answers: Vec<(&'static str, Answer)>,
     next_id: u64,
@@ -144,12 +141,7 @@ impl DialogHost {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let modern = self.modern;
-        let size = if modern && !matches!(top.kind, Kind::Picker(_)) {
-            modern_size(ctx, top)
-        } else {
-            dialog_size(ctx, top)
-        };
+        let size = dialog_size(ctx, top);
         let mut builder = ViewportBuilder::default()
             .with_title(top.title.clone())
             .with_inner_size(size)
@@ -174,13 +166,6 @@ impl DialogHost {
             }
             let mut kit = Kit::new(ui, assets, ("dialog", top.id), false);
             let answer = match &top.kind {
-                Kind::Error(link) if modern => {
-                    let buttons = ["Close".to_string()];
-                    draw_modern(&mut kit, size, &top.message, Icon::Warning, &buttons, *link)
-                }
-                Kind::Message(icon, buttons) if modern => {
-                    draw_modern(&mut kit, size, &top.message, *icon, buttons, HelpLink::None)
-                }
                 Kind::Error(link) => draw_error(&mut kit, size, &top.message, *link),
                 Kind::Message(icon, buttons) => {
                     draw_message(&mut kit, size, &top.message, *icon, buttons)
@@ -227,125 +212,6 @@ fn dialog_size(ctx: &egui::Context, d: &Dialog) -> egui::Vec2 {
         }
         Kind::Picker(devices) => vec2(500.0, 96.0 + devices.len().min(5) as f32 * 70.0 + 40.0),
     }
-}
-
-const MODERN_W: f32 = 460.0;
-
-fn modern_size(ctx: &egui::Context, d: &Dialog) -> egui::Vec2 {
-    let text_h = ctx
-        .fonts_mut(|f| {
-            f.layout(
-                message_lines(&d.message),
-                style::body(14.0),
-                style::TEXT,
-                MODERN_W - 104.0,
-            )
-            .size()
-            .y
-        })
-        .max(40.0);
-    let link_h = match &d.kind {
-        Kind::Error(l) if *l != HelpLink::None => 30.0,
-        _ => 0.0,
-    };
-    vec2(
-        MODERN_W,
-        (24.0 + text_h + link_h + 24.0 + 40.0 + 24.0).ceil(),
-    )
-}
-
-/// The launcher's dark dialog: icon, wrapped text, optional help link, flat buttons.
-fn draw_modern(
-    kit: &mut Kit,
-    size: egui::Vec2,
-    message: &str,
-    icon: Icon,
-    buttons: &[String],
-    link: HelpLink,
-) -> Option<Answer> {
-    kit.fill(0.0, 0.0, size.x, size.y, style::SURFACE_SOLID);
-    let (si, color) = match icon {
-        Icon::Info => (style::Icon::Info, style::ACCENT),
-        Icon::Question => (style::Icon::Info, style::ACCENT),
-        Icon::Warning => (style::Icon::Warning, style::WARN),
-    };
-    let ib = kit.rect(24.0, 24.0, 40.0, 40.0);
-    kit.ui
-        .painter()
-        .rect_filled(ib, style::R_CONTROL, style::with_alpha(color, 36));
-    style::icon_at(kit.ui.painter(), si, ib.min + vec2(9.0, 9.0), 22.0, color);
-    let mut job = egui::text::LayoutJob::simple(
-        message_lines(message),
-        style::body(14.0),
-        style::TEXT,
-        size.x - 104.0,
-    );
-    job.halign = egui::Align::LEFT;
-    let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
-    let text_h = g.size().y.max(40.0);
-    kit.ui.painter().galley(
-        kit.rect(80.0, 24.0 + (40.0 - g.size().y).max(0.0) / 2.0, 0.0, 0.0)
-            .min,
-        g,
-        style::TEXT,
-    );
-    let mut y = 24.0 + text_h + 24.0;
-    let dev_mode = "https://learn.adafruit.com/sideloading-on-oculus-quest/enable-developer-mode";
-    let link_text = match link {
-        HelpLink::DeveloperMode => Some("How to enable Developer Mode on your Quest"),
-        HelpLink::UsbDebugging => Some("How to allow USB debugging on your Quest"),
-        HelpLink::None => None,
-    };
-    if let Some(t) = link_text {
-        if kit
-            .flat_button(
-                "dlg-link",
-                style::Variant::Ghost,
-                Some(style::Icon::Info),
-                t,
-                72.0,
-                y - 14.0,
-                size.x - 96.0,
-                30.0,
-                true,
-                dev_mode,
-            )
-            .clicked
-        {
-            crate::core::platform::open_url(dev_mode);
-        }
-        y += 30.0;
-    }
-    let bw = 112.0;
-    let mut x =
-        size.x - 24.0 - bw * buttons.len() as f32 - 8.0 * (buttons.len().saturating_sub(1)) as f32;
-    let mut answer = None;
-    for (i, b) in buttons.iter().enumerate() {
-        let variant = if i == 0 {
-            style::Variant::Primary
-        } else {
-            style::Variant::Secondary
-        };
-        if kit
-            .flat_button(
-                &format!("dlg-{i}"),
-                variant,
-                None,
-                b,
-                x,
-                y,
-                bw,
-                40.0,
-                true,
-                "",
-            )
-            .clicked
-        {
-            answer = Some(Answer::Button(i));
-        }
-        x += bw + 8.0;
-    }
-    answer
 }
 
 fn button_w(ctx: &egui::Context, text: &str) -> f32 {
