@@ -105,6 +105,22 @@ pub fn get_text(url: &str) -> Result<String> {
     })
 }
 
+/// Fetches a small binary resource (feed images) in full.
+pub fn get_bytes(url: &str) -> Result<Vec<u8>> {
+    block_on(async {
+        let resp = client()
+            .get(url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            bail!("GET {url}: server responded with {}", resp.status());
+        }
+        Ok(resp.bytes().await?.to_vec())
+    })
+}
+
 /// Streams a URL straight to `dest`. For small update files; no progress reporting.
 pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     use std::io::Write;

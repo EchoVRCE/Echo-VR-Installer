@@ -2,9 +2,13 @@
 //! installer's steps (install, patch, SteamVR setup, Quest) run inside the launcher.
 
 mod assets;
+mod design;
 mod dialogs;
+#[cfg(test)]
+mod headless;
 mod kit;
 mod launcher;
+mod markdown;
 mod parts;
 mod snapshot;
 mod style;

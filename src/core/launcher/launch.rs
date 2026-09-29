@@ -48,6 +48,8 @@ pub fn split_args(s: &str) -> Vec<String> {
 }
 
 /// A lobby id as the game expects it: a UUID (any `.node` suffix dropped).
+// Unused while the Play page has no lobby field (it comes back with the next design pass).
+#[allow(dead_code)]
 pub fn lobby_uuid(input: &str) -> Option<String> {
     let s = input.trim();
     // Accept pasted spark:// / echo.taxi links: the UUID is the last path segment.

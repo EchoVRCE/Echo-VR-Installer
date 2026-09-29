@@ -32,6 +32,47 @@ pub struct Shot {
     pub variant: Option<SnapVariant>,
 }
 
+/// Every page, then the Play page's extra states. `ECHOVR_SNAPSHOTS_ONLY=play,setup`
+/// keeps only shots whose name contains one of these.
+pub fn shots() -> Vec<Shot> {
+    let mut shots: Vec<Shot> = [
+        ("play", Page::Play),
+        ("versions", Page::Versions),
+        ("mods", Page::Mods),
+        ("servers", Page::Servers),
+        ("spark", Page::Spark),
+        ("echovrce", Page::EchoVrce),
+        ("community", Page::Community),
+        ("settings", Page::Settings),
+    ]
+    .into_iter()
+    .map(|(n, page)| Shot {
+        name: format!("launcher_{n}"),
+        page,
+        variant: None,
+    })
+    .collect();
+    for (n, v) in [
+        ("play_not_installed", SnapVariant::NotInstalled),
+        ("play_installing", SnapVariant::Installing),
+        ("play_needs_patch", SnapVariant::NeedsPatch),
+        ("play_quest", SnapVariant::QuestSide),
+        ("setup", SnapVariant::Setup),
+        ("setup_headset", SnapVariant::SetupHeadset),
+    ] {
+        shots.push(Shot {
+            name: format!("launcher_{n}"),
+            page: Page::Play,
+            variant: Some(v),
+        });
+    }
+    if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
+        let terms: Vec<&str> = only.split(',').map(str::trim).collect();
+        shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
+    }
+    shots
+}
+
 pub struct Snapshotter {
     /// `ECHOVR_SNAPSHOTS_DEMO=1`: render the dashboard with made-up versions.
     pub demo: bool,
@@ -47,45 +88,10 @@ impl Snapshotter {
     pub fn from_env() -> Option<Snapshotter> {
         let dir = PathBuf::from(std::env::var_os("ECHOVR_SNAPSHOTS")?);
         std::fs::create_dir_all(&dir).ok()?;
-        let mut shots: Vec<Shot> = [
-            ("play", Page::Play),
-            ("versions", Page::Versions),
-            ("mods", Page::Mods),
-            ("servers", Page::Servers),
-            ("settings", Page::Settings),
-        ]
-        .into_iter()
-        .map(|(n, page)| Shot {
-            name: format!("launcher_{n}"),
-            page,
-            variant: None,
-        })
-        .collect();
-        for (n, v) in [
-            ("play_menu", SnapVariant::PlayMenu),
-            ("play_not_installed", SnapVariant::NotInstalled),
-            ("play_installing", SnapVariant::Installing),
-            ("play_needs_patch", SnapVariant::NeedsPatch),
-            ("play_options", SnapVariant::LaunchOptions),
-            ("play_quest", SnapVariant::QuestSide),
-            ("setup", SnapVariant::Setup),
-            ("setup_headset", SnapVariant::SetupHeadset),
-        ] {
-            shots.push(Shot {
-                name: format!("launcher_{n}"),
-                page: Page::Play,
-                variant: Some(v),
-            });
-        }
-        // `ECHOVR_SNAPSHOTS_ONLY=play,setup`: only shots whose name contains one of these.
-        if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
-            let terms: Vec<&str> = only.split(',').map(str::trim).collect();
-            shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
-        }
         Some(Snapshotter {
             demo: std::env::var_os("ECHOVR_SNAPSHOTS_DEMO").is_some(),
             dir,
-            shots,
+            shots: shots(),
             idx: 0,
             frames: 0,
             requested: false,

@@ -5,7 +5,7 @@
 //! Page layout is the launcher's; the look is the installer's (`kit.rs`).
 
 use egui::{
-    pos2, vec2, Color32, CursorIcon, Id, Mesh, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
+    pos2, vec2, Color32, CursorIcon, Id, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
     TextureId,
 };
 
@@ -97,8 +97,6 @@ pub fn pulse(ctx: &egui::Context) -> f32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    Play,
-    Stop,
     Download,
     Mods,
     Globe,
@@ -109,14 +107,11 @@ pub enum Icon {
     Warning,
     Headset,
     ChevronDown,
-    Monitor,
     Info,
 }
 
 /// One entry of a popup menu.
 pub enum MenuItem {
-    /// A small caps section title.
-    Header(String),
     Divider,
     Row(MenuRow),
 }
@@ -144,7 +139,6 @@ impl MenuItem {
 
     fn height(&self) -> f32 {
         match self {
-            MenuItem::Header(_) => 26.0,
             MenuItem::Divider => 9.0,
             MenuItem::Row(r) if r.sub.is_some() => 46.0,
             MenuItem::Row(_) => 34.0,
@@ -153,26 +147,6 @@ impl MenuItem {
 }
 
 impl MenuRow {
-    pub fn current(mut self, on: bool) -> MenuItem {
-        self.current = on;
-        MenuItem::Row(self)
-    }
-
-    pub fn sub(mut self, sub: impl Into<String>) -> MenuRow {
-        self.sub = Some(sub.into());
-        self
-    }
-
-    pub fn badge(mut self, text: impl Into<String>, color: Color32) -> MenuRow {
-        self.badge = Some((text.into(), color));
-        self
-    }
-
-    pub fn icon(mut self, icon: Icon) -> MenuRow {
-        self.icon = Some(icon);
-        self
-    }
-
     pub fn tip(mut self, tip: impl Into<String>) -> MenuRow {
         self.tip = tip.into();
         self
@@ -506,113 +480,6 @@ impl Kit<'_> {
         resp
     }
 
-    /// The big PLAY button; `sub` is an optional small second line under the label.
-    #[allow(clippy::too_many_arguments)]
-    pub fn play_button(
-        &mut self,
-        key: &str,
-        label: &str,
-        sub: Option<&str>,
-        x: f32,
-        y: f32,
-        w: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> Resp {
-        let r = self.rect(x, y, w, BIG);
-        let (resp, t, pressed) = self.hot(key, r, enabled, tip);
-        let tint = if enabled {
-            Color32::WHITE
-        } else {
-            Color32::from_gray(170)
-        };
-        self.slanted(r, t, pressed, tint);
-        let fg = if enabled {
-            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
-        } else {
-            Color32::from_gray(160)
-        };
-        let c = r.center();
-        let p = self.ui.painter().with_clip_rect(r);
-        match sub {
-            Some(sub) => {
-                p.text(
-                    pos2(c.x, c.y - 7.0),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    display(17.0),
-                    fg,
-                );
-                p.text(
-                    pos2(c.x, c.y + 13.0),
-                    egui::Align2::CENTER_CENTER,
-                    sub,
-                    body(11.0),
-                    fg,
-                );
-            }
-            None => {
-                p.text(c, egui::Align2::CENTER_CENTER, label, display(20.0), fg);
-            }
-        }
-        resp
-    }
-
-    /// A rail item: icon over a small label. Active = green step chip, hover = magenta.
-    #[allow(clippy::too_many_arguments)]
-    pub fn nav_item(
-        &mut self,
-        key: &str,
-        icon: Icon,
-        label: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        active: bool,
-        tip: &str,
-    ) -> bool {
-        let r = self.rect(x, y, w, h);
-        let (resp, t, _) = self.hot(key, r, true, tip);
-        let a = self
-            .ui
-            .ctx()
-            .animate_bool_with_time(self.sid(key).with("active"), active, ANIM);
-        let inner = r.shrink2(vec2(10.0, 4.0));
-        let fill = mix(
-            with_alpha(ACCENT_2, (110.0 * t) as u8),
-            theme::CHIP_CURRENT_BG,
-            a,
-        );
-        if t > 0.01 || a > 0.01 {
-            self.ui.painter().rect_filled(inner, R_CONTROL, fill);
-        }
-        if a > 0.01 {
-            self.ui.painter().rect_stroke(
-                inner,
-                R_CONTROL,
-                Stroke::new(1.0, BORDER),
-                StrokeKind::Inside,
-            );
-        }
-        let fg = mix(TEXT_MUTED, TEXT, t.max(a));
-        icon_at(
-            self.ui.painter(),
-            icon,
-            pos2(r.center().x - 11.0, r.min.y + 12.0),
-            22.0,
-            fg,
-        );
-        self.ui.painter().text(
-            pos2(r.center().x, r.max.y - 12.0),
-            egui::Align2::CENTER_CENTER,
-            label,
-            display(8.5),
-            fg,
-        );
-        resp.clicked
-    }
-
     // ---- small parts ----
 
     /// A step-chip badge in `color` (green = on, grey = neutral); returns its width.
@@ -707,34 +574,6 @@ impl Kit<'_> {
         self.checkbox(key, on, label, 12.0, x, y, w, 24.0, false, enabled, tip)
     }
 
-    /// `SpecialTextfield`: dark translucent box, white Conthrax text, magenta focus rim.
-    #[allow(clippy::too_many_arguments)]
-    pub fn input(
-        &mut self,
-        key: &str,
-        text: &mut String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        placeholder: &str,
-        invalid: bool,
-        tip: &str,
-    ) -> bool {
-        self.input_with(
-            key,
-            text,
-            x,
-            y,
-            w,
-            h,
-            placeholder,
-            invalid,
-            tip,
-            display(12.0),
-        )
-    }
-
     /// [`Kit::input`] in another font (paths read better in Arial).
     #[allow(clippy::too_many_arguments)]
     pub fn input_with(
@@ -791,74 +630,6 @@ impl Kit<'_> {
     }
 
     // ---- dropdowns / popovers ----
-
-    /// A slanted button showing `label` with a chevron; a click opens or closes the popup
-    /// menu of `key`. Returns the button's rect, to anchor the menu.
-    #[allow(clippy::too_many_arguments)]
-    pub fn dropdown_face(
-        &mut self,
-        key: &str,
-        label: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> Rect {
-        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
-        let r = self.rect(x, y, w, h);
-        let (resp, t, pressed) = self.hot(key, r, enabled, tip);
-        let tint = if enabled {
-            Color32::WHITE
-        } else {
-            Color32::from_gray(140)
-        };
-        self.slanted(r, t, pressed, tint);
-        let fg = if enabled {
-            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
-        } else {
-            Color32::from_gray(150)
-        };
-        let font = display(label_size(h));
-        let lh = self.ui.ctx().fonts_mut(|f| f.row_height(&font));
-        self.text_fit(x + 22.0, y + (h - lh) / 2.0, w - 60.0, label, font, fg);
-        icon_at(
-            self.ui.painter(),
-            Icon::ChevronDown,
-            pos2(r.max.x - 34.0, r.center().y - 6.0),
-            12.0,
-            fg,
-        );
-        if resp.clicked {
-            self.toggle_menu(key);
-        }
-        r
-    }
-
-    /// A slanted button showing `options[selected]` with a chevron; returns a new pick.
-    #[allow(clippy::too_many_arguments)]
-    pub fn dropdown(
-        &mut self,
-        key: &str,
-        options: &[String],
-        selected: usize,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        tip: &str,
-    ) -> Option<usize> {
-        let label = options.get(selected).cloned().unwrap_or_default();
-        let r = self.dropdown_face(key, &label, x, y, w, h, !options.is_empty(), tip);
-        let items: Vec<MenuItem> = options
-            .iter()
-            .enumerate()
-            .map(|(i, o)| MenuItem::row(o).current(i == selected))
-            .collect();
-        self.menu_popup(key, r, w, &items)
-            .filter(|i| *i != selected)
-    }
 
     /// Opens or closes the popup menu of `key`.
     pub fn toggle_menu(&self, key: &str) {
@@ -966,15 +737,6 @@ impl Kit<'_> {
                     );
                     y += item.height();
                     match item {
-                        MenuItem::Header(t) => {
-                            ui.painter().text(
-                                pos2(rr.min.x + 12.0, rr.center().y + 2.0),
-                                egui::Align2::LEFT_CENTER,
-                                t,
-                                display(9.5),
-                                TEXT_MUTED,
-                            );
-                        }
                         MenuItem::Divider => {
                             ui.painter().hline(
                                 rr.x_range().shrink(8.0),
@@ -1074,76 +836,6 @@ impl Kit<'_> {
     }
 
     // ---- backdrop ----
-
-    /// Game art covering the rect, with a left-to-right darkening and a bottom fade.
-    pub fn hero_backdrop(&self, name: &str, x: f32, y: f32, w: f32, h: f32) {
-        let tex = self.assets.hero(self.ui.ctx(), name, w as u32, h as u32);
-        let r = self.rect(x, y, w, h);
-        self.ui.painter().image(
-            tex.id(),
-            r,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 70));
-        let solid = r.min.x + w * 0.18;
-        self.ui.painter().rect_filled(
-            Rect::from_min_max(r.min, pos2(solid, r.max.y)),
-            0.0,
-            with_alpha(BG, 170),
-        );
-        gradient(
-            self.ui.painter(),
-            Rect::from_min_max(pos2(solid, r.min.y), pos2(r.min.x + w * 0.62, r.max.y)),
-            [with_alpha(BG, 170), with_alpha(BG, 0)],
-            true,
-        );
-        gradient(
-            self.ui.painter(),
-            Rect::from_min_max(pos2(r.min.x, r.max.y - h * 0.42), r.max),
-            [with_alpha(BG, 0), with_alpha(BG, 235)],
-            false,
-        );
-        gradient(
-            self.ui.painter(),
-            Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 90.0)),
-            [with_alpha(BG, 170), with_alpha(BG, 0)],
-            false,
-        );
-    }
-
-    /// Pages without a hero: the same Echo art, dimmed further.
-    pub fn plain_backdrop(&self, x: f32, y: f32, w: f32, h: f32) {
-        let tex = self
-            .assets
-            .hero(self.ui.ctx(), "hero_quest.jpg", w as u32, h as u32);
-        let r = self.rect(x, y, w, h);
-        self.ui.painter().image(
-            tex.id(),
-            r,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        self.ui.painter().rect_filled(r, 0.0, with_alpha(BG, 190));
-    }
-}
-
-/// A two-colour linear gradient (horizontal when `horizontal`, else vertical).
-pub fn gradient(p: &egui::Painter, r: Rect, colors: [Color32; 2], horizontal: bool) {
-    let mut mesh = Mesh::default();
-    let (a, b) = (colors[0], colors[1]);
-    let (tl, tr, bl, br) = if horizontal {
-        (a, b, a, b)
-    } else {
-        (a, a, b, b)
-    };
-    mesh.colored_vertex(r.left_top(), tl);
-    mesh.colored_vertex(r.right_top(), tr);
-    mesh.colored_vertex(r.left_bottom(), bl);
-    mesh.colored_vertex(r.right_bottom(), br);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    p.add(Shape::mesh(mesh));
 }
 
 /// Vector icons in an `s`-sized box at `o`.
@@ -1154,16 +846,6 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
         p.add(Shape::line(pts, st));
     };
     match icon {
-        Icon::Play => {
-            p.add(Shape::convex_polygon(
-                vec![pt(0.22, 0.12), pt(0.88, 0.5), pt(0.22, 0.88)],
-                c,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Stop => {
-            p.rect_filled(Rect::from_min_max(pt(0.2, 0.2), pt(0.8, 0.8)), 2.0, c);
-        }
         Icon::Download => {
             line(vec![pt(0.5, 0.1), pt(0.5, 0.64)]);
             line(vec![pt(0.26, 0.42), pt(0.5, 0.66), pt(0.74, 0.42)]);
@@ -1252,16 +934,6 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             ]);
         }
         Icon::ChevronDown => line(vec![pt(0.15, 0.32), pt(0.5, 0.68), pt(0.85, 0.32)]),
-        Icon::Monitor => {
-            p.rect_stroke(
-                Rect::from_min_max(pt(0.06, 0.14), pt(0.94, 0.7)),
-                2.0,
-                st,
-                StrokeKind::Middle,
-            );
-            line(vec![pt(0.5, 0.7), pt(0.5, 0.86)]);
-            line(vec![pt(0.3, 0.86), pt(0.7, 0.86)]);
-        }
         Icon::Info => {
             p.circle_stroke(pt(0.5, 0.5), s * 0.42, st);
             line(vec![pt(0.5, 0.44), pt(0.5, 0.74)]);

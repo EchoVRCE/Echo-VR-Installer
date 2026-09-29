@@ -5,6 +5,8 @@ mod ui;
 mod version;
 
 fn main() {
+    // Before any thread starts (see feed::init_local_offset).
+    core::launcher::feed::init_local_offset();
     let args: Vec<String> = std::env::args().collect();
     // Elevated helper mode: the app relaunches itself with this flag (as admin) to perform
     // privileged operations for the normal process. Never starts the GUI.

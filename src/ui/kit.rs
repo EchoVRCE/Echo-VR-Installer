@@ -98,7 +98,7 @@ impl<'a> Kit<'a> {
         self.paint_tex(&tex, self.rect(x, y, w, h), Color32::WHITE);
     }
 
-    fn paint_tex(&self, tex: &TextureHandle, rect: Rect, tint: Color32) {
+    pub fn paint_tex(&self, tex: &TextureHandle, rect: Rect, tint: Color32) {
         self.painter().image(
             tex.id(),
             rect,

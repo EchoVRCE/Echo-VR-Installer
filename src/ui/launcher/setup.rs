@@ -36,7 +36,9 @@ pub(super) enum Overlay {
 pub(super) enum LinkFor {
     /// The licence patch for this PC version.
     Pc(String),
-    /// A patched APK, installed on the Quest.
+    /// A patched APK, installed on the Quest. (Its button left the Play page with the
+    /// new design and comes back later.)
+    #[allow(dead_code)]
     Quest,
 }
 

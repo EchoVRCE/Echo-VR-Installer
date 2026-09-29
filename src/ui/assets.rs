@@ -13,12 +13,80 @@ const IMAGES: &[(&str, &[u8])] = &[
     ),
     ("icon.png", include_bytes!("../../assets/img/icon.png")),
     (
-        "hero_pc.jpg",
-        include_bytes!("../../assets/img/hero_pc.jpg"),
+        "main_background.jpg",
+        include_bytes!("../../assets/img/main_background.jpg"),
     ),
     (
-        "hero_quest.jpg",
-        include_bytes!("../../assets/img/hero_quest.jpg"),
+        "left_sidebar.jpg",
+        include_bytes!("../../assets/img/left_sidebar.jpg"),
+    ),
+    (
+        "sidebar_selected.png",
+        include_bytes!("../../assets/img/sidebar_selected.png"),
+    ),
+    (
+        "sidebar_hover.png",
+        include_bytes!("../../assets/img/sidebar_hover.png"),
+    ),
+    (
+        "logo_echovr.png",
+        include_bytes!("../../assets/img/logo_echovr.png"),
+    ),
+    (
+        "play_button.png",
+        include_bytes!("../../assets/img/play_button.png"),
+    ),
+    (
+        "play_button_blank.png",
+        include_bytes!("../../assets/img/play_button_blank.png"),
+    ),
+    (
+        "update_button.png",
+        include_bytes!("../../assets/img/update_button.png"),
+    ),
+    (
+        "update_button_alert.png",
+        include_bytes!("../../assets/img/update_button_alert.png"),
+    ),
+    (
+        "hardware_pc.png",
+        include_bytes!("../../assets/img/hardware_pc.png"),
+    ),
+    (
+        "hardware_quest.png",
+        include_bytes!("../../assets/img/hardware_quest.png"),
+    ),
+    (
+        "news_header.png",
+        include_bytes!("../../assets/img/news_header.png"),
+    ),
+    (
+        "news_fallback.jpg",
+        include_bytes!("../../assets/img/news_fallback.jpg"),
+    ),
+    (
+        "card_bg.png",
+        include_bytes!("../../assets/img/card_bg.png"),
+    ),
+    (
+        "panel_bg.png",
+        include_bytes!("../../assets/img/panel_bg.png"),
+    ),
+    (
+        "icon_play.png",
+        include_bytes!("../../assets/img/icon_play.png"),
+    ),
+    (
+        "icon_spark.png",
+        include_bytes!("../../assets/img/icon_spark.png"),
+    ),
+    (
+        "icon_echovrce.png",
+        include_bytes!("../../assets/img/icon_echovrce.png"),
+    ),
+    (
+        "icon_community.png",
+        include_bytes!("../../assets/img/icon_community.png"),
     ),
     (
         "button_up.png",
@@ -139,40 +207,6 @@ impl Assets {
         let t = ctx.load_texture(
             format!("{name}@{w}x{h}"),
             to_color_image(&img),
-            TextureOptions::LINEAR,
-        );
-        self.textures.borrow_mut().insert(key, t.clone());
-        t
-    }
-
-    /// Hero art, cover-fitted to `w`x`h` (logical) at the display's pixel density and
-    /// softly blurred so text on top stays readable. Cached.
-    pub fn hero(&self, ctx: &Context, name: &str, w: u32, h: u32) -> TextureHandle {
-        let ppp = ctx.pixels_per_point();
-        let (tw, th) = (
-            (w as f32 * ppp).round().max(1.0) as u32,
-            (h as f32 * ppp).round().max(1.0) as u32,
-        );
-        let key = (format!("hero:{name}"), tw, th);
-        if let Some(t) = self.textures.borrow().get(&key) {
-            return t.clone();
-        }
-        let img = decode(name);
-        let (iw, ih) = (img.width() as f32, img.height() as f32);
-        let scale = (tw as f32 / iw).max(th as f32 / ih);
-        let (sw, sh) = ((iw * scale).ceil() as u32, (ih * scale).ceil() as u32);
-        let scaled = image::imageops::resize(
-            &img,
-            sw.max(tw),
-            sh.max(th),
-            image::imageops::FilterType::Triangle,
-        );
-        let (cx, cy) = ((scaled.width() - tw) / 2, (scaled.height() - th) / 2);
-        let cropped = image::imageops::crop_imm(&scaled, cx, cy, tw, th).to_image();
-        let blurred = image::imageops::blur(&cropped, 1.2 * ppp);
-        let t = ctx.load_texture(
-            format!("hero:{name}@{tw}x{th}"),
-            to_color_image(&blurred),
             TextureOptions::LINEAR,
         );
         self.textures.borrow_mut().insert(key, t.clone());

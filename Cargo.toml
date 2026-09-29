@@ -28,7 +28,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.21"
-time = { version = "0.3.55", features = ["formatting", "local-offset"] }
+time = { version = "0.3.55", features = ["formatting", "local-offset", "parsing"] }
 tiny_http = "0.12.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
@@ -65,6 +65,8 @@ embed-resource = "3.0.11"
 
 [dev-dependencies]
 tempfile = "3"
+# Headless UI snapshots (an ignored test; see ui::headless).
+egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
 
 [profile.release]
 opt-level = 3

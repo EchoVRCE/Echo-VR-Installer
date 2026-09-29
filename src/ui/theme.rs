@@ -5,6 +5,11 @@ use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId};
 pub const CONTHRAX: &str = "conthrax";
 pub const ARIAL: &str = "arial";
 pub const ARIAL_BOLD: &str = "arial-bold";
+/// The launcher design's condensed DIN caps (status bar, info line, card text).
+pub const DIN: &str = "din";
+/// The launcher design's Myriad (SERVER INFO panel).
+pub const MYRIAD: &str = "myriad";
+pub const MYRIAD_BOLD: &str = "myriad-bold";
 
 /// The Swing UI's own font.
 pub fn conthrax(size: f32) -> FontId {
@@ -18,6 +23,18 @@ pub fn arial(size: f32) -> FontId {
 
 pub fn arial_bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(ARIAL_BOLD.into()))
+}
+
+pub fn din(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(DIN.into()))
+}
+
+pub fn myriad(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(MYRIAD.into()))
+}
+
+pub fn myriad_bold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(MYRIAD_BOLD.into()))
 }
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -37,17 +54,31 @@ pub fn install_fonts(ctx: &egui::Context) {
         ARIAL_BOLD.into(),
         FontData::from_static(include_bytes!("../../assets/fonts/LiberationSans-Bold.ttf")).into(),
     );
+    defs.font_data.insert(
+        DIN.into(),
+        FontData::from_static(include_bytes!("../../assets/fonts/dmcaps.ttf")).into(),
+    );
+    defs.font_data.insert(
+        MYRIAD.into(),
+        FontData::from_static(include_bytes!("../../assets/fonts/myriad-medium.ttf")).into(),
+    );
+    defs.font_data.insert(
+        MYRIAD_BOLD.into(),
+        FontData::from_static(include_bytes!("../../assets/fonts/myriad-bold.ttf")).into(),
+    );
     // egui's bundled fonts stay behind ours as glyph fallbacks (✓, arrows, emoji).
     let fallbacks: Vec<String> = defs
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    for name in [CONTHRAX, ARIAL, ARIAL_BOLD] {
+    for name in [CONTHRAX, ARIAL, ARIAL_BOLD, DIN, MYRIAD, MYRIAD_BOLD] {
         let mut chain = vec![name.to_string()];
-        if name == CONTHRAX {
-            // Conthrax has no lowercase-only glyphs missing, but lacks symbols like "…".
-            chain.push(ARIAL.into());
+        match name {
+            // These lack symbols like "…", "·" or "•".
+            CONTHRAX | DIN | MYRIAD => chain.push(ARIAL.into()),
+            MYRIAD_BOLD => chain.push(ARIAL_BOLD.into()),
+            _ => {}
         }
         chain.extend(fallbacks.iter().cloned());
         defs.families.insert(FontFamily::Name(name.into()), chain);
@@ -79,9 +110,7 @@ pub const WHITE: Color32 = Color32::WHITE;
 pub const BLACK: Color32 = Color32::BLACK;
 
 pub const BOX_BORDER: Color32 = rgba(50, 50, 50, 150);
-pub const SIDEBAR_FILL: Color32 = rgba(100, 0, 50, 220);
 
-pub const STATUS_IDLE: Color32 = Color32::from_rgb(50, 90, 150);
 pub const STATUS_DONE: Color32 = Color32::from_rgb(40, 130, 40);
 
 pub const CHIP_CURRENT_BG: Color32 = Color32::from_rgb(0, 180, 0);

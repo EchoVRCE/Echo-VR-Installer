@@ -262,6 +262,8 @@ pub fn launch() -> Result<()> {
     Ok(())
 }
 
+// The Play page's Quest Stop button comes back with the next design pass.
+#[allow(dead_code)]
 pub fn stop() -> Result<()> {
     ready()?;
     adb::exec(&["shell", "am", "force-stop", PACKAGE]);

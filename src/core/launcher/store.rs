@@ -34,6 +34,8 @@ impl Runtime {
         Runtime::Flat,
     ];
 
+    // For the runtime picker, which comes back to the Play page later.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Runtime::MetaLink => "Meta Link",
