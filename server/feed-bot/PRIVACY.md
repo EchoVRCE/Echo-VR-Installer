@@ -1,51 +1,67 @@
-# Privacy Policy: Echo VR Launcher Feed bot
+# Privacy Policy: Echo VR Launcher Feed
 
 *Last updated: September 29, 2026*
 
-This policy explains what personal data the Echo VR Launcher Feed bot ("the Bot") processes,
-why, and what your rights are.
+This policy explains what personal data the Echo VR Launcher Feed processes, why, and what
+your rights are. The feed has two parts:
+
+- **The Discord bot ("the Bot"):** it copies the community news messages that moderators
+  pick.
+- **The status service:** it turns the public EchoVRCE server status into the numbers
+  shown under SERVER INFO.
+
+Both publish files that the Echo VR Launcher shows.
 
 ## Who is responsible
 
 Mia Hentschel
 Email: echo@mia-hentschel.de
 
-## What the Bot does
+## What the feed does not do
 
-The Bot copies two kinds of content from the Echo VR community Discord server into public
-files that the Echo VR Launcher shows:
-
-1. **The server status post:** one message, posted and kept up to date by a status bot in
-   a designated channel.
-2. **Community news:** the announcement messages that the server's moderators pick with the
-   `/launcher news set` command (at most two at a time).
-
-## What the Bot does not do
-
-- It does **not read the server's conversations.** It is not subscribed to any message
-  events. It only fetches the specific messages listed above, by their message ID. It never
-  receives, reads or stores any other message.
-- It does not post messages, react, send direct messages or change anything in the server.
-- It does not collect data for advertising, profiling or tracking, and it sells or shares no
-  data. It sets no cookies.
+- The Bot does **not read the server's conversations.** It is not subscribed to any message
+  events. It only fetches the specific announcement messages that moderators pick, by their
+  message ID. It never receives, reads or stores any other message.
+- Neither part posts messages, reacts, sends direct messages or changes anything in the
+  Discord server.
+- No names, usernames or IDs of players or authors are published, and none are used for
+  advertising, profiling or tracking. No data is sold or shared. No cookies are set.
 
 ## Data processed, purposes and legal basis
 
-### Content of the selected messages
+### Community news (the Bot)
 
-For the status post and the chosen announcements, the Bot reads the message text, embeds and
-the first image.
+For the announcements that moderators pick with `/launcher news set` (at most two at a time),
+the Bot reads the message text, embeds and the first image.
 
 - **Mentions:** mentions of users, roles and channels in the text are replaced by their
   display names.
 - **Not copied:** the message author's name and user IDs.
-- **Where it goes:** the result is written as `status.json`, `news.json` and image files to
-  `https://files.echovr.de/launcher/feed/`, where it is **publicly accessible**. The Echo VR
-  Launcher downloads it from there to show server status and news.
+- **Where it goes:** the result is written as `news.json` and an image file to
+  `https://files.echovr.de/launcher/feed/`, where it is **publicly accessible**.
 
-Purpose: showing the server status and community news in the launcher. Legal basis: our
-legitimate interest in informing the community (Art. 6(1)(f) GDPR). The announcements are
-already published to the community by the server's moderators.
+Purpose: showing community news in the launcher. Legal basis: our legitimate interest in
+informing the community (Art. 6(1)(f) GDPR). The announcements are already published to the
+community by the server's moderators.
+
+### Server status and player counts (the status service)
+
+Every 30 seconds the status service reads the public EchoVRCE status API
+(`https://g.echovrce.com/status/matches`). The API lists the game servers and the running
+matches, including the players in them (display name, username, Discord ID, player ID).
+The service uses it as follows:
+
+- **Published:** only aggregate numbers are written to `servers.json`: servers, how busy
+  they are, players online, matches per mode, and server locations by region.
+- **Player IDs:** to count how many *different* players played in the last hour, 24 hours
+  and 30 days, each player's ID is replaced by a keyed hash (a pseudonym). The key never
+  leaves the server. Only the pseudonym and the time it was last seen are stored.
+- **Everything else:** display names, usernames and Discord IDs are neither stored nor
+  published. The rest of the API response is discarded after each update.
+
+Purpose: showing server and player statistics in the launcher. Legal basis: our legitimate
+interest in informing players about the state of the game servers (Art. 6(1)(f) GDPR). The
+pseudonyms cannot be linked to a player by anyone without the key.
 
 ### Use of the Bot's commands
 
@@ -74,19 +90,21 @@ operation and security, based on legitimate interest (Art. 6(1)(f) GDPR).
 
 | Data | Kept for |
 |---|---|
-| Feed files (`status.json`, `news.json`, images) | Replaced on every update. Content removed in Discord or unselected by the moderators leaves the feed within about 5 minutes. |
-| Bot logs (command uses as above) | 30 days |
+| Feed files (`news.json`, `servers.json`, images) | Replaced on every update. Unselected or deleted news leaves the feed within about 5 minutes. |
+| Player pseudonyms with their last-seen time | 30 days after that player was last seen |
+| Bot and status-service logs | 30 days |
 | Web server logs | 14 days |
 | Configuration (channel and message IDs) | Until changed |
 
 ## Recipients and hosting
 
-- **Hosting:** the Bot and the feed files run on a server hosted by Hetzner Online GmbH in
-  Germany, who processes the data on our behalf.
+- **Hosting:** the feed runs on a server hosted by Hetzner Online GmbH in Germany, who
+  processes the data on our behalf.
 - **Public feed:** the feed files are public, so anyone who downloads them receives their
   content.
 - **Discord:** Discord processes your data on its platform under its own privacy policy:
   <https://discord.com/privacy>.
+- **EchoVRCE:** the status API is operated by EchoVRCE under its own terms.
 
 ## Your rights
 
@@ -101,10 +119,11 @@ Under the GDPR you have the right to:
 
 You can also lodge a complaint with a data protection supervisory authority (Art. 77).
 
-**Removing content:** to have something removed from the launcher feed, ask a server
-moderator to unselect the message (`/launcher news clear`), or email
-echo@mia-hentschel.de.
+**Removing content or a pseudonym:** to have something removed from the launcher feed, ask a
+server moderator to unselect the message (`/launcher news clear`), or email
+echo@mia-hentschel.de. To stop being counted, send us your EchoVRCE player ID: we delete
+your pseudonym and the service skips you from then on.
 
 ## Changes
 
-We update this policy when the Bot changes. The date at the top shows the current version.
+We update this policy when the feed changes. The date at the top shows the current version.

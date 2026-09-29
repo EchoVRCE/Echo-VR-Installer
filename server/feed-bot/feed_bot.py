@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Echo VR launcher feed.
+"""Echo VR launcher feed: Community News.
 
-Mirrors two things from the Echo VR Discord into static files the launcher reads from
-https://files.echovr.de/launcher/feed/:
+Mirrors the Community News messages that moderators pick from the Echo VR Discord into
+static files the launcher reads from https://files.echovr.de/launcher/feed/:
 
-  status.json  the SERVER INFO post (one message a status bot keeps editing), exported as
-               its embed structure so the launcher can render it the way Discord does,
-               plus the embed image (the world map) as map-<n>.<hash>.png
-  news.json    the Community News blocks: one configurable message per slot ("main" feeds
-               the banner and the first card, "community" the second card), plus each
-               message's first image as news-<slot>.<hash>.jpg
+  news.json  one configurable message per slot ("main" feeds the banner and the first card,
+             "community" the second card), plus each message's first image as
+             news-<slot>.<hash>.jpg
+
+SERVER INFO (servers.json) comes from status_feed.py, which needs no Discord at all.
 
 Which messages are shown is set in Discord with /launcher news set (Manage Server), and
 every command only works in the control channel.
@@ -19,7 +18,7 @@ messages by their ID (which is what the Message Content intent is needed for), s
 sees any other message. See PRIVACY.md.
 
   python feed_bot.py           run the bot
-  python feed_bot.py --dump    print the raw status and news messages as JSON, then exit
+  python feed_bot.py --dump    print the configured news messages as JSON, then exit
   python feed_bot.py --once    export once, then exit
 """
 
@@ -55,7 +54,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "guild": 779349159852769310,
     # The only channel the bot's commands work in.
     "control_channel": 779349591438524457,
-    "status": {"channel": 1214880373985779712, "message": 1214881074232950784},
     # Where a bare message ID given to /launcher news set is looked up.
     "news_channel": 779435355086258186,
     "news": {
@@ -64,14 +62,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 SLOTS = ("main", "community")
-STATUS_EVERY_S = 30
 NEWS_EVERY_S = 300
 LOG_DAYS = 30
 # The rights the bot needs: see channels and read their history. Anything more is reported
 # at startup (slash-command replies need no permission).
 NEEDED = {"view_channel", "read_message_history"}
 NEWS_MAX_W = 1900
-MAP_MAX_W = 1200
 
 log = logging.getLogger("feed")
 
@@ -265,7 +261,6 @@ class FeedBot(discord.Client):
         self.tree = FeedTree(self)
         self.images = Images()
         self.lock = asyncio.Lock()
-        self.last_status: str | None = None
         self.last_news: str | None = None
         self.news_items: dict[str, dict[str, Any] | None] = {}
         self.exported_at: dict[str, str] = {}
@@ -296,8 +291,6 @@ class FeedBot(discord.Client):
         if self.mode == "once":
             await self.close()
             return
-        if not self.status_loop.is_running():
-            self.status_loop.start()
         if not self.news_loop.is_running():
             self.news_loop.start()
 
@@ -310,7 +303,7 @@ class FeedBot(discord.Client):
         extra = sorted(name for name, on in guild.me.guild_permissions if on and name not in NEEDED)
         if extra:
             log.warning("the bot has more rights than it needs, remove them: %s", ", ".join(extra))
-        refs = [self.cfg["status"], *(r for r in self.cfg["news"].values() if r)]
+        refs = [r for r in self.cfg["news"].values() if r]
         for cid in {int(r["channel"]) for r in refs}:
             ch = guild.get_channel(cid)
             if ch is None:
@@ -328,15 +321,10 @@ class FeedBot(discord.Client):
 
     # -- polling --
 
-    @tasks.loop(seconds=STATUS_EVERY_S)
-    async def status_loop(self) -> None:
-        await self.export_status()
-
     @tasks.loop(seconds=NEWS_EVERY_S)
     async def news_loop(self) -> None:
         await self.export_news()
 
-    @status_loop.before_loop
     @news_loop.before_loop
     async def _wait_ready(self) -> None:
         await self.wait_until_ready()
@@ -349,52 +337,7 @@ class FeedBot(discord.Client):
         return await channel.fetch_message(message_id)  # type: ignore[union-attr]
 
     async def export_all(self) -> None:
-        await self.export_status()
         await self.export_news()
-
-    async def export_status(self) -> None:
-        async with self.lock:
-            try:
-                s = self.cfg["status"]
-                msg = await self.message(int(s["channel"]), int(s["message"]))
-            except discord.HTTPException as e:
-                log.warning("status message unavailable: %s", e)
-                return
-            embeds = []
-            for i, e in enumerate(msg.embeds):
-                image = None
-                src = (e.image and e.image.url) or (e.thumbnail and e.thumbnail.url)
-                if src:
-                    image = await self.images.save(src, f"map-{i}", "png", MAP_MAX_W)
-                embeds.append(
-                    {
-                        "title": resolve(e.title or "", msg),
-                        "description": resolve(e.description or "", msg),
-                        "url": e.url,
-                        "color": e.color.value if e.color else None,
-                        "fields": [
-                            {"name": resolve(f.name or "", msg), "value": resolve(f.value or "", msg), "inline": bool(f.inline)}
-                            for f in e.fields
-                        ],
-                        "footer": e.footer.text if e.footer else None,
-                        "timestamp": iso(e.timestamp),
-                        "image": image,
-                    }
-                )
-            body = {
-                "message": str(msg.id),
-                "edited_at": iso(msg.edited_at or msg.created_at),
-                "content": resolve(msg.content, msg),
-                "embeds": embeds,
-            }
-            key = json.dumps(body, sort_keys=True)
-            if key == self.last_status and (OUT_DIR / "status.json").exists():
-                return
-            self.last_status = key
-            body["updated_at"] = now_iso()
-            write_atomic(OUT_DIR / "status.json", json.dumps(body, indent=1).encode())
-            self.exported_at["status"] = body["updated_at"]
-            log.info("status.json written (%d embed(s))", len(embeds))
 
     async def news_item(self, slot: str, ref: dict[str, Any]) -> dict[str, Any] | None:
         msg = await self.message(int(ref["channel"]), int(ref["message"]))
@@ -467,7 +410,7 @@ class FeedBot(discord.Client):
 
     async def dump(self) -> None:
         out: dict[str, Any] = {}
-        refs = {"status": self.cfg["status"], **{f"news:{k}": v for k, v in self.cfg["news"].items() if v}}
+        refs = {f"news:{k}": v for k, v in self.cfg["news"].items() if v}
         for name, ref in refs.items():
             try:
                 m = await self.message(int(ref["channel"]), int(ref["message"]))
@@ -567,15 +510,15 @@ def build_commands(bot: FeedBot) -> app_commands.Group:
                 lines.append(f"**{s}**: {url}  ({title})")
             else:
                 lines.append(f"**{s}**: not set")
-        lines.append(f"Last export: news {bot.exported_at.get('news', 'never')}, status {bot.exported_at.get('status', 'never')}")
+        lines.append(f"Last export: {bot.exported_at.get('news', 'never')}")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @launcher.command(name="refresh", description="Export server info and news to the launcher now")
+    @launcher.command(name="refresh", description="Export the news to the launcher now")
     async def refresh(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        bot.last_status = bot.last_news = None
+        bot.last_news = None
         await bot.export_all()
-        await interaction.followup.send("Exported server info and news.", ephemeral=True)
+        await interaction.followup.send("Exported the news.", ephemeral=True)
 
     return launcher
 

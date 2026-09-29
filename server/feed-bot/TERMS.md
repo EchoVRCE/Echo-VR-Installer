@@ -1,15 +1,17 @@
-# Terms of Service: Echo VR Launcher Feed bot
+# Terms of Service: Echo VR Launcher Feed
 
 *Last updated: September 29, 2026*
 
-These terms apply to the Echo VR Launcher Feed bot ("the Bot"), operated by Mia Hentschel
-("we"). By using the Bot's commands you agree to them.
+These terms apply to the Echo VR Launcher Feed, operated by Mia Hentschel ("we"): the
+Discord bot ("the Bot") and the status service. By using the Bot's commands you agree to
+them.
 
 ## 1. The service
 
-The Bot copies the server status post and the community news messages chosen by moderators
-from the Echo VR community Discord server into public files. The Echo VR Launcher shows these
-files. The Bot is free of charge. We may change, suspend or discontinue it at any time.
+The Bot copies the community news messages chosen by moderators from the Echo VR community
+Discord server into public files. The status service turns the public EchoVRCE server status
+into aggregate numbers. The Echo VR Launcher shows both. The service is free of charge. We
+may change, suspend or discontinue it at any time.
 
 ## 2. Who may use it
 
@@ -33,7 +35,7 @@ removed as described in the [Privacy Policy](PRIVACY.md).
 ## 5. Availability
 
 The Bot and the feed are provided as they are. We do not guarantee that they are always
-available, complete or up to date.
+available, complete or up to date. The server numbers depend on the EchoVRCE status API.
 
 ## 6. Liability
 
@@ -43,7 +45,7 @@ of charge.
 
 ## 7. No affiliation
 
-The Bot is a community project. It is not affiliated with or endorsed by Discord, Meta or
+The feed is a community project. It is not affiliated with or endorsed by Discord, Meta or
 Ready At Dawn. Echo VR is a trademark of its respective owners.
 
 ## 8. Changes

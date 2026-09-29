@@ -1,15 +1,20 @@
-# Launcher feed bot
+# Launcher feed
 
-Mirrors the SERVER INFO post and the Community News message(s) from the Echo VR Discord
-into `https://files.echovr.de/launcher/feed/` (`status.json`, `news.json` and their
-images), which the launcher's Play page reads.
-
-Runs on `files.echo` in `/root/EchoLauncherFeed` as `echo-launcher-feed.service`; logs go
-to `/root/log/launcher_feed.log` (one file per day, kept 30 days) and the journal.
-
-It is read-only by design: it receives no message events and only fetches the configured
-messages by ID, every 30 s (status) and 5 min (news). [Terms of Service](TERMS.md) ·
+What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/`, made on
+`files.echo` in `/root/EchoLauncherFeed`. [Terms of Service](TERMS.md) ·
 [Privacy Policy](PRIVACY.md).
+
+- **`servers.json`** (SERVER INFO): `status_feed.py` as `echo-launcher-status.service`.
+  It reads the EchoVRCE status API every 30 s and publishes aggregate numbers only, plus
+  distinct players per hour, 24 h and 30 days, counted with keyed-hash pseudonyms kept 30
+  days in `state/` (the key is `state/history.key`; never copy it off the server). No
+  Discord, no dependencies. `python3 status_feed.py --forget <player ID>` stops counting
+  a player who asks. Log: `/root/log/launcher_status.log`.
+- **`news.json`** (Community News): `feed_bot.py` as `echo-launcher-feed.service`, a
+  read-only Discord bot. It receives no message events and only fetches the picked
+  messages by ID, every 5 min. Log: `/root/log/launcher_feed.log`.
+
+Logs rotate daily and are kept 30 days. Tests: `python3 -m unittest test_status_feed`.
 
 ## Discord setup
 
@@ -43,11 +48,11 @@ The chosen messages are kept in `config.json` next to the bot.
 
 ```sh
 ssh files.echo 'mkdir -p /root/EchoLauncherFeed'
-scp feed_bot.py requirements.txt files.echo:/root/EchoLauncherFeed/
-scp echo-launcher-feed.service files.echo:/etc/systemd/system/
+scp feed_bot.py status_feed.py requirements.txt files.echo:/root/EchoLauncherFeed/
+scp echo-launcher-feed.service echo-launcher-status.service files.echo:/etc/systemd/system/
 ssh files.echo 'cd /root/EchoLauncherFeed && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
 # The token goes into /root/EchoLauncherFeed/.bot.creds (chmod 600): the bare token,
 # TOKEN=... lines or JSON with a "token" key.
 ssh files.echo 'cd /root/EchoLauncherFeed && .venv/bin/python feed_bot.py --dump'
-ssh files.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-feed'
+ssh files.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-status echo-launcher-feed'
 ```
