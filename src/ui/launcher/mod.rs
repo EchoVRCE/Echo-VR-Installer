@@ -105,7 +105,7 @@ enum Msg {
     CacheDeleted(Vec<PathBuf>),
     /// A job needs administrator rights: ask, then answer on the channel.
     Consent(std::sync::mpsc::SyncSender<bool>),
-    FeedStatus(Option<feed::Status>),
+    FeedStatus(Option<feed::Servers>),
     FeedNews(Option<feed::News>),
     /// A feed image by file name (`None`: it couldn't be loaded).
     FeedImage(String, Option<image::RgbaImage>),
@@ -114,7 +114,7 @@ enum Msg {
 /// The Play page's feed (SERVER INFO and Community News) and its images.
 #[derive(Default)]
 struct Feed {
-    status: Option<feed::Status>,
+    status: Option<feed::Servers>,
     news: Option<feed::News>,
     /// A fetch failed and there is nothing to show.
     status_failed: bool,
@@ -132,22 +132,14 @@ impl Feed {
     const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
     const NEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
-    /// The image file names the current data refers to.
+    /// The image file names the news refers to.
     fn wanted(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .status
+        self.news
             .iter()
-            .flat_map(|s| s.embeds.iter().filter_map(|e| e.image.clone()))
-            .collect();
-        if let Some(n) = &self.news {
-            names.extend(
-                [&n.slots.main, &n.slots.community]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|i| i.image.clone()),
-            );
-        }
-        names
+            .flat_map(|n| [&n.slots.main, &n.slots.community])
+            .flatten()
+            .filter_map(|i| i.image.clone())
+            .collect()
     }
 
     /// Status and news have arrived, with every image they refer to.
@@ -378,7 +370,7 @@ impl Dashboard {
     fn poll_feed(&mut self, ctx: &egui::Context) {
         if self.demo && !self.feed_live {
             if self.feed.status.is_none() {
-                self.feed.status = Some(feed::mock_status());
+                self.feed.status = Some(feed::mock_servers());
                 self.feed.news = Some(feed::mock_news());
             }
             return;
@@ -388,7 +380,7 @@ impl Dashboard {
             self.feed.status_loading = true;
             self.feed.status_at = Some(std::time::Instant::now());
             self.worker.spawn(ctx, |tx| {
-                let s = feed::fetch_status()
+                let s = feed::fetch_servers()
                     .inspect_err(|e| tracing::warn!("server info unavailable: {e:#}"))
                     .ok();
                 tx.send(Msg::FeedStatus(s));

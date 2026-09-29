@@ -1,7 +1,8 @@
-//! The Play page's feed: the SERVER INFO post and the Community News messages, mirrored
-//! from the Echo VR Discord by the feed bot (`server/feed-bot`) into static files on
-//! files.echovr.de. Images are referenced by content-hashed file names, so a name that
-//! didn't change never needs downloading again.
+//! The Play page's feed, from static files on files.echovr.de: SERVER INFO
+//! (`servers.json`, aggregated from the EchoVRCE status API by `server/feed-bot/
+//! status_feed.py`) and Community News (`news.json`, mirrored from Discord by the feed bot).
+//! News images are referenced by content-hashed file names, so a name that didn't change
+//! never needs downloading again.
 
 use std::sync::OnceLock;
 
@@ -13,39 +14,120 @@ use crate::core::http;
 
 pub const BASE: &str = "https://files.echovr.de/launcher/feed/";
 
-/// The SERVER INFO message: its embeds, as Discord structures them.
+/// SERVER INFO: servers, how busy they are, players and matches.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct Status {
+pub struct Servers {
+    /// "ok", "stale" (the API's data is old) or "down" (the API doesn't answer).
     #[serde(default)]
-    pub embeds: Vec<Embed>,
+    pub status: String,
+    /// When the game servers' backend started (RFC 3339).
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// When this was written (RFC 3339).
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub servers: Split,
+    /// Percent of servers running a match.
+    #[serde(default)]
+    pub usage: Split,
+    #[serde(default)]
+    pub regions: Regions,
+    #[serde(default)]
+    pub players: Players,
+    #[serde(default)]
+    pub modes: Modes,
+    #[serde(default)]
+    pub locations: Vec<Location>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Split {
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub public: u32,
+    #[serde(default)]
+    pub private: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct Embed {
+#[serde(rename_all = "UPPERCASE")]
+pub struct Regions {
     #[serde(default)]
-    pub title: Option<String>,
+    pub na: Region,
     #[serde(default)]
-    pub description: Option<String>,
+    pub eu: Region,
     #[serde(default)]
-    pub fields: Vec<Field>,
+    pub oce: Region,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Region {
     #[serde(default)]
-    pub footer: Option<String>,
-    /// RFC 3339; shown after the footer ("Today at 12:32 PM").
+    pub servers: u32,
     #[serde(default)]
-    pub timestamp: Option<String>,
-    /// File name of the embed image (the world map) under [`BASE`].
+    pub usage: u32,
+}
+
+/// Different players seen over time, and online now.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Players {
     #[serde(default)]
-    pub image: Option<String>,
+    pub online: u32,
+    #[serde(default)]
+    pub last_hour: u32,
+    #[serde(default)]
+    pub last_24h: u32,
+    #[serde(default)]
+    pub last_30d: u32,
+    /// Since when players are counted (RFC 3339).
+    #[serde(default)]
+    pub since: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct Field {
+pub struct Modes {
     #[serde(default)]
-    pub name: String,
+    pub lobby: Mode,
     #[serde(default)]
-    pub value: String,
+    pub arena: Mode,
     #[serde(default)]
-    pub inline: bool,
+    pub combat: Mode,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Mode {
+    #[serde(default)]
+    pub public: Slot,
+    #[serde(default)]
+    pub private: Slot,
+}
+
+/// The matches of one mode and kind, added up.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Slot {
+    #[serde(default)]
+    pub matches: u32,
+    #[serde(default)]
+    pub players: u32,
+    #[serde(default)]
+    pub limit: u32,
+    #[serde(default)]
+    pub spectators: u32,
+}
+
+/// Servers in one place, for the map.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Location {
+    #[serde(default)]
+    pub lat: f32,
+    #[serde(default)]
+    pub lon: f32,
+    #[serde(default)]
+    pub servers: u32,
+    #[serde(default)]
+    pub matches: u32,
 }
 
 /// The Community News blocks: `main` feeds the banner and the first card, `community`
@@ -80,9 +162,9 @@ pub struct NewsItem {
     pub link_url: String,
 }
 
-pub fn fetch_status() -> Result<Status> {
+pub fn fetch_servers() -> Result<Servers> {
     Ok(serde_json::from_str(&http::get_text(&format!(
-        "{BASE}status.json"
+        "{BASE}servers.json"
     ))?)?)
 }
 
@@ -196,48 +278,82 @@ fn discord_time_at(t: OffsetDateTime, style: char, now: OffsetDateTime) -> Strin
 
 // ---- made-up data (snapshots, and the look of the design concept) ----
 
-pub fn mock_status() -> Status {
-    let field = |name: &str, value: &str| Field {
-        name: name.into(),
-        value: value.into(),
-        inline: true,
+/// The design concept's numbers.
+pub fn mock_servers() -> Servers {
+    let slot = |matches, players, limit, spectators| Slot {
+        matches,
+        players,
+        limit,
+        spectators,
     };
-    Status {
-        embeds: vec![Embed {
-            title: Some("Server Info".into()),
-            description: Some(
-                "-# Total | Public | Private\n\
-                 - Online: `53` | `50` | `3`\n\
-                 - Usage: `5%` | `6%` | `0%`\n\
-                 - Status: `ok` | Startup: <t:1790410560:f>\n\
-                 - Services: `If You Can Dodge a Wrench...`\n\
-                 __**Region**__\n\
-                 -# NA | EU | OCE\n\
-                 - Online: `37` | `10` | `3`\n\
-                 - Usage: `2%` | `20%` | `0%`\n\
-                 __**Players**__\n\
-                 - 30 Days: `4054`\n\
-                 - 24 Hours: `843`\n\
-                 - Last Hour: `35`\n\
-                 - Online: `16`"
-                    .into(),
-            ),
-            fields: vec![
-                field("Lobby", "[7/12](https://echovr.de)"),
-                field("Arena", "[8/16 (1)](https://echovr.de)"),
-                field("Combat", "n/a"),
-                field("Lobby Private", "n/a"),
-                field("Arena Private", "[1/16](https://echovr.de)"),
-                field("Combat Private", "n/a"),
-            ],
-            footer: Some("Last updated".into()),
-            timestamp: Some(
-                OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-            ),
-            image: None,
-        }],
+    let now = OffsetDateTime::now_utc();
+    let rfc = |t: OffsetDateTime| {
+        t.format(&time::format_description::well_known::Rfc3339)
+            .ok()
+    };
+    let at = |lat, lon, servers, matches| Location {
+        lat,
+        lon,
+        servers,
+        matches,
+    };
+    Servers {
+        status: "ok".into(),
+        started_at: OffsetDateTime::from_unix_timestamp(1_790_410_560)
+            .ok()
+            .and_then(rfc),
+        updated_at: rfc(now),
+        servers: Split {
+            total: 53,
+            public: 50,
+            private: 3,
+        },
+        usage: Split {
+            total: 5,
+            public: 6,
+            private: 0,
+        },
+        regions: Regions {
+            na: Region {
+                servers: 37,
+                usage: 2,
+            },
+            eu: Region {
+                servers: 10,
+                usage: 20,
+            },
+            oce: Region {
+                servers: 3,
+                usage: 0,
+            },
+        },
+        players: Players {
+            online: 16,
+            last_hour: 35,
+            last_24h: 843,
+            last_30d: 4054,
+            since: rfc(now - time::Duration::days(60)),
+        },
+        modes: Modes {
+            lobby: Mode {
+                public: slot(1, 7, 12, 0),
+                private: Slot::default(),
+            },
+            arena: Mode {
+                public: slot(1, 8, 16, 1),
+                private: slot(1, 1, 16, 0),
+            },
+            combat: Mode::default(),
+        },
+        locations: vec![
+            at(41.9, -87.6, 8, 1),
+            at(40.7, -74.2, 3, 0),
+            at(32.8, -96.8, 7, 1),
+            at(39.7, -105.0, 3, 0),
+            at(51.5, -0.1, 5, 1),
+            at(51.0, 11.0, 2, 0),
+            at(-27.5, 153.0, 3, 0),
+        ],
     }
 }
 
@@ -279,17 +395,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_bot_output() {
-        let s: Status = serde_json::from_str(
-            r#"{"message":"1","edited_at":null,"content":"","embeds":[{"title":"Server Info",
-            "description":"- Online: `53`","url":null,"color":5793266,"author":null,
-            "fields":[{"name":"Lobby","value":"7/12","inline":true}],"footer":null,
-            "timestamp":"2026-09-29T10:32:00+00:00","image":"map-0.1234abcd.png"}],
-            "updated_at":"2026-09-29T10:32:05+00:00"}"#,
+    fn parses_feed_files() {
+        let s: Servers = serde_json::from_str(
+            r#"{"status":"ok","source_time":"2026-09-29T11:36:32Z",
+            "started_at":"2026-09-28T17:50:32+00:00",
+            "servers":{"total":62,"public":52,"private":10},
+            "usage":{"total":2,"public":2,"private":0},
+            "regions":{"NA":{"servers":49,"usage":2},"EU":{"servers":10,"usage":0},
+            "OCE":{"servers":3,"usage":0}},
+            "players":{"online":4,"last_hour":4,"last_24h":4,"last_30d":4,
+            "since":"2026-09-29T11:36:33+00:00"},
+            "modes":{"lobby":{"public":{"matches":1,"players":4,"limit":12,"spectators":0},
+            "private":{"matches":0,"players":0,"limit":0,"spectators":0}}},
+            "locations":[{"region":"us-ne","name":"NE","country":"US","lat":41.26,
+            "lon":-95.94,"servers":7,"matches":1}],
+            "updated_at":"2026-09-29T11:36:33+00:00"}"#,
         )
         .unwrap();
-        assert_eq!(s.embeds[0].fields[0].value, "7/12");
-        assert_eq!(s.embeds[0].image.as_deref(), Some("map-0.1234abcd.png"));
+        assert_eq!(s.servers.public, 52);
+        assert_eq!(s.regions.na.servers, 49);
+        assert_eq!(s.modes.lobby.public.limit, 12);
+        assert_eq!(s.modes.combat.public.matches, 0);
+        assert_eq!(s.locations[0].matches, 1);
         let n: News = serde_json::from_str(
             r#"{"slots":{"main":{"id":"1","title":"Halloween","body":"- a","image":null,
             "link_label":"READ MORE","link_url":"https://x","jump_url":"https://y",

@@ -85,6 +85,10 @@ const IMAGES: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/img/icon_echovrce.png"),
     ),
     (
+        "world_map.png",
+        include_bytes!("../../assets/img/world_map.png"),
+    ),
+    (
         "icon_community.png",
         include_bytes!("../../assets/img/icon_community.png"),
     ),

@@ -349,25 +349,35 @@ fn quest_action(d: &mut Dashboard) -> Action {
 // ---- drawing ----
 
 /// Part of the info line in DMCAPS, or in Myriad for folder paths: DMCAPS has no
-/// lowercase, and the design sets paths as they are.
+/// lowercase, and the design sets paths as they are. Myriad's "-" and "_" vanish at small
+/// sizes (around 11 px), so those two come from Liberation Sans.
 fn info_part(job: &mut LayoutJob, text: &str, color: Color32) {
-    let path = text.contains('/') || text.contains('\\');
-    let (text, font) = if path {
-        (text.to_string(), design::myriad(PATH_SIZE))
-    } else {
-        (text.to_uppercase(), design::din(15.2))
+    let format = |font| TextFormat {
+        font_id: font,
+        color,
+        extra_letter_spacing: dz(0.5),
+        valign: egui::Align::Center,
+        ..Default::default()
     };
-    job.append(
-        &text,
-        0.0,
-        TextFormat {
-            font_id: font,
-            color,
-            extra_letter_spacing: dz(0.5),
-            valign: egui::Align::Center,
-            ..Default::default()
-        },
-    );
+    if !(text.contains('/') || text.contains('\\')) {
+        job.append(&text.to_uppercase(), 0.0, format(design::din(15.2)));
+        return;
+    }
+    let thin = |c: char| c == '-' || c == '_';
+    let mut rest = text;
+    while !rest.is_empty() {
+        let is_thin = rest.starts_with(thin);
+        let end = rest
+            .find(|c: char| thin(c) != is_thin)
+            .unwrap_or(rest.len());
+        let font = if is_thin {
+            crate::ui::theme::arial(dz(PATH_SIZE))
+        } else {
+            design::myriad(PATH_SIZE)
+        };
+        job.append(&rest[..end], 0.0, format(font));
+        rest = &rest[end..];
+    }
 }
 
 fn info_line(kit: &mut Kit, a: &Action) {
