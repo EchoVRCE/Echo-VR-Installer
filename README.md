@@ -15,6 +15,25 @@ After joining the server, look [here](https://discord.com/channels/7793491598527
 
 However, before you ask for help, please consult the pinned messages/threads and or channels for help on your issue because there is a good chance that your error is already documented in one of those places within the server.
 
+## Match links
+
+The launcher joins matches from `spark://` and `https://echo.taxi/spark://…` links: paste one
+into **Join** on the Play page or **Join from link** on the Servers page. On Windows and Linux
+it also opens links clicked in Discord or the browser, if no other app (Spark) handles them
+yet. **Open spark:// links** in Settings takes them over from Spark, or turns this off.
+macOS can't pass links to the launcher, so paste them there.
+
+
+## Linux
+
+The PC version plays on Linux through Steam. **SET UP** on the Play page downloads a
+private GE-Proton and [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer (it
+answers Echo's Oculus calls over OpenXR, so SteamVR, Monado or WiVRn drive the headset),
+reads Meta's Platform SDK loader out of Meta's own runtime package, and adds Echo VR to
+Steam as a non-Steam game (Steam restarts for that). PLAY then starts it through Steam.
+It needs an active OpenXR runtime and a registered OpenVR runtime (SteamVR, or xrizer /
+OpenComposite on Monado and WiVRn): Proton only turns OpenXR on when OpenVR is there.
+Only the live build runs this way; the event builds don't yet.
 
 ## Building from source
 

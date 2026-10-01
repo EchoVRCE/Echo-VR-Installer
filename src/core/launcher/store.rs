@@ -74,6 +74,34 @@ pub struct InstalledVersion {
     pub installed_at: Option<String>,
     /// The licence patch (`pnsovr.dll`) is applied; updates leave that file alone.
     pub patched: bool,
+    /// The executable's file name when it isn't `echovr.exe` (the 2017 builds'
+    /// `EchoArena.exe`).
+    pub exe: Option<String>,
+    /// An event build, played on the classic lobbies relay as this build.
+    pub publisher_lock: Option<String>,
+}
+
+impl InstalledVersion {
+    /// Its executable's file name.
+    pub fn exe_name(&self) -> &str {
+        self.exe.as_deref().unwrap_or(paths::DEFAULT_EXE)
+    }
+
+    /// Its executable.
+    pub fn exe_path(&self) -> PathBuf {
+        paths::exe_in(&self.root, self.exe_name())
+    }
+
+    /// The folder holding its executable, where updates and the licence patch go.
+    pub fn bin_dir(&self) -> PathBuf {
+        let exe = self.exe_path();
+        exe.parent().map(Path::to_path_buf).unwrap_or(exe)
+    }
+
+    /// Whether its executable is there.
+    pub fn present(&self) -> bool {
+        !self.root.is_empty() && self.exe_path().is_file()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,18 +119,41 @@ pub struct LauncherState {
     /// Minimize the launcher window once Echo VR has started.
     pub minimize_on_launch: bool,
     /// Owns Echo VR on a Meta account (`Some(false)`: a new player, who needs the
-    /// licence patch). `None` until the setup was answered.
+    /// licence patch). `None` until asked: at an install, or a version's first PLAY.
     pub owner: Option<bool>,
-    /// The first-run setup was answered or skipped.
-    pub setup_done: bool,
     /// SteamVR setup also installs the game artwork for the SteamVR library.
     pub revive_artwork: bool,
+    /// SteamVR setup also puts Echo VR into SteamVR's library.
+    pub revive_library: bool,
     /// The Play page shows the launch options under PLAY.
     pub show_launch_options: bool,
     /// The background is the designer's video instead of its first frame.
     pub animated_background: bool,
     /// How fast it plays, in percent (100 = as made).
     pub background_speed: u32,
+    /// The Quest's Wi-Fi address: read over USB, typed, or found by a scan.
+    pub quest_ip: Option<String>,
+    /// Reach the Quest's ADB over the network too (turned on over USB once).
+    pub quest_adb_network: bool,
+    /// The EchoVRCE account echovrce.com inside the launcher was signed in for.
+    pub vrce_site_account: Option<String>,
+    /// Linux: the Steam shortcut that starts Echo VR (its appid), once set up.
+    pub linux_appid: Option<u32>,
+    /// spark:// links were turned off in Settings: don't register for them at start.
+    pub spark_links_off: bool,
+    /// The classic lobbies (EchoRelay) server the event builds play on, `host:port`.
+    pub relay_server: String,
+    /// Your account there, asked for at an event build's first PLAY.
+    pub relay_account: Option<RelayAccount>,
+}
+
+/// An account on the classic lobbies server. The password sits in the game's own config
+/// in plain text too (the game reads it from there), so it isn't hidden here either.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RelayAccount {
+    pub name: String,
+    pub password: String,
 }
 
 /// What the PLAY button acts on: the selected version, installed or not.
@@ -128,11 +179,18 @@ impl Default for LauncherState {
             imported: false,
             minimize_on_launch: true,
             owner: None,
-            setup_done: false,
             revive_artwork: true,
+            revive_library: true,
             show_launch_options: false,
             animated_background: true,
             background_speed: 100,
+            quest_ip: None,
+            quest_adb_network: false,
+            vrce_site_account: None,
+            linux_appid: None,
+            spark_links_off: false,
+            relay_server: super::relay::DEFAULT_SERVER.into(),
+            relay_account: None,
         }
     }
 }
@@ -185,10 +243,14 @@ impl LauncherState {
 
     /// The PLAY target: the selected installed version, else the selected catalogue PC
     /// version, else the first installed one, else the first catalogue PC version.
-    /// `present` tells whether an install root still holds the game.
-    pub fn target(&self, catalog: Option<&Catalog>, present: impl Fn(&str) -> bool) -> Target {
+    /// `present` tells whether an installed version still has its game files.
+    pub fn target(
+        &self,
+        catalog: Option<&Catalog>,
+        present: impl Fn(&InstalledVersion) -> bool,
+    ) -> Target {
         let installed = |v: &InstalledVersion| {
-            if present(&v.root) {
+            if present(v) {
                 Target::Installed(v.clone())
             } else {
                 Target::Missing(v.clone())
@@ -290,12 +352,17 @@ impl LauncherState {
             return None;
         }
         let id = self.free_id("existing");
+        // A 2017 build starts EchoArena.exe.
+        let exe = paths::find_exe(&root)
+            .filter(|e| *e != paths::DEFAULT_EXE)
+            .map(str::to_string);
         self.versions.push(InstalledVersion {
             id: id.clone(),
             name: name.unwrap_or_else(|| format!("Existing install ({root})")),
             root,
             external: true,
             update_manifest: Some(crate::core::pc_update::PC_MANIFEST_URL.into()),
+            exe,
             ..Default::default()
         });
         if self.selected.is_none() {

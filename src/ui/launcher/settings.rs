@@ -4,7 +4,9 @@
 
 use super::install::{myriad, text_link};
 use super::{hero, server_info, setup, Dashboard, LauncherUpdate, Msg, CREDITS};
+use crate::core::launcher::relay;
 use crate::core::launcher::store::Runtime;
+use crate::core::links::Handler;
 use crate::core::{paths, platform};
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
@@ -37,7 +39,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.ghost {
         answers(d, ctx);
     }
-    game(d, kit);
+    game(d, kit, ctx);
     // Side by side, sharing the extra width; taller in a taller window.
     let (half, dy) = (kit.dx() / 2.0, kit.dy());
     launch_options(d, kit, LOWER[0].wider(half).taller(dy));
@@ -263,15 +265,17 @@ fn speed_row(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
 
 // ---- the cards ----
 
-/// GAME: how you play, as the welcome asks it (a tile each), and the SteamVR artwork.
-fn game(d: &mut Dashboard, kit: &mut Kit) {
+/// GAME: how you play, as the Install card asks it (a tile each), and the SteamVR
+/// artwork.
+fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (x, y, w, _) = hero::card_frame(kit, GAME.wider(kit.dx()), "Game");
     kit.caption(x, y, "How you play");
     let top = y + dz(30.0);
     let gap = dz(16.0);
-    let n = Runtime::ALL.len() as f32;
+    let offered = setup::runtimes(d);
+    let n = offered.len() as f32;
     let tw = (w - (n - 1.0) * gap) / n;
-    for (i, rt) in Runtime::ALL.into_iter().enumerate() {
+    for (i, rt) in offered.into_iter().enumerate() {
         let tx = x + i as f32 * (tw + gap);
         let on = d.state.profile.runtime == rt;
         if kit
@@ -304,6 +308,23 @@ fn game(d: &mut Dashboard, kit: &mut Kit) {
             "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
         ) {
             d.save();
+        }
+        // Beside the artwork's, on the same row.
+        let idle = !d.any_job();
+        if kit.check(
+            "steamvr-library",
+            &mut d.state.revive_library,
+            "SteamVR: show Echo VR in the library",
+            x + w / 2.0,
+            ay,
+            idle,
+            "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. After switching versions, tick this off and on to update it.",
+        ) {
+            d.save();
+            // Once SteamVR is set up, the entry follows the box (setup adds it otherwise).
+            if cfg!(windows) && !d.revive_missing() {
+                setup::steamvr_library(d, ctx, d.state.revive_library);
+            }
         }
     }
 }
@@ -359,7 +380,7 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         "Passed to echovr.exe after the options above",
     );
     y += BTN_H + dz(12.0);
-    kit.caps_text(
+    y += kit.caps_text(
         x,
         y,
         w,
@@ -371,6 +392,62 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     if changed {
         d.save();
     }
+    classic_lobbies(d, kit, x, y + dz(26.0), w);
+}
+
+/// The classic lobbies server the event builds play on, and your account there.
+fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) {
+    kit.caption(x, y, "Classic lobbies server (event builds)");
+    let fy = y + dz(30.0);
+    let bw = kit.button_width("Account", None, BTN_H).max(dz(150.0));
+    let invalid = !relay::valid_server(&d.relay_server_field);
+    let done = kit.field(
+        "relay-server",
+        &mut d.relay_server_field,
+        x,
+        fy,
+        w - bw - dz(14.0),
+        BTN_H,
+        relay::DEFAULT_SERVER,
+        invalid,
+        "The EchoRelay server's address and port, e.g. 168.119.2.92:6800",
+    );
+    if done {
+        let typed = d.relay_server_field.trim().to_string();
+        if typed.is_empty() || invalid {
+            // Back to what it was (empty: the community's server).
+            if typed.is_empty() {
+                d.state.relay_server = relay::DEFAULT_SERVER.into();
+            }
+            d.relay_server_field = d.state.relay_server.clone();
+        } else if typed != d.state.relay_server {
+            d.state.relay_server = typed;
+            d.save();
+            setup::write_relay_configs(d);
+        }
+    }
+    if kit
+        .button(
+            "relay-account",
+            x + w - bw,
+            fy,
+            bw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Account",
+            true,
+            "Your display name and password on that server",
+        )
+        .clicked
+    {
+        d.overlay = Some(setup::relay_account(d, false));
+    }
+    let note = match &d.state.relay_account {
+        Some(a) => format!("You play there as {}.", a.name),
+        None => "An event build asks for your account there when you first play it.".into(),
+    };
+    kit.caps_text(x, fy + BTN_H + dz(12.0), w, &note, 14.0, design::GREY, 0.0);
 }
 
 /// STORAGE: where versions go, and the cache.
@@ -525,6 +602,34 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         d.save();
     }
     y += h + dz(6.0);
+    // spark:// links (Windows, Linux).
+    if let Some(handler) = d
+        .link_handler
+        .clone()
+        .filter(|h| *h != Handler::Unsupported)
+    {
+        let mut on = handler == Handler::Ours;
+        let note = match handler {
+            Handler::Other(_) => "Spark opens them now. Tick to have the launcher open them instead.",
+            _ => "Match links from Discord, echo.taxi or the browser open the launcher, ready to join.",
+        };
+        let (flipped, h) = option(
+            kit,
+            "spark-links",
+            &mut on,
+            "Open spark:// links",
+            note,
+            x,
+            y,
+            w,
+            true,
+            "",
+        );
+        if flipped {
+            d.set_spark_links(ctx, on);
+        }
+        y += h + dz(6.0);
+    }
 
     // Support.
     y += markdown::draw(kit, x, y, w, "__**Support**__", &look) + dz(10.0);
@@ -633,7 +738,7 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
         if clicked {
             match (key, &d.launcher_update) {
                 ("about-credits", _) => d.dialogs.info("Credits", CREDITS),
-                ("about-discord", _) => platform::open_url(crate::core::oauth::INVITE_URL),
+                ("about-discord", _) => platform::open_url(crate::core::LOUNGE_INVITE),
                 ("about-source", _) => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
                 (_, LauncherUpdate::Available(r)) => platform::open_url(&r.url),
                 _ => d.check_launcher_update(ctx),

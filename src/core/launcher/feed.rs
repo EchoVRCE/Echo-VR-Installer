@@ -227,7 +227,8 @@ pub fn init_local_offset() {
     }
 }
 
-fn local(t: OffsetDateTime) -> OffsetDateTime {
+/// `t` in local time (the offset read at start-up, see `init_local_offset`).
+pub fn local(t: OffsetDateTime) -> OffsetDateTime {
     t.to_offset(LOCAL_OFFSET.get().copied().unwrap_or(UtcOffset::UTC))
 }
 

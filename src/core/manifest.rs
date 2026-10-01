@@ -14,6 +14,16 @@
 //!   # Target:  /sdcard/Android/media/com.readyatdawn.r15
 //! ```
 //!
+//! A build's file manifest (`<archive>.manifest` beside each build, e.g. `pc.zip.manifest`)
+//! describes the archive it lists:
+//!
+//! ```text
+//!   # Archive:  pc.zip
+//!   # SHA256:   9a498cb0...
+//!   # Size:     5024528313
+//!   # Root:     ready-at-dawn-echo-arena/
+//! ```
+//!
 //! Manifest paths end up in `adb shell` scripts (including `rm -rf`) and in local
 //! filesystem paths, so entry paths and the target root are validated strictly here.
 //! This is the single choke point -- do not re-implement parsing elsewhere.
@@ -45,6 +55,13 @@ pub struct Manifest {
     pub base_apk_sha: Option<String>,
     /// On-device root the entry paths are relative to (Quest manifests only).
     pub target_root: Option<String>,
+    /// A build's file manifest: the archive's file name, beside the manifest.
+    pub archive: Option<String>,
+    /// ...its SHA-256 and size,
+    pub archive_sha: Option<String>,
+    pub archive_size: Option<u64>,
+    /// ...and the one folder in it the entry paths are relative to ("name/").
+    pub archive_root: Option<String>,
 }
 
 /// Only unreserved path characters, no `.`/`..`/empty segments.
@@ -94,6 +111,41 @@ fn parse_base_apk_header(line: &str) -> Option<(String, String)> {
     Some((name.to_string(), sha.to_string()))
 }
 
+/// `# <key>: <value>` -> value, for a single-word value.
+fn header<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix('#')?.trim_start().strip_prefix(key)?;
+    let mut it = rest.strip_prefix(':')?.split_whitespace();
+    let value = it.next()?;
+    it.next().is_none().then_some(value)
+}
+
+/// Reads a build file manifest's archive headers from `line` into `m`, unless unsafe.
+fn parse_archive_header(m: &mut Manifest, line: &str) {
+    if let Some(name) = header(line, "Archive").filter(|n| is_safe_path(n) && !n.contains('/')) {
+        m.archive = Some(name.to_string());
+    } else if let Some(sha) = header(line, "SHA256").filter(|s| is_sha256_hex(s)) {
+        m.archive_sha = Some(sha.to_ascii_lowercase());
+    } else if let Some(size) = header(line, "Size").and_then(|s| s.parse().ok()) {
+        m.archive_size = Some(size);
+    } else if let Some(name) = root_header(line) {
+        m.archive_root = Some(format!("{name}/"));
+    }
+}
+
+/// `# Root: <folder>/` -> the folder's name. It may have spaces ("Echo VR Halloween
+/// 2017/"), but must be one plain folder: no separators, no `..`, nothing hidden.
+fn root_header(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('#')?.trim_start().strip_prefix("Root")?;
+    let name = rest.strip_prefix(':')?.trim().trim_end_matches('/');
+    let plain = !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && !name
+            .chars()
+            .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control());
+    plain.then_some(name)
+}
+
 /// `# Target: <root>` -> root
 fn parse_target_header(line: &str) -> Option<String> {
     let rest = line.strip_prefix('#')?.trim_start();
@@ -121,6 +173,8 @@ impl Manifest {
                     m.base_apk_sha = Some(sha);
                 } else if let Some(root) = parse_target_header(trimmed) {
                     m.target_root = Some(root);
+                } else {
+                    parse_archive_header(&mut m, trimmed);
                 }
                 continue;
             }
@@ -181,6 +235,13 @@ impl Manifest {
         format!("{}/{}", self.base_url, e.path)
     }
 
+    /// A build file manifest's archive, beside it.
+    pub fn archive_url(&self) -> Option<String> {
+        self.archive
+            .as_ref()
+            .map(|a| format!("{}/{a}", self.base_url))
+    }
+
     /// Downloads and parses. Errors on network failure or a malformed/unsafe manifest.
     pub fn fetch(url: &str) -> Result<Manifest> {
         let text = crate::core::http::get_text(url)
@@ -210,6 +271,36 @@ mod tests {
             m.url_for(&m.entries[0]),
             "https://files.echovr.de/updates/a/b.dll"
         );
+    }
+
+    #[test]
+    fn parses_build_manifest_headers() {
+        let m = Manifest::parse(
+            &format!(
+                "# Echo VR build file manifest\n# Archive:  pc.zip\n# Base URL: https://files.echovr.de\n# SHA256:   {}\n# Size:     5024528313\n# Root:     ready-at-dawn-echo-arena/\n# Files:    1\n#\nadd  bin/win10/echovr.exe  {SHA}\n",
+                SHA.to_uppercase()
+            ),
+            "https://files.echovr.de/pc.zip.manifest",
+        )
+        .unwrap();
+        assert_eq!(m.archive.as_deref(), Some("pc.zip"));
+        assert_eq!(m.archive_sha.as_deref(), Some(SHA));
+        assert_eq!(m.archive_size, Some(5_024_528_313));
+        assert_eq!(m.archive_root.as_deref(), Some("ready-at-dawn-echo-arena/"));
+        assert_eq!(
+            m.archive_url().as_deref(),
+            Some("https://files.echovr.de/pc.zip")
+        );
+        // A root folder with spaces is fine.
+        let spaced =
+            Manifest::parse("# Root:     Echo VR Halloween 2017/\n", "https://h/m").unwrap();
+        assert_eq!(
+            spaced.archive_root.as_deref(),
+            Some("Echo VR Halloween 2017/")
+        );
+        // Unsafe names are dropped, not used.
+        let bad = Manifest::parse("# Archive: ../x.zip\n# Root: ../\n", "https://h/m").unwrap();
+        assert_eq!((bad.archive, bad.archive_root), (None, None));
     }
 
     #[test]

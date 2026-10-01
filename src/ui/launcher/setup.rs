@@ -1,61 +1,306 @@
-//! What the installer wizards did, inline: the first-run setup (own Echo VR or not, how
-//! you play), the licence patch (Discord or a link) and the SteamVR (Revive) setup.
+//! What the installer wizards did, inline: the questions before an install (own Echo VR
+//! or not, how you play), the licence patch (Discord or a link, fetched while the game
+//! downloads) and the SteamVR (Revive) setup.
 
 use std::sync::mpsc::sync_channel;
 
+use std::path::PathBuf;
+
+use super::hero::{self, JobView};
 use super::versions::job_err;
 use super::{Dashboard, JobKind, JobResult, Msg, H, W};
 use crate::core::error::UiError;
+use crate::core::launcher::catalog::VersionEntry;
 use crate::core::launcher::launch;
 use crate::core::launcher::patch::{self, FetchError, Source};
 use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
-use crate::core::launcher::store::{InstalledVersion, Runtime};
+use crate::core::launcher::relay;
+use crate::core::launcher::store::{InstalledVersion, RelayAccount, Runtime, Target};
 use crate::core::launcher::versions::Step;
-use crate::core::{download, elevation, oauth, paths, platform, revive};
+use crate::core::{download, elevation, oauth, platform, revive};
 use crate::ui::design::{self, dz};
 use crate::ui::kit::Kit;
+use crate::ui::parts::Tx;
 use crate::ui::widgets::{Tone, BTN_H};
 
 pub(super) const REVIVE_JOB: &str = "revive";
+/// Putting Echo VR into SteamVR's library (or taking it out) on its own.
+const LIBRARY_JOB: &str = "steamvr-library";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
 pub(super) const JOIN_KEY: &str = "join-server";
 pub(super) const QUEST_JOB: &str = "quest";
-pub(super) const QUEST_INSTALL_KEY: &str = "quest-install";
 pub(super) const QUEST_REINSTALL_KEY: &str = "quest-reinstall";
-
-/// Something to carry on with once the first-run setup is answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Resume {
-    QuestInstall,
-}
+/// A new player's patch, fetched while their version installs.
+pub(super) const LICENCE_JOB: &str = "licence";
 
 /// A card over the whole window.
+#[derive(Clone)]
 pub(super) enum Overlay {
-    /// "Welcome To Echo VR": step 0 asks about the licence, step 1 how you play.
-    Setup { step: u8 },
-    /// A patch from a link the user already has.
-    PatchLink { target: LinkFor, url: String },
+    /// Before an install: your licence and (PC) how you play, then Install.
+    Install(Box<InstallAsk>),
+    /// Before the first PLAY of a version that wasn't installed here: your licence.
+    Owner,
+    /// Your account on the classic lobbies server (`play`: PLAY goes on once it's saved).
+    RelayAccount {
+        name: String,
+        password: String,
+        play: bool,
+    },
+    /// The licence patch for installed version `id`: authorize with Discord, or (`link`)
+    /// use a patch link.
+    Licence { id: String, url: String, link: bool },
+    /// "Join a lobby": a lobby link or ID to start Echo VR into.
+    JoinLobby { input: String },
+    /// EchoVRCE: sign in with pasted tokens.
+    VrceTokens { input: String },
+    /// Servers: start a new match (mode, place, guild, Combat map).
+    StartServer {
+        mode: usize,
+        region: Option<String>,
+        guild: Option<String>,
+        level: usize,
+    },
+    /// Servers: a match's link to copy, and invites for friends (`started`: you just
+    /// started it).
+    ShareMatch { match_id: String, started: bool },
 }
 
-/// What a patch link is for.
+/// The Install card's answers, prefilled with the last ones.
 #[derive(Clone)]
-pub(super) enum LinkFor {
-    /// The licence patch for this PC version.
-    Pc(String),
-    /// A patched APK, installed on the Quest.
+pub(super) struct InstallAsk {
+    pub target: InstallFor,
+    pub owner: Option<bool>,
+    pub runtime: Runtime,
+    /// A new player's patch from a link they have, instead of Discord.
+    pub link: bool,
+    pub url: String,
+}
+
+/// What the Install card installs.
+#[derive(Clone)]
+pub(super) enum InstallFor {
+    Pc(Box<VersionEntry>),
     Quest,
 }
 
+/// A new player's patch on its way into version `version`: fetched while it installs,
+/// put in once both are done.
+pub(super) struct PendingPatch {
+    pub version: String,
+    pub dll: Option<PathBuf>,
+}
+
 // ---- jobs ----
+
+/// The licence card for installed version `id` (PATCH, MANAGE, the first PLAY's answer).
+pub(super) fn licence(id: &str) -> Overlay {
+    Overlay::Licence {
+        id: id.to_string(),
+        url: String::new(),
+        link: false,
+    }
+}
+
+/// Asks before installing `e` on this PC, as the installer did: your licence and how you
+/// play, prefilled with your last answers.
+pub(super) fn ask_install(d: &mut Dashboard, e: VersionEntry) {
+    // Event builds always start in VR.
+    let runtime = match d.state.profile.runtime {
+        Runtime::Flat if e.publisher_lock.is_some() => Runtime::MetaLink,
+        rt => rt,
+    };
+    d.overlay = Some(Overlay::Install(Box::new(InstallAsk {
+        target: InstallFor::Pc(Box::new(e)),
+        owner: d.state.owner,
+        runtime,
+        link: false,
+        url: String::new(),
+    })));
+}
+
+/// Asks before installing on the Quest: your licence (`link`: a new player's patched
+/// build from a link). Unanswered, it starts from what the headset has.
+pub(super) fn ask_quest_install(d: &mut Dashboard, link: bool) {
+    let owner = if link {
+        Some(false)
+    } else {
+        d.state.owner.or(d.quest_was_patched.then_some(false))
+    };
+    d.overlay = Some(Overlay::Install(Box::new(InstallAsk {
+        target: InstallFor::Quest,
+        owner,
+        runtime: d.state.profile.runtime,
+        link,
+        url: String::new(),
+    })));
+}
+
+/// Installs as the Install card was answered: keeps the answers, then installs. A new
+/// player's patch comes meanwhile (PC), or first (the Quest's patched build).
+fn confirm_install(d: &mut Dashboard, ctx: &egui::Context, ask: InstallAsk) {
+    // Event builds don't ask: EchoRelay's patch replaces the licence check.
+    let event = matches!(&ask.target, InstallFor::Pc(e) if e.publisher_lock.is_some());
+    let own = match (event, ask.owner) {
+        (true, _) => true,
+        (false, Some(own)) => own,
+        (false, None) => return,
+    };
+    if !event {
+        d.state.owner = Some(own);
+    }
+    let link = ask.link.then(|| ask.url.trim().to_string());
+    match ask.target {
+        InstallFor::Pc(e) => {
+            // Already installed: a reinstall, which checks the files and fetches only the
+            // broken ones. A new player's patch stays; an owner gets the original back.
+            let installed = d.state.installed_from(&e.id).cloned();
+            let id = installed.as_ref().map_or(e.id.clone(), |v| v.id.clone());
+            let patched = installed.as_ref().is_some_and(|v| v.patched);
+            d.state.profile.runtime = ask.runtime;
+            d.state.selected = Some(id.clone());
+            d.save();
+            match installed {
+                Some(v) => super::versions::reinstall(d, ctx, *e, v, !own && patched),
+                None => super::versions::install(d, ctx, *e),
+            }
+            if !own && !patched && d.jobs.contains_key(&id) {
+                fetch_licence(d, ctx, &id, link.map_or(Source::Discord, Source::Url));
+            }
+        }
+        InstallFor::Quest => {
+            d.save();
+            let source = match (own, link) {
+                (true, _) => ApkSource::Stock,
+                (false, None) => ApkSource::Discord,
+                (false, Some(url)) => ApkSource::Url(url),
+            };
+            quest_install(d, ctx, source);
+        }
+    }
+}
+
+/// Gets a new player's patch for version `id` while it installs: Discord opens right
+/// away, and the patch waits in the download folder until the game is in place
+/// ([`apply_pending`]).
+fn fetch_licence(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: Source) {
+    d.pending_patch = Some(PendingPatch {
+        version: id.to_string(),
+        dll: None,
+    });
+    // One patch is yours for every version: one already on its way will do.
+    if d.jobs.contains_key(LICENCE_JOB) {
+        return;
+    }
+    let first = match source {
+        Source::Discord => "Opening Discord in your browser...",
+        _ => "Downloading your patch...",
+    };
+    d.start_job(
+        ctx,
+        JobKind::Licence,
+        LICENCE_JOB,
+        "Getting your licence patch",
+        first,
+        move |cancel, on| {
+            let staged = patch::staged();
+            if source == Source::Discord && staged.is_file() {
+                return JobResult::LicenceFetched(staged);
+            }
+            match patch::fetch(&source, cancel, on) {
+                Ok(dll) => JobResult::LicenceFetched(dll),
+                Err(FetchError::OAuth(e)) => JobResult::OAuthFailed(e),
+                Err(FetchError::Other(e)) => job_err(e, "Licence Patch Failed"),
+            }
+        },
+    );
+}
+
+/// Pure: a pending patch goes in once it is fetched and its version is installed, with
+/// no install of it still running.
+fn pending_ready(fetched: bool, installed: bool, installing: bool) -> bool {
+    fetched && installed && !installing
+}
+
+/// Puts a new player's patch into its version once both are there: called when the
+/// patch arrives and when the install finishes, whichever is last.
+pub(super) fn apply_pending(d: &mut Dashboard, ctx: &egui::Context) {
+    let ready = d.pending_patch.as_ref().is_some_and(|p| {
+        pending_ready(
+            p.dll.is_some(),
+            d.state.version(&p.version).is_some(),
+            d.jobs.contains_key(&p.version),
+        )
+    });
+    if let Some(PendingPatch {
+        version,
+        dll: Some(dll),
+    }) = ready.then(|| d.pending_patch.take()).flatten()
+    {
+        patch(d, ctx, &version, Source::Staged(dll));
+    }
+}
+
+/// The account card, filled with the saved account (`play`: PLAY goes on after Save).
+pub(super) fn relay_account(d: &Dashboard, play: bool) -> Overlay {
+    let saved = d.state.relay_account.clone().unwrap_or_default();
+    Overlay::RelayAccount {
+        name: saved.name,
+        password: saved.password,
+        play,
+    }
+}
+
+/// Points every installed event build at the classic lobbies server as your account, so
+/// a desktop shortcut starts them right too. PLAY writes the started one again.
+pub(super) fn write_relay_configs(d: &Dashboard) {
+    let Some(account) = &d.state.relay_account else {
+        return;
+    };
+    for v in d
+        .state
+        .versions
+        .iter()
+        .filter(|v| v.publisher_lock.is_some() && v.present())
+    {
+        if let Err(e) = relay::write_config(v, &d.state.relay_server, account) {
+            tracing::warn!("classic lobbies config for {}: {e:#}", v.id);
+        }
+    }
+}
+
+/// The job to show for version `id`: its own, or the patch it waits for.
+pub(super) fn job_for(d: &Dashboard, id: &str) -> Option<JobView> {
+    hero::job_view(d, id).or_else(|| {
+        d.pending_patch
+            .as_ref()
+            .filter(|p| p.version == id)
+            .and_then(|_| hero::job_view(d, LICENCE_JOB))
+    })
+}
+
+/// A job's way to ask for administrator rights: the dialog answers on a channel.
+fn consent_asker(tx: Tx<Msg>) -> impl FnMut() -> bool + Send + 'static {
+    move || {
+        let (s, r) = sync_channel(1);
+        tx.send(Msg::Consent(s));
+        r.recv().unwrap_or(false)
+    }
+}
 
 /// Fetches the personal licence patch and puts it into version `id`.
 pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: Source) {
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
+    if d.game().is_running() {
+        d.notify("Close Echo VR first: it holds the file the patch replaces");
+        return;
+    }
+    let mut consent = consent_asker(d.worker.tx(ctx));
     let first = match source {
         Source::Discord => "Opening Discord in your browser...",
         Source::Url(_) => "Downloading your patch...",
+        Source::Staged(_) => "Applying the patch...",
     };
     d.start_job(
         ctx,
@@ -64,7 +309,8 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
         &format!("Patching {}", v.name),
         first,
         move |cancel, on| {
-            // A patch fetched earlier this session is personal too: reuse it.
+            // A patch from Discord earlier this session is yours too: reuse it. One from
+            // a link goes once it is in (it may not be yours).
             let staged = patch::staged();
             let dll = if source == Source::Discord && staged.is_file() {
                 staged
@@ -76,7 +322,11 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
                 }
             };
             on(Step::Status("Applying the patch...".into()));
-            match patch::apply(&v.root, &dll) {
+            let r = elevation::apply_patch(&v.bin_dir(), &dll, &mut consent);
+            if patch::from_link(&dll) {
+                let _ = std::fs::remove_file(&dll);
+            }
+            match r {
                 Ok(()) => JobResult::Patched,
                 Err(e) => job_err(e, "Couldn't write patch"),
             }
@@ -85,30 +335,86 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
 }
 
 /// Takes the licence patch off version `id` again.
-pub(super) fn unpatch(d: &mut Dashboard, id: &str) {
+pub(super) fn unpatch(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    match patch::remove(&v.root) {
-        Ok(()) => {
-            if let Some(x) = d.state.versions.iter_mut().find(|x| x.id == id) {
-                x.patched = false;
-            }
-            d.save();
-            d.notify("The licence patch is removed: the original pnsovr.dll is back");
-        }
-        Err(e) => d.dialogs.error(
-            "Couldn't remove patch",
-            &format!("{e:#}"),
-            Default::default(),
-        ),
+    if d.game().is_running() {
+        d.notify("Close Echo VR first: it holds the file the patch replaces");
+        return;
+    }
+    let mut consent = consent_asker(d.worker.tx(ctx));
+    d.start_job(
+        ctx,
+        JobKind::Unpatch,
+        id,
+        &format!("Removing the patch from {}", v.name),
+        "Restoring the original pnsovr.dll...",
+        move |_, _| match elevation::remove_patch(&v.bin_dir(), &mut consent) {
+            Ok(()) => JobResult::Unpatched,
+            Err(e) => job_err(e, "Couldn't remove patch"),
+        },
+    );
+}
+
+/// What SteamVR's library entry starts: the version PLAY starts, with the launch options
+/// (executable, arguments joined as a command line).
+fn library_target(d: &Dashboard) -> Option<(std::path::PathBuf, String)> {
+    let Target::Installed(v) = d.target() else {
+        return None;
+    };
+    Some((v.exe_path(), launch_args(d, &v)))
+}
+
+/// The launch options `v` starts with, as a command line: none for an event build (the
+/// 2019 one quits on flags it doesn't know).
+fn launch_args(d: &Dashboard, v: &InstalledVersion) -> String {
+    if v.publisher_lock.is_some() {
+        String::new()
+    } else {
+        launch::join_args(&launch::game_args(&d.state.profile, None))
     }
 }
 
-/// Downloads and installs Revive (asking for administrator rights), then the artwork.
+/// Puts Echo VR into SteamVR's library (`add`) or takes it out, asking for administrator
+/// rights when Revive's folder needs them.
+pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool) {
+    let target = if add { library_target(d) } else { None };
+    if add && target.is_none() {
+        d.notify("Install Echo VR first: the SteamVR library entry starts it");
+        return;
+    }
+    let mut consent = consent_asker(d.worker.tx(ctx));
+    let title = if add {
+        "Adding Echo VR to SteamVR"
+    } else {
+        "Removing Echo VR from SteamVR"
+    };
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        LIBRARY_JOB,
+        title,
+        "Updating the SteamVR library...",
+        move |_, _| {
+            let (exe, args) = match &target {
+                Some((exe, args)) => (Some(exe.as_path()), args.as_str()),
+                None => (None, ""),
+            };
+            match elevation::set_library_entry(exe, args, &mut consent) {
+                Ok(()) => JobResult::LibraryEntry(add),
+                Err(e) => job_err(e, "SteamVR Library"),
+            }
+        },
+    );
+}
+
+/// Downloads and installs Revive (asking for administrator rights), then the artwork and
+/// Echo VR's entry in SteamVR's library.
 pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
-    let tx = d.worker.tx(ctx);
+    let mut consent = consent_asker(d.worker.tx(ctx));
     let artwork = d.state.revive_artwork;
+    let library = d.state.revive_library.then(|| library_target(d)).flatten();
     d.start_job(
         ctx,
         JobKind::Revive,
@@ -116,11 +422,6 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
         "Setting up SteamVR",
         "Downloading Revive...",
         move |cancel, on| {
-            let mut consent = || {
-                let (s, r) = sync_channel(1);
-                tx.send(Msg::Consent(s));
-                r.recv().unwrap_or(false)
-            };
             let installer = match revive::download_installer(cancel, &mut |p| {
                 if let download::Progress::Percent(v) = p {
                     on(Step::Percent(v));
@@ -143,16 +444,25 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
                     "Revive does not appear to be installed (was the installer cancelled?).",
                 )));
             }
+            // The artwork and the library entry are niceties: Revive works without them.
+            let mut notes = Vec::new();
             if artwork {
                 on(Step::Status("Installing the game artwork...".into()));
                 if let Err(e) = elevation::install_artwork(&mut consent) {
-                    return job_err(
-                        e.context("Installing the artwork failed"),
-                        "SteamVR Setup Failed",
-                    );
+                    tracing::warn!("artwork: {e:#}");
+                    notes.push(format!("Its artwork couldn't be installed: {e:#}"));
                 }
             }
-            JobResult::ReviveReady
+            if let Some((exe, args)) = &library {
+                on(Step::Status(
+                    "Adding Echo VR to the SteamVR library...".into(),
+                ));
+                if let Err(e) = elevation::set_library_entry(Some(exe), args, &mut consent) {
+                    tracing::warn!("steamvr library: {e:#}");
+                    notes.push(format!("It couldn't be added to SteamVR's library: {e:#}"));
+                }
+            }
+            JobResult::ReviveReady(notes)
         },
     );
 }
@@ -162,20 +472,25 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    let exe = paths::exe_path(&v.root);
+    let exe = v.exe_path();
     let revive = match d.state.profile.runtime {
         Runtime::Revive if !d.demo => revive::find_revive_dir(),
         _ => None,
     };
-    // The launch options from Settings go into the shortcut too.
-    let args = launch::join_args(&launch::game_args(&d.state.profile, None));
+    // The launch options from Settings go into the shortcut too. An event build's is
+    // named after it, as the relay's own installer names them.
+    let args = launch_args(d, &v);
+    let name = match &v.publisher_lock {
+        Some(_) => format!("Echo VR {}", v.name),
+        None => "Echo VR".to_string(),
+    };
     let result = match (d.state.profile.runtime, revive) {
-        (Runtime::Revive, Some(dir)) => revive::create_injector_shortcut(&dir, &exe),
+        (Runtime::Revive, Some(dir)) => revive::create_injector_shortcut(&dir, &exe, &args),
         _ => platform::create_shortcut(
-            "Echo VR",
+            &name,
             &exe,
             (!args.is_empty()).then_some(args.as_str()),
-            Some(&paths::bin_path(&v.root)),
+            Some(&v.bin_dir()),
             Some(&exe),
         ),
     };
@@ -189,45 +504,82 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
     }
 }
 
-/// The licence patch: PATCH on PLAY, the Manage menu's patch entries, patched Quest
-/// builds and the welcome's licence question. Off until it comes back in another form;
-/// meanwhile everyone is treated as owning Echo VR.
-pub(super) const LICENCE_PATCH: bool = false;
-
-/// The welcome's first question: the licence, or how you play.
-const FIRST_STEP: u8 = if LICENCE_PATCH { 0 } else { 1 };
-
-/// The first-run welcome, at its first question.
-pub(super) fn welcome() -> Overlay {
-    Overlay::Setup { step: FIRST_STEP }
-}
-
-/// Version `v` needs the licence patch before PLAY.
+/// Version `v` needs the licence patch before PLAY: you're a new player, it isn't patched,
+/// and the PC game runs here (macOS can't, so nothing asks for the patch there).
 pub(super) fn needs_patch(d: &Dashboard, v: &InstalledVersion) -> bool {
-    LICENCE_PATCH && d.state.owner == Some(false) && !v.patched
+    // Event builds get EchoRelay's patch instead, which skips the licence check.
+    v.publisher_lock.is_none()
+        && d.state.owner == Some(false)
+        && !v.patched
+        && (cfg!(any(windows, target_os = "linux")) || d.demo)
 }
 
-/// The Quest APK to install: stock for owners, a personal patched one for new players.
-pub(super) fn quest_source(d: &Dashboard) -> ApkSource {
-    if LICENCE_PATCH && d.state.owner == Some(false) {
-        ApkSource::Discord
-    } else {
-        ApkSource::Stock
-    }
+/// The ways to play this PC offers: SteamVR (through Revive) only on Windows. Snapshots
+/// show all of them, as on Windows.
+pub(super) fn runtimes(d: &Dashboard) -> Vec<Runtime> {
+    Runtime::ALL
+        .into_iter()
+        .filter(|rt| *rt != Runtime::Revive || cfg!(windows) || d.demo)
+        .collect()
 }
 
-/// Asks before replacing Echo VR on the headset (the setup comes first if unanswered).
-pub(super) fn ask_quest_install(d: &mut Dashboard) {
-    if LICENCE_PATCH && d.state.owner.is_none() {
-        d.overlay = Some(welcome());
-        d.after_setup = Some(Resume::QuestInstall);
+/// Whether PLAY can start the PC game here (snapshots: as on Windows). On Linux, once it
+/// is set up (`linux_setup`).
+pub(super) fn pc_play_supported(d: &Dashboard) -> bool {
+    cfg!(windows) || d.demo || linux_ready(d)
+}
+
+/// Linux: GE-Proton, EchoXR and the Steam shortcut are in place.
+pub(super) fn linux_ready(d: &Dashboard) -> bool {
+    cfg!(target_os = "linux") && d.linux_set_up && d.state.linux_appid.is_some()
+}
+
+pub(super) const LINUX_JOB: &str = "linux-setup";
+
+/// Sets up Echo VR for Linux: a private GE-Proton, EchoXR's OpenXR runtime and Meta's
+/// Platform SDK loader, then (closing Steam meanwhile) the shortcut in Steam that starts it.
+pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
+    use crate::core::linux::{self, echoxr, steam};
+    let Some(root) = steam::root() else {
+        d.dialogs.error(
+            "Steam not found",
+            "Echo VR runs through Steam on Linux: install Steam, sign in once, and try again.",
+            Default::default(),
+        );
         return;
-    }
-    d.dialogs.confirm(
-        QUEST_INSTALL_KEY,
-        "Install Echo VR",
-        "Installing replaces Echo VR on your Quest.\nThe installed app and its local data will be removed first.\n\nContinue?",
-        crate::ui::dialogs::Icon::Question,
+    };
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        LINUX_JOB,
+        "Setting up Echo VR for Linux",
+        "Preparing...",
+        move |cancel, on| {
+            if let Err(e) = echoxr::setup(&root, cancel, on) {
+                return job_err(e, "Linux Setup Failed");
+            }
+            let Some(exe) = linux::launcher_exe() else {
+                return job_err(
+                    anyhow::anyhow!("the launcher's own path is unknown"),
+                    "Linux Setup Failed",
+                );
+            };
+            on(Step::Status(
+                "Adding Echo VR to Steam (Steam restarts)...".into(),
+            ));
+            let shortcut = steam::Shortcut {
+                exe,
+                launch_options: linux::PLAY_FLAG.into(),
+                icon: None,
+            };
+            let r = steam::shutdown(&root)
+                .and_then(|()| steam::install_shortcut(&root, &shortcut))
+                .and_then(|appid| steam::start(&root).map(|()| appid));
+            match r {
+                Ok(appid) => JobResult::LinuxReady(appid),
+                Err(e) => job_err(e, "Linux Setup Failed"),
+            }
+        },
     );
 }
 
@@ -236,14 +588,26 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkS
         ApkSource::Discord => "Opening Discord in your browser...",
         _ => "Checking for the latest version...",
     };
+    // The catalogue's APK, for when the update manifest (which names the current one)
+    // can't be fetched.
+    let fallback = d
+        .catalog
+        .as_ref()
+        .and_then(|c| {
+            c.versions
+                .iter()
+                .find(|e| e.platform == crate::core::launcher::catalog::Platform::Quest)
+        })
+        .filter(|e| e.uses_mirror() && e.url.ends_with(".apk"))
+        .map(|e| e.url.clone());
     d.start_job(
         ctx,
         JobKind::QuestInstall,
         QUEST_JOB,
         "Installing Echo VR on your Quest",
         first,
-        move |cancel, on| match quest_core::install(&source, cancel, on) {
-            Ok(()) => JobResult::QuestInstalled,
+        move |cancel, on| match quest_core::install(&source, fallback.as_deref(), cancel, on) {
+            Ok(outcome) => JobResult::QuestInstalled(outcome),
             Err(JobError::OAuth(e)) => JobResult::OAuthFailed(e),
             Err(JobError::Other(e)) => job_err(e, "Installation Failed"),
         },
@@ -273,11 +637,14 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
     }
     let blocked = kit.blocked;
     kit.modal("overlay", blocked, |k| match &d.overlay {
-        Some(Overlay::Setup { step }) => {
-            let step = *step;
-            setup_card(d, k, ctx, step)
-        }
-        Some(Overlay::PatchLink { .. }) => link_card(d, k, ctx),
+        Some(Overlay::Install(_)) => install_card(d, k, ctx),
+        Some(Overlay::Owner) => owner_card(d, k, ctx),
+        Some(Overlay::RelayAccount { .. }) => relay_account_card(d, k, ctx),
+        Some(Overlay::Licence { .. }) => licence_card(d, k, ctx),
+        Some(Overlay::JoinLobby { .. }) => super::play::lobby_card(d, k, ctx),
+        Some(Overlay::VrceTokens { .. }) => super::echovrce::tokens_card(d, k, ctx),
+        Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
+        Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
         None => {}
     });
 }
@@ -296,15 +663,7 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
     }
 }
 
-/// A runtime's name on its tile (the welcome's, Settings').
-pub(super) fn runtime_title(r: Runtime) -> &'static str {
-    match r {
-        Runtime::Revive => "SteamVR (Revive)",
-        Runtime::Flat => "Flat (no headset)",
-        _ => runtime_label(r),
-    }
-}
-
+/// A runtime's name on its tile (the Install card's, Settings').
 pub(super) fn runtime_label(r: Runtime) -> &'static str {
     match r {
         Runtime::MetaLink => "Meta Link",
@@ -314,9 +673,9 @@ pub(super) fn runtime_label(r: Runtime) -> &'static str {
     }
 }
 
-/// A modal card with a header strip; returns its padding-inset content rect's left, top
-/// and width.
-fn card(k: &Kit, w: f32, h: f32, title: &str) -> (f32, f32, f32, f32) {
+/// A centred overlay card `w`×`h` with its title strip; returns its content's left edge,
+/// top, width and bottom.
+pub(super) fn card(k: &Kit, w: f32, h: f32, title: &str) -> (f32, f32, f32, f32) {
     let (x, y) = (
         ((W + k.ex - w) / 2.0).round(),
         ((H + k.ey - h) / 2.0).round(),
@@ -327,167 +686,112 @@ fn card(k: &Kit, w: f32, h: f32, title: &str) -> (f32, f32, f32, f32) {
     (x + pad, y + dz(46.0) + pad, w - 2.0 * pad, y + h - pad)
 }
 
-/// "Welcome to Echo VR": one question per step, each answer a tile with its explanation.
-fn setup_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, step: u8) {
-    // Both steps share one size: the four answers of step 2 set it.
-    let (w, h) = (dz(1000.0), dz(515.0));
-    let (x, y, cw, bottom) = card(k, w, h, "Welcome to Echo VR");
-    let question = if step == 0 {
-        "Do you own Echo VR on your Meta account?"
-    } else {
-        "How do you play Echo VR?"
-    };
+/// A question over a card's answers, in the cards' caps.
+fn question(k: &Kit, x: f32, y: f32, w: f32, text: &str) {
     let q = k.spaced_fit(
-        &question.to_uppercase(),
-        design::conthrax(20.0),
+        &text.to_uppercase(),
+        design::conthrax(18.0),
         design::TEXT,
         dz(2.0),
         false,
-        cw,
+        w,
     );
     k.put(x, y, q);
-    let top = y + dz(52.0);
-    let gap = dz(20.0);
-    let tw = (cw - gap) / 2.0;
-    if step == 0 {
-        let th = dz(260.0);
-        let answers = [
-            (true, "I own Echo VR on Meta", OWN_NOTE),
-            (false, "I'm a new player", NEW_NOTE),
-        ];
-        for (i, (own, label, note)) in answers.into_iter().enumerate() {
-            let tx = x + i as f32 * (tw + gap);
-            let on = d.state.owner == Some(own);
-            if k.tile(
-                &format!("setup-owner-{i}"),
-                tx,
-                top,
-                tw,
-                th,
-                label,
-                note,
-                on,
-            )
-            .clicked
-            {
-                d.state.owner = Some(own);
-                d.overlay = Some(Overlay::Setup { step: 1 });
-            }
-        }
+}
+
+/// Space between a card text's paragraphs.
+const PARA: f32 = 10.0;
+
+/// The height of `text` in a card `w` wide.
+fn text_height(k: &Kit, text: &str, w: f32) -> f32 {
+    let block = k.caps_block(text, 17.0, design::BODY, w);
+    block.iter().map(|g| g.size().y).sum::<f32>() + dz(PARA) * block.len().saturating_sub(1) as f32
+}
+
+/// The height of [`patch_options`] with `text`, `w` wide.
+fn patch_options_h(k: &Kit, text: &str, w: f32, link: bool) -> f32 {
+    let field = if link {
+        dz(20.0) + BTN_H + dz(34.0)
     } else {
-        let th = dz(120.0);
-        for (i, rt) in Runtime::ALL.iter().enumerate() {
-            let tx = x + (i % 2) as f32 * (tw + gap);
-            let ty = top + (i / 2) as f32 * (th + gap);
-            let label = runtime_title(*rt);
-            let on = d.state.profile.runtime == *rt;
-            let note = runtime_note(*rt);
-            if k.tile(
-                &format!("setup-runtime-{i}"),
-                tx,
-                ty,
-                tw,
-                th,
-                label,
-                note,
-                on,
-            )
-            .clicked
-            {
-                d.state.profile.runtime = *rt;
-                finish_setup(d);
-            }
-        }
-    }
-
-    // BACK, SKIP FOR NOW and the step.
-    let by = bottom - BTN_H;
-    let mut bx = x;
-    if step > FIRST_STEP {
-        let bw = k.button_width("Back", None, BTN_H).max(110.0);
-        if k.button(
-            "setup-back",
-            bx,
-            by,
-            bw,
-            BTN_H,
-            Tone::Dark,
-            None,
-            "Back",
-            true,
-            "",
-        )
-        .clicked
-        {
-            d.overlay = Some(Overlay::Setup { step: 0 });
-        }
-        bx += bw + dz(24.0);
-    }
-    let skip_tip = "Ask later; you can change it in Settings";
-    let skip_y = by + (BTN_H - dz(20.0)) / 2.0;
-    if k.link("setup-skip", bx, skip_y, "Skip for now", 16.0, skip_tip)
-        .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-    {
-        finish_setup(d);
-        return;
-    }
-    if FIRST_STEP == 0 {
-        let steps = format!("Step {} of 2", step + 1);
-        let g = k.label_galley(&steps, design::din(15.0), design::GREY, f32::INFINITY);
-        let gx = x + cw - g.size().x;
-        k.put(gx, by + (BTN_H - g.size().y) / 2.0, g);
-    }
-}
-
-fn finish_setup(d: &mut Dashboard) {
-    d.state.setup_done = true;
-    d.overlay = None;
-    d.save();
-    if d.after_setup.take() == Some(Resume::QuestInstall) && d.state.owner.is_some() {
-        ask_quest_install(d);
-    }
-}
-
-/// The licence patch from a link the user already has.
-fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
-    let busy = d.any_job();
-    let Some(Overlay::PatchLink { target, url }) = &mut d.overlay else {
-        return;
+        0.0
     };
-    let quest = matches!(target, LinkFor::Quest);
+    text_height(k, text, w) + dz(14.0 + 24.0 + 26.0 + 24.0) + field
+}
+
+/// A patch link the card can use: any, when it doesn't use one.
+fn link_ok(quest: bool, link: bool, url: &str) -> bool {
     let validate = if quest {
         oauth::validate_apk_url
     } else {
         oauth::validate_dll_url
     };
-    let title = if quest {
-        "Patched APK from a link"
+    !link || validate(url.trim()).is_some()
+}
+
+/// The patch's options, as the installer's patch panel: what it is, the Patcher server
+/// (only its members get one), and "Use a patch link instead" with its field.
+#[allow(clippy::too_many_arguments)]
+fn patch_options(
+    k: &mut Kit,
+    x: f32,
+    y: f32,
+    w: f32,
+    text: &str,
+    quest: bool,
+    link: &mut bool,
+    url: &mut String,
+) {
+    let th = k.caps_text(x, y, w, text, 17.0, design::BODY, dz(PARA));
+    let mut ry = y + th + dz(14.0);
+    let join_tip = "Only its members get a patch: join, then authorize";
+    if k.link(
+        "licence-join",
+        x,
+        ry,
+        "Join the Echo VR Patcher server",
+        16.0,
+        join_tip,
+    )
+    .clicked
+    {
+        platform::open_url(oauth::PATCHER_INVITE);
+    }
+    ry += dz(24.0 + 26.0);
+    let link_tip = if quest {
+        "Install a patched build from a link you already got from the Echo VR Discord"
     } else {
-        "Licence patch from a link"
+        "Use a patch link you already got from the Echo VR Discord instead of authorizing"
     };
-    let (w, h) = (dz(960.0), dz(310.0));
-    let (x, y, cw, bottom) = card(k, w, h, title);
-    let hint = "Paste the patch link you got from the Echo VR Discord (files.echovr.de).";
-    let th = k.caps_text(x, y, cw, hint, 17.0, design::BODY, 0.0);
-    let fy = y + th + dz(20.0);
+    k.check(
+        "licence-link",
+        link,
+        "Use a patch link instead",
+        x,
+        ry,
+        true,
+        link_tip,
+    );
+    ry += dz(24.0);
+    if !*link {
+        return;
+    }
+    let fy = ry + dz(20.0);
     let pw = k.button_width("Paste", None, BTN_H).max(100.0);
-    let invalid = !url.trim().is_empty() && validate(url.trim()).is_none();
+    let invalid = !url.trim().is_empty() && !link_ok(quest, true, url);
     k.field(
-        "patch-url",
+        "licence-url",
         url,
         x,
         fy,
-        cw - pw - 10.0,
+        w - pw - 10.0,
         BTN_H,
         "https://files.echovr.de/...",
         invalid,
         "The link to your personal patch",
     );
-    let paste_tip = "Paste a link from your clipboard";
     if k.button(
-        "patch-paste",
-        x + cw - pw,
+        "licence-paste",
+        x + w - pw,
         fy,
         pw,
         BTN_H,
@@ -495,7 +799,7 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         None,
         "Paste",
         true,
-        paste_tip,
+        "Paste a link from your clipboard",
     )
     .clicked
     {
@@ -508,57 +812,452 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     }
     if invalid {
         let msg = "That doesn't look like a patch link.";
-        k.caps_text(x, fy + BTN_H + dz(12.0), cw, msg, 16.0, design::DANGER, 0.0);
+        k.caps_text(x, fy + BTN_H + dz(10.0), w, msg, 16.0, design::DANGER, 0.0);
     }
-    let valid = validate(url.trim()).is_some();
-    let (target, link) = (target.clone(), url.trim().to_string());
-    let by = bottom - BTN_H;
-    let apply = if quest { "Install" } else { "Apply patch" };
-    let aw = k.button_width(apply, None, BTN_H).max(140.0);
-    let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
-    let right = x + cw;
-    if k.button(
-        "patch-cancel",
-        right - cw2,
-        by,
-        cw2,
-        BTN_H,
-        Tone::Dark,
-        None,
-        "Cancel",
-        true,
-        "",
-    )
-    .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-    {
+}
+
+/// The action and Cancel at the bottom right of a card; returns (action, cancel) clicks.
+/// Escape cancels too.
+#[allow(clippy::too_many_arguments)]
+fn card_buttons(
+    k: &mut Kit,
+    ctx: &egui::Context,
+    key: &str,
+    right: f32,
+    by: f32,
+    label: &str,
+    enabled: bool,
+    tip: &str,
+) -> (bool, bool) {
+    let aw = k.button_width(label, None, BTN_H).max(140.0);
+    let cw = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let cancel = k
+        .button(
+            &format!("{key}-cancel"),
+            right - cw,
+            by,
+            cw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Cancel",
+            true,
+            "",
+        )
+        .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let go = k
+        .button(
+            &format!("{key}-go"),
+            right - cw - 8.0 - aw,
+            by,
+            aw,
+            BTN_H,
+            Tone::Go,
+            None,
+            label,
+            enabled,
+            tip,
+        )
+        .clicked;
+    (go && !cancel, cancel)
+}
+
+/// Before an install, as the installer asked: your licence (with the patch's options for
+/// new players), how you play and where it goes (PC). Prefilled with your last answers.
+fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let busy = d.any_job();
+    let offered = runtimes(d);
+    let library = d.state.library.clone();
+    // Already there (its files gone, or another build on the headset): a reinstall.
+    let reinstall = match &d.overlay {
+        Some(Overlay::Install(ask)) => match &ask.target {
+            InstallFor::Pc(e) => d.state.installed_from(&e.id).is_some(),
+            InstallFor::Quest => d.quest_info.as_ref().is_some_and(|i| i.installed),
+        },
+        _ => false,
+    };
+    let verb = if reinstall { "Reinstall" } else { "Install" };
+    let Some(Overlay::Install(ask)) = &mut d.overlay else {
+        return;
+    };
+    let ask = &mut **ask;
+    let (title, root) = match &ask.target {
+        InstallFor::Pc(e) => (
+            format!("{verb} {}", e.name),
+            Some(crate::core::launcher::versions::root_for(&library, &e.id)),
+        ),
+        InstallFor::Quest => (format!("{verb} Echo VR on your Quest"), None),
+    };
+    let quest = root.is_none();
+    // An event build: no licence (EchoRelay's patch skips its check), and it always
+    // starts in VR.
+    let event = matches!(&ask.target, InstallFor::Pc(e) if e.publisher_lock.is_some());
+    let offered: Vec<Runtime> = offered
+        .into_iter()
+        .filter(|rt| !(event && *rt == Runtime::Flat))
+        .collect();
+    let new = !event && ask.owner == Some(false);
+    let options = if quest { QUEST_OPTIONS } else { PC_OPTIONS };
+    let (w, pad, gap) = (dz(1100.0), dz(30.0), dz(16.0));
+    let inner = w - 2.0 * pad;
+    let (q_h, owner_h, runtime_h, place_h) = (dz(40.0), dz(110.0), dz(130.0), dz(50.0));
+
+    // Measured first: the card fits what it shows.
+    let mut h = if event {
+        text_height(k, EVENT_NOTE, inner) + dz(24.0)
+    } else {
+        q_h + owner_h + dz(20.0)
+    };
+    if new {
+        h += patch_options_h(k, options, inner, ask.link) + dz(22.0);
+    }
+    if quest {
+        h += text_height(k, QUEST_WARNING, inner) + dz(24.0);
+    } else {
+        h += q_h + runtime_h + dz(24.0) + place_h + dz(24.0);
+    }
+    let h = dz(46.0) + 2.0 * pad + h + BTN_H;
+    let (x, mut y, cw, bottom) = card(k, w, h, &title);
+
+    if event {
+        y += k.caps_text(x, y, cw, EVENT_NOTE, 17.0, design::BODY, dz(PARA)) + dz(24.0);
+    } else {
+        question(k, x, y, cw, "Do you own Echo VR on your Meta account?");
+        y += q_h;
+        let tw = (cw - gap) / 2.0;
+        let answers = [
+            (true, "I own Echo VR on Meta", OWN_NOTE),
+            (false, "I'm a new player", NEW_NOTE),
+        ];
+        for (i, (own, label, note)) in answers.into_iter().enumerate() {
+            let tx = x + i as f32 * (tw + gap);
+            let on = ask.owner == Some(own);
+            if k.tile(
+                &format!("install-owner-{i}"),
+                tx,
+                y,
+                tw,
+                owner_h,
+                label,
+                note,
+                on,
+            )
+            .clicked
+            {
+                ask.owner = Some(own);
+            }
+        }
+        y += owner_h + dz(20.0);
+    }
+    if new {
+        patch_options(k, x, y, cw, options, quest, &mut ask.link, &mut ask.url);
+        y += patch_options_h(k, options, cw, ask.link) + dz(22.0);
+    }
+
+    let mut change = false;
+    if let Some(root) = &root {
+        question(k, x, y, cw, "How do you play Echo VR?");
+        y += q_h;
+        let n = offered.len() as f32;
+        let rw = (cw - (n - 1.0) * gap) / n;
+        for (i, rt) in offered.iter().enumerate() {
+            let rx = x + i as f32 * (rw + gap);
+            let on = ask.runtime == *rt;
+            if k.tile(
+                &format!("install-runtime-{i}"),
+                rx,
+                y,
+                rw,
+                runtime_h,
+                runtime_label(*rt),
+                runtime_note(*rt),
+                on,
+            )
+            .clicked
+            {
+                ask.runtime = *rt;
+            }
+        }
+        y += runtime_h + dz(24.0);
+        let cap = k.caption(x, y, "Install location");
+        let change_tip = "Install into another folder (your library)";
+        change = k
+            .link(
+                "install-change",
+                x + cap.width() + dz(14.0),
+                y - dz(2.0),
+                "Change",
+                14.0,
+                change_tip,
+            )
+            .clicked;
+        let path = super::install::myriad(k, root, design::myriad(18.0), design::TEXT, cw, true);
+        k.put(x, y + dz(24.0), path);
+    } else {
+        k.caps_text(x, y, cw, QUEST_WARNING, 17.0, design::BODY, dz(PARA));
+    }
+
+    let ready = event || (ask.owner.is_some() && (!new || link_ok(quest, ask.link, &ask.url)));
+    let tip = match (quest, ask.owner, ask.link) {
+        _ if event && reinstall => "Check every game file and fetch only the broken ones again",
+        _ if event => {
+            "Download this event build and add EchoRelay's patch, for the classic lobbies"
+        }
+        (_, None, _) => "Answer the licence question first",
+        (false, Some(true), _) if reinstall => {
+            "Download Echo VR again and install it over this copy"
+        }
+        (false, Some(true), _) => "Download and install Echo VR",
+        (false, Some(false), false) => {
+            "Download Echo VR; Discord opens in your browser meanwhile for your patch"
+        }
+        (false, Some(false), true) => {
+            "Download Echo VR and your patch, which goes in once it's installed"
+        }
+        (true, Some(true), _) => "Install the store build on your Quest",
+        (true, Some(false), false) => "Authorize with Discord, then install your patched build",
+        (true, Some(false), true) => "Download your patched build and install it",
+    };
+    let (go, cancel) = card_buttons(
+        k,
+        ctx,
+        "install",
+        x + cw,
+        bottom - BTN_H,
+        verb,
+        ready && !busy,
+        tip,
+    );
+    let ask = ask.clone();
+    if cancel {
         d.overlay = None;
+    } else if go {
+        d.overlay = None;
+        confirm_install(d, ctx, ask);
+    } else if change {
+        hero::choose_library(d);
+    }
+}
+
+/// Before the first PLAY of a version that wasn't installed here: the licence question.
+/// Owners play on; new players get the licence card.
+fn owner_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let (w, h) = (dz(1000.0), dz(440.0));
+    let (x, y, cw, bottom) = card(k, w, h, "Before you play");
+    question(k, x, y, cw, "Do you own Echo VR on your Meta account?");
+    let top = y + dz(52.0);
+    let gap = dz(20.0);
+    let tw = (cw - gap) / 2.0;
+    let answers = [
+        (true, "I own Echo VR on Meta", OWN_NOTE),
+        (false, "I'm a new player", NEW_NOTE),
+    ];
+    let mut picked = None;
+    for (i, (own, label, note)) in answers.into_iter().enumerate() {
+        let tx = x + i as f32 * (tw + gap);
+        if k.tile(
+            &format!("owner-{i}"),
+            tx,
+            top,
+            tw,
+            dz(200.0),
+            label,
+            note,
+            false,
+        )
+        .clicked
+        {
+            picked = Some(own);
+        }
+    }
+    let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let cancel = k
+        .button(
+            "owner-cancel",
+            x + cw - cw2,
+            bottom - BTN_H,
+            cw2,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Cancel",
+            true,
+            "",
+        )
+        .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    if cancel {
+        d.overlay = None;
+        d.pending_lobby = None;
         return;
     }
-    let apply_tip = if quest {
-        "Download the patched APK and install it on your Quest"
-    } else {
-        "Download the patch and put it into this version"
+    let Some(own) = picked else {
+        return;
     };
-    let ax = right - cw2 - 8.0 - aw;
-    if k.button(
-        "patch-apply",
-        ax,
-        by,
-        aw,
-        BTN_H,
-        Tone::Go,
-        None,
-        apply,
-        valid && !busy,
-        apply_tip,
-    )
-    .clicked
-    {
+    d.state.owner = Some(own);
+    d.save();
+    d.overlay = None;
+    let lobby = d.pending_lobby.take();
+    if own {
+        super::play::try_start(d, ctx, lobby);
+    } else if let Target::Installed(v) = d.target() {
+        d.overlay = Some(licence(&v.id));
+    }
+}
+
+/// The licence patch for an installed version (PATCH, MANAGE, the first PLAY's answer):
+/// what it is, Authorize with Discord, or (ticked) a patch link you already have.
+fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let busy = d.any_job();
+    let name = match &d.overlay {
+        Some(Overlay::Licence { id, .. }) => d.state.version(id).map(|v| v.name.clone()),
+        _ => None,
+    };
+    let Some(Overlay::Licence { id, url, link }) = &mut d.overlay else {
+        return;
+    };
+    let text = PC_LICENCE.replace("{version}", name.as_deref().unwrap_or("this version"));
+    let (w, pad) = (dz(960.0), dz(30.0));
+    let options_h = patch_options_h(k, &text, w - 2.0 * pad, *link);
+    let h = dz(46.0) + 2.0 * pad + options_h + dz(34.0) + BTN_H;
+    let (x, y, cw, bottom) = card(k, w, h, "Licence patch");
+    patch_options(k, x, y, cw, &text, false, link, url);
+    let ready = link_ok(false, *link, url);
+    let (label, tip) = if *link {
+        (
+            "Apply patch",
+            "Download the patch and put it into this version",
+        )
+    } else {
+        (
+            "Authorize with Discord",
+            "Opens Discord in your browser: authorize there, and the patch comes by itself",
+        )
+    };
+    let (go, cancel) = card_buttons(
+        k,
+        ctx,
+        "licence",
+        x + cw,
+        bottom - BTN_H,
+        label,
+        ready && !busy,
+        tip,
+    );
+    let (id, from) = (id.clone(), link.then(|| url.trim().to_string()));
+    if cancel {
         d.overlay = None;
-        match target {
-            LinkFor::Pc(id) => patch(d, ctx, &id, Source::Url(link)),
-            LinkFor::Quest => quest_install(d, ctx, ApkSource::Url(link)),
+    } else if go {
+        d.overlay = None;
+        patch(d, ctx, &id, from.map_or(Source::Discord, Source::Url));
+    }
+}
+
+/// Your account on the classic lobbies server: a display name and a password, the first
+/// login locking the account to it. One account plays every event build.
+fn relay_account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let server = d.state.relay_server.clone();
+    let Some(Overlay::RelayAccount {
+        name,
+        password,
+        play,
+    }) = &mut d.overlay
+    else {
+        return;
+    };
+    let text = RELAY_NOTE.replace("{server}", &server);
+    let (w, pad, gap) = (dz(960.0), dz(30.0), dz(20.0));
+    let fields_h = dz(30.0) + BTN_H + dz(34.0);
+    let h = dz(46.0)
+        + 2.0 * pad
+        + text_height(k, &text, w - 2.0 * pad)
+        + dz(24.0)
+        + fields_h
+        + dz(10.0)
+        + BTN_H;
+    let (x, mut y, cw, bottom) = card(k, w, h, "Classic lobbies account");
+    y += k.caps_text(x, y, cw, &text, 17.0, design::BODY, dz(PARA)) + dz(24.0);
+    let fw = (cw - gap) / 2.0;
+    k.caption(x, y, "Display name");
+    k.caption(x + fw + gap, y, "Password");
+    let fy = y + dz(30.0);
+    k.field(
+        "relay-name",
+        name,
+        x,
+        fy,
+        fw,
+        BTN_H,
+        "The name above your head",
+        false,
+        "Up to 20 characters",
+    );
+    k.secret_field(
+        "relay-password",
+        password,
+        x + fw + gap,
+        fy,
+        fw,
+        BTN_H,
+        "Not one you use anywhere else",
+        false,
+        "Up to 64 characters. Sent without encryption.",
+    );
+    // The relay's limits, kept while typing.
+    for (s, max) in [
+        (&mut *name, relay::NAME_MAX),
+        (&mut *password, relay::PASSWORD_MAX),
+    ] {
+        if s.chars().count() > max {
+            *s = s.chars().take(max).collect();
         }
+    }
+    let account = RelayAccount {
+        name: name.trim().to_string(),
+        password: password.clone(),
+    };
+    let ready = relay::valid_account(&account);
+    let (label, tip) = if *play {
+        ("Save & play", "Keep this account and start Echo VR")
+    } else {
+        ("Save", "Keep this account for every event build")
+    };
+    let play = *play;
+    let (go, cancel) = card_buttons(k, ctx, "relay", x + cw, bottom - BTN_H, label, ready, tip);
+    if cancel {
+        d.overlay = None;
+    } else if go {
+        d.overlay = None;
+        d.state.relay_account = Some(account);
+        d.save();
+        write_relay_configs(d);
+        if play {
+            super::play::try_start(d, ctx, None);
+        }
+    }
+}
+
+const RELAY_NOTE: &str = "Event builds play on the community's classic lobbies server ({server}). Pick a display name and a password: your first login locks the account to that password, and it works in every event build.\n\nDon't reuse a real password: it is sent without encryption.";
+const EVENT_NOTE: &str = "An event build: it plays on the community's classic lobbies server, with EchoRelay's patch instead of the licence check. You pick your account there when you first play it.";
+const PC_LICENCE: &str = "New players need a personal licence patch. Authorize with Discord and the Echo VR Patcher bot builds one for your account; you need to be a member of its server.\n\nIt replaces pnsovr.dll in {version}. The original is kept, so you can take the patch off again in MANAGE.";
+const PC_OPTIONS: &str = "New players need a personal licence patch. Authorize with Discord while Echo VR downloads: the Echo VR Patcher bot builds one for your account (you need to be a member of its server), and it goes in once Echo VR is installed.";
+const QUEST_OPTIONS: &str = "New players install a personal patched build. Authorize with Discord and the Echo VR Patcher bot builds it for your account; you need to be a member of its server.";
+const QUEST_WARNING: &str = "Installing replaces Echo VR on your Quest: the installed app and its local data are removed first.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pending_patch_waits_for_its_install() {
+        assert!(!pending_ready(false, true, false), "not fetched yet");
+        assert!(!pending_ready(true, false, true), "still installing");
+        assert!(
+            !pending_ready(true, true, true),
+            "reinstalling over an old copy"
+        );
+        assert!(!pending_ready(true, false, false), "the install failed");
+        assert!(pending_ready(true, true, false));
     }
 }

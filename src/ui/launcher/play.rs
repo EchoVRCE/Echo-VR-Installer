@@ -14,14 +14,14 @@ use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::feed::NewsItem;
 use crate::core::launcher::store::{InstalledVersion, Runtime, Target};
-use crate::core::launcher::{launch, quest};
-use crate::core::{paths, revive};
+use crate::core::launcher::{launch, quest, relay};
+use crate::core::revive;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::markdown::{self, Look};
 use crate::ui::style::{self, Icon};
-use crate::ui::widgets::MenuItem;
+use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 use egui::pos2;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
@@ -61,10 +61,16 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.check_quest(ctx, false);
         }
     }
-    if !kit.ghost && d.dialogs.take(LAUNCH_ANYWAY).is_some_and(|a| a.is_yes()) {
-        start(d, ctx);
+    if !kit.ghost {
+        if let Some(answer) = d.dialogs.take(LAUNCH_ANYWAY) {
+            let lobby = d.pending_lobby.take();
+            if answer.is_yes() {
+                start(d, ctx, lobby);
+            }
+        }
     }
     kit.image_d("logo_echovr.png", hero::LOGO);
+    easter_egg(d, kit);
     let mut a = match d.platform {
         Platform::Pc => pc_action(d),
         Platform::Quest => quest_action(d),
@@ -100,8 +106,12 @@ enum Main {
     Stop,
     Patch(String),
     SetUpRevive,
+    /// Linux: GE-Proton, EchoXR and the Steam shortcut.
+    SetUpLinux,
     QuestConnect,
     QuestPlay,
+    /// Close Echo VR on the headset.
+    QuestStop,
     /// Nothing to play yet: open the Install page.
     ToInstall,
     Nothing,
@@ -203,6 +213,24 @@ fn explain_disabled(d: &Dashboard, a: &mut Action) {
     }
 }
 
+/// The installer's main menu hid a spot; the launcher's is between ECHO and VR. Nothing
+/// gives it away: no cursor, no tip.
+fn easter_egg(d: &mut Dashboard, kit: &mut Kit) {
+    const SPOT: Dr = Dr::new(574.0, 74.4, 50.0, 126.5);
+    if kit.ghost || kit.blocked {
+        return;
+    }
+    let id = egui::Id::new("play-easter-egg");
+    if kit
+        .ui
+        .interact(kit.drect(SPOT), id, egui::Sense::click())
+        .clicked()
+    {
+        d.dialogs
+            .info("You found an Easter Egg", "Never divide by 0!");
+    }
+}
+
 // ---- PC ----
 
 fn pc_action(d: &mut Dashboard) -> Action {
@@ -213,7 +241,7 @@ fn pc_action(d: &mut Dashboard) -> Action {
         Target::None => None,
     };
     let job = id
-        .and_then(|id| hero::job_view(d, &id))
+        .and_then(|id| setup::job_for(d, &id))
         .or_else(|| hero::job_view(d, setup::REVIVE_JOB));
     let mut a = Action::new();
     let needs_revive = d.state.profile.runtime == Runtime::Revive
@@ -228,6 +256,7 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 let c = d.catalog.as_ref()?;
                 c.pc().find(|e| &e.id == cid)?.size.map(gb)
             });
+            let event = v.publisher_lock.is_some();
             let state = if running {
                 "Running"
             } else if ours {
@@ -236,11 +265,17 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 "Needs the licence patch"
             } else if needs_revive {
                 "SteamVR is not set up"
+            } else if event {
+                "Classic lobby"
             } else {
                 "Installed"
             };
             a.line.parts.push(state.into());
             a.line.parts.push(v.name.clone());
+            // An event build plays on the classic lobbies server.
+            if event {
+                a.line.parts.push(d.state.relay_server.clone());
+            }
             a.line.parts.extend(size);
             a.line.path = Some(v.root.clone());
             a.line.path_click = PathClick::Open;
@@ -260,18 +295,35 @@ fn pc_action(d: &mut Dashboard) -> Action {
             } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
                 a.enabled = !d.any_job();
-                a.tip = "New players need a personal licence patch: authorize with Discord to get yours.".into();
+                a.tip =
+                    "New players need a personal licence patch: get yours through Discord".into();
             } else if needs_revive {
                 (a.label, a.main) = ("SET UP", Main::SetUpRevive);
                 a.enabled = !d.any_job();
                 a.tip = "Set up SteamVR: installs Revive, which runs Echo VR on SteamVR (asks for administrator rights)".into();
+            } else if cfg!(target_os = "linux") && v.publisher_lock.is_some() {
+                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                a.tip =
+                    "Event builds don't run on Linux yet: EchoXR runs only the live build".into();
+            } else if cfg!(target_os = "linux") && !setup::pc_play_supported(d) {
+                (a.label, a.main) = ("SET UP", Main::SetUpLinux);
+                a.enabled = !d.any_job();
+                a.tip = "Set up Echo VR for Linux: GE-Proton and EchoXR's OpenXR runtime (about 0.5 GB of downloads), then a shortcut in Steam that starts it (Steam restarts)".into();
+            } else if !setup::pc_play_supported(d) {
+                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                a.tip = "Echo VR for PC doesn't run on macOS: play it on Windows, or on your Quest"
+                    .into();
             } else {
                 (a.main, a.enabled) = (Main::Play, true);
                 a.tip = "Start Echo VR".into();
             }
-            a.update_enabled = !running && !ours && !d.any_job();
+            let updates = crate::core::launcher::versions::has_updates(&v);
+            a.update_enabled = updates && !running && !ours && !d.any_job();
             if ours && !running {
                 a.update_tip = "Echo VR is starting".into();
+            }
+            if !updates {
+                a.update_tip = "Event builds don't get updates: REINSTALL on the Install page checks their files".into();
             }
             a.update_alert = d
                 .update_note
@@ -303,6 +355,29 @@ fn quest_action(d: &mut Dashboard) -> Action {
     let job = hero::job_view(d, setup::QUEST_JOB);
     let mut a = Action::new();
     a.line.parts = quest_info(d);
+    let game = d.quest_game();
+    if game.is_running() && job.is_none() {
+        // Running on the headset, as its API says over the network.
+        let state = match game {
+            crate::core::launcher::game::GameState::InMatch { .. } => "In a match",
+            _ => "Running",
+        };
+        a.line.parts = vec![state.into(), "On your Quest".into()];
+        a.line
+            .parts
+            .extend(d.quest_info.as_ref().and_then(|i| i.device.clone()));
+        if ready {
+            (a.label, a.main, a.enabled, a.grey) = ("STOP", Main::QuestStop, !d.quest_busy, true);
+            a.tip = "Close Echo VR on the headset".into();
+        } else {
+            a.label = "RUNNING";
+            a.tip =
+                "Plug in your Quest or turn on ADB over the network to stop it from here".into();
+        }
+        a.update = Update::Quest;
+        a.update_tip = "Close Echo VR on the headset first".into();
+        return a;
+    }
     if job.as_ref().is_some_and(JobView::installs) || (known && !installed) {
         a.not_installed("Not installed on this Quest", job.as_ref());
         a.tip = "Echo VR isn't on your Quest yet. Click to install it".into();
@@ -364,9 +439,12 @@ pub(super) fn job_state(job: &JobView) -> String {
     use super::JobKind;
     match job.kind {
         JobKind::Install | JobKind::QuestInstall => "Installing".into(),
+        JobKind::Reinstall => "Reinstalling".into(),
         JobKind::Update => "Updating".into(),
         JobKind::Verify => "Verifying".into(),
         JobKind::Patch => "Patching".into(),
+        JobKind::Unpatch => "Removing the patch".into(),
+        JobKind::Licence => "Licence patch".into(),
         JobKind::Background => "Converting".into(),
         JobKind::Revive | JobKind::QuestUpdate => job.title.clone(),
     }
@@ -394,18 +472,14 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
     let (main, update) = hero::row(kit, "play", 0.0, &row);
     if main {
         match a.main {
-            Main::Play => try_start(d, ctx),
-            Main::Stop => {
-                if let Some(mut c) = d.child.take() {
-                    let _ = c.kill();
-                }
-            }
-            Main::Patch(id) => {
-                setup::patch(d, ctx, &id, crate::core::launcher::patch::Source::Discord)
-            }
+            Main::Play => try_start(d, ctx, None),
+            Main::Stop => stop(d),
+            Main::Patch(id) => d.overlay = Some(setup::licence(&id)),
             Main::SetUpRevive => setup::revive(d, ctx),
+            Main::SetUpLinux => setup::linux_setup(d, ctx),
             Main::QuestConnect => d.check_quest(ctx, true),
             Main::QuestPlay => quest_launch(d, ctx),
+            Main::QuestStop => quest_stop(d, ctx),
             Main::ToInstall => {
                 // The Install page opens on the version picked here.
                 d.install_pick = match d.target() {
@@ -423,6 +497,140 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Update::Pc(v) => versions::update(d, ctx, v),
             Update::Quest => setup::quest_update(d, ctx),
             Update::Nothing => {}
+        }
+    }
+}
+
+// ---- joining a lobby ----
+
+/// Opens "Join a lobby" with the link on the clipboard (when it is one) or the last one.
+pub(super) fn open_lobby_card(d: &mut Dashboard) {
+    let input = arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut c| c.get_text().ok())
+        .map(|t| t.trim().to_string())
+        .filter(|t| crate::core::links::parse(t).is_some() || launch::lobby_uuid(t).is_some())
+        .unwrap_or_else(|| d.state.last_lobby.clone());
+    d.overlay = Some(setup::Overlay::JoinLobby { input });
+}
+
+/// "Join a lobby": paste a spark:// or echo.taxi link (or the bare ID), and JOIN starts
+/// Echo VR into that lobby.
+pub(super) fn lobby_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    // The PC game can be started into it, or (running already, or on the Quest side) the
+    // match is queued as the next one.
+    let direct = super::servers::starts_pc(d);
+    let signed_in = d.vrce.session().is_some();
+    let Some(setup::Overlay::JoinLobby { input }) = &mut d.overlay else {
+        return;
+    };
+    let (w, h) = (dz(960.0), dz(310.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Join a lobby");
+    let hint = match (direct, signed_in) {
+        (true, _) => "Paste a spark:// or echo.taxi link, or a lobby ID: Echo VR starts and joins that lobby.",
+        (false, true) => "Paste a spark:// or echo.taxi link, or a lobby ID: it becomes your next match, and the terminal in Echo VR takes you there.",
+        (false, false) => "Paste a spark:// or echo.taxi link, or a lobby ID. While Echo VR runs (or on the Quest) a match can only be queued as your next one: sign in with EchoVRCE for that.",
+    };
+    let th = k.caps_text(x, y, cw, hint, 17.0, design::BODY, 0.0);
+    let fy = y + th + dz(20.0);
+    let pw = k.button_width("Paste", None, BTN_H).max(100.0);
+    let id = crate::core::links::parse(input)
+        .map(|l| Join {
+            lobby: l.lobby,
+            spectate: l.spectate,
+        })
+        .or_else(|| launch::lobby_uuid(input).map(Join::lobby));
+    let invalid = !input.trim().is_empty() && id.is_none();
+    k.field(
+        "lobby-id",
+        input,
+        x,
+        fy,
+        cw - pw - 10.0,
+        BTN_H,
+        "spark://c/…",
+        invalid,
+        "A lobby link or ID",
+    );
+    if k.button(
+        "lobby-paste",
+        x + cw - pw,
+        fy,
+        pw,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Paste",
+        true,
+        "Paste a link from your clipboard",
+    )
+    .clicked
+    {
+        if let Some(clip) = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut c| c.get_text().ok())
+        {
+            *input = clip.trim().to_string();
+        }
+    }
+    if invalid {
+        let msg = "That isn't a lobby link or ID.";
+        k.caps_text(x, fy + BTN_H + dz(12.0), cw, msg, 16.0, design::DANGER, 0.0);
+    }
+    let text = input.trim().to_string();
+    let by = bottom - BTN_H;
+    let jw = k.button_width("Join", None, BTN_H).max(140.0);
+    let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let right = x + cw;
+    if k.button(
+        "lobby-cancel",
+        right - cw2,
+        by,
+        cw2,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Cancel",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
+        return;
+    }
+    let watch = id.as_ref().is_some_and(|j| j.spectate);
+    let (label, tip) = match (direct, watch) {
+        (true, true) => ("Watch", "Start Echo VR on the monitor and watch this match"),
+        (true, false) => ("Join", "Start Echo VR and join this lobby"),
+        (false, _) => ("Join", "Queue this match as your next one"),
+    };
+    let join = k
+        .button(
+            "lobby-join",
+            right - cw2 - 8.0 - jw,
+            by,
+            jw,
+            BTN_H,
+            Tone::Go,
+            None,
+            label,
+            id.is_some() && (direct || signed_in),
+            tip,
+        )
+        .clicked
+        || (id.is_some()
+            && (direct || signed_in)
+            && ctx.input(|i| i.key_pressed(egui::Key::Enter)));
+    if let (true, Some(id)) = (join, id) {
+        d.overlay = None;
+        d.state.last_lobby = text;
+        d.save();
+        if direct {
+            try_start(d, ctx, Some(id));
+        } else {
+            super::servers::queue_lobby(d, ctx, &id.lobby);
         }
     }
 }
@@ -528,7 +736,7 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
     let mut items: Vec<MenuItem> = installed
         .iter()
         .map(|v| {
-            let present = d.demo || paths::has_echo_install(&v.root);
+            let present = d.demo || v.present();
             let (detail, detail_color) = if !present {
                 ("Files missing".to_string(), design::DANGER)
             } else if v.external {
@@ -658,7 +866,7 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
     let link = match (&news, &main) {
         _ if fallback => Some((
             "How to play".to_string(),
-            crate::core::oauth::INVITE_URL.to_string(),
+            crate::core::LOUNGE_INVITE.to_string(),
         )),
         (_, Some(m)) if !m.link_label.is_empty() && !m.link_url.is_empty() => {
             Some((m.link_label.clone(), m.link_url.clone()))
@@ -727,7 +935,7 @@ fn cards(
             "Matches, events, help and the latest builds: the Echo VR community meets on Discord."
                 .into(),
         link_label: "Join the Discord".into(),
-        link_url: crate::core::oauth::INVITE_URL.into(),
+        link_url: crate::core::LOUNGE_INVITE.into(),
         ..Default::default()
     });
     (main, community)
@@ -778,6 +986,15 @@ fn card(kit: &mut Kit, i: usize, r: Dr, item: &NewsItem, with_link: bool) {
 
 // ---- starting ----
 
+fn quest_stop(d: &mut Dashboard, ctx: &egui::Context) {
+    d.quest_busy = true;
+    d.worker.spawn(ctx, |tx| {
+        tx.send(Msg::QuestAction(quest::stop().map_err(|e| {
+            UiError::from_anyhow(&e, "Couldn't close Echo VR")
+        })))
+    });
+}
+
 fn quest_launch(d: &mut Dashboard, ctx: &egui::Context) {
     d.quest_busy = true;
     d.worker.spawn(ctx, |tx| {
@@ -787,32 +1004,125 @@ fn quest_launch(d: &mut Dashboard, ctx: &egui::Context) {
     });
 }
 
-fn try_start(d: &mut Dashboard, ctx: &egui::Context) {
-    match launch::preflight(&d.state.profile) {
-        Some(w) => d.dialogs.confirm(
-            LAUNCH_ANYWAY,
-            "Launch Echo VR",
-            &format!("{w}\n\nLaunch anyway?"),
-            DlgIcon::Warning,
-        ),
-        None => start(d, ctx),
+/// A match to start the game into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Join {
+    pub lobby: String,
+    /// Watch as a spectator (`spark://s/` links).
+    pub spectate: bool,
+}
+
+impl Join {
+    pub fn lobby(lobby: String) -> Join {
+        Join {
+            lobby,
+            spectate: false,
+        }
     }
 }
 
-fn start(d: &mut Dashboard, ctx: &egui::Context) {
+/// Starts the PC game (joining a match when given), after warning about anything that
+/// looks wrong.
+pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
+    let event = matches!(d.target(), Target::Installed(v) if v.publisher_lock.is_some());
+    // An event build plays on the classic lobbies server: your account there first, once.
+    // It joins no links (those are the live build's matches).
+    if event {
+        if d.state.relay_account.is_none() {
+            d.overlay = Some(setup::relay_account(d, true));
+            return;
+        }
+        return match launch::preflight(&d.state.profile) {
+            Some(w) => {
+                d.pending_lobby = None;
+                d.dialogs.confirm(
+                    LAUNCH_ANYWAY,
+                    "Launch Echo VR",
+                    &format!("{w}\n\nLaunch anyway?"),
+                    DlgIcon::Warning,
+                )
+            }
+            None => start(d, ctx, None),
+        };
+    }
+    // A version not installed here: the licence question first, once.
+    let unpatched = matches!(d.target(), Target::Installed(v) if !v.patched);
+    if d.state.owner.is_none() && unpatched && !d.demo {
+        d.pending_lobby = lobby;
+        d.overlay = Some(setup::Overlay::Owner);
+        return;
+    }
+    match launch::preflight(&d.state.profile) {
+        Some(w) => {
+            d.pending_lobby = lobby;
+            d.dialogs.confirm(
+                LAUNCH_ANYWAY,
+                "Launch Echo VR",
+                &format!("{w}\n\nLaunch anyway?"),
+                DlgIcon::Warning,
+            )
+        }
+        None => start(d, ctx, lobby),
+    }
+}
+
+/// STOP: ends what PLAY started -- the starter (Revive's injector) and the game itself,
+/// never a game started some other way.
+fn stop(d: &mut Dashboard) {
+    if let Some(mut c) = d.child.take() {
+        let _ = c.kill();
+    }
+    if let Some(l) = d.launched {
+        crate::core::launcher::game::stop_started_since(l.unix);
+    }
+}
+
+fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     let Target::Installed(v) = d.target() else {
         return;
     };
-    let exe = paths::exe_path(&v.root);
+    let exe = v.exe_path();
     if !exe.is_file() {
         d.dialogs.error(
             "Echo VR not found",
             &format!(
-                "echovr.exe is missing in {}.\nRepair or reinstall it on the Install page.",
+                "{} is missing in {}.\nRepair or reinstall it on the Install page.",
+                v.exe_name(),
                 v.root
             ),
             Default::default(),
         );
+        return;
+    }
+    // An event build: pointed at the classic lobbies server as your account each time,
+    // so a changed account or server applies.
+    if v.publisher_lock.is_some() {
+        let Some(account) = d.state.relay_account.clone() else {
+            return;
+        };
+        if let Err(e) = relay::write_config(&v, &d.state.relay_server, &account) {
+            d.dialogs.error(
+                "Couldn't set up the classic lobby",
+                &format!("{e:#}"),
+                Default::default(),
+            );
+            return;
+        }
+    }
+    // Linux: through Steam's shortcut, which runs the launcher with --play.
+    if cfg!(target_os = "linux") {
+        let Some((root, appid)) = crate::core::linux::steam::root().zip(d.state.linux_appid) else {
+            return;
+        };
+        crate::core::linux::set_next_lobby(lobby.as_ref().map(|j| (j.lobby.as_str(), j.spectate)));
+        match crate::core::linux::steam::run(&root, appid) {
+            Ok(()) => d.launched = Some(super::Launched::now()),
+            Err(e) => d.dialogs.error(
+                "Couldn't start Echo VR",
+                &format!("{e:#}"),
+                Default::default(),
+            ),
+        }
         return;
     }
     let revive_dir = if d.state.profile.runtime == Runtime::Revive {
@@ -820,12 +1130,27 @@ fn start(d: &mut Dashboard, ctx: &egui::Context) {
     } else {
         None
     };
-    // No lobby: joining one needs the lobby field back on this page first.
-    let result = launch::build(&d.state.profile, &exe, revive_dir.as_deref(), None)
-        .and_then(|c| launch::spawn(&c));
+    // Watching: on the monitor, as the spectator stream.
+    let mut profile = d.state.profile.clone();
+    if lobby.as_ref().is_some_and(|j| j.spectate) {
+        profile.runtime = Runtime::Flat;
+        profile.spectator = true;
+    }
+    let command = if v.publisher_lock.is_some() {
+        launch::build_relay(&profile, &exe, revive_dir.as_deref())
+    } else {
+        launch::build(
+            &profile,
+            &exe,
+            revive_dir.as_deref(),
+            lobby.as_ref().map(|j| j.lobby.as_str()),
+        )
+    };
+    let result = command.and_then(|c| launch::spawn(&c));
     match result {
         Ok(child) => {
             d.child = Some(child);
+            d.launched = Some(super::Launched::now());
             if d.state.minimize_on_launch {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }

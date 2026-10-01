@@ -110,7 +110,7 @@ pub fn install(
     if !apk_path.exists() || !data_path.exists() {
         return Err(UiError::new(
             "File not found",
-            "APK or DATA FILE NOT FOUND. PLEASE DOWNLOAD IT ABOVE!",
+            "The downloaded game files are gone. Please install again.",
         )
         .into());
     }

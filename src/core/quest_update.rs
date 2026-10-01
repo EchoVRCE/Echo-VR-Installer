@@ -333,7 +333,13 @@ pub fn check_version(manifest_url: &str, status: &mut dyn FnMut(String)) -> Chec
                 "More than one device is plugged in, so the updater can't tell which one is your Quest.\nUnplug the others and try again.",
             )
         }
-        _ => return CheckStatus::new(VersionCheck::NoDevice, "Your Quest is no longer connected."),
+        Status::Unauthorized => {
+            return CheckStatus::new(
+                VersionCheck::NoDevice,
+                "Your Quest hasn't allowed this PC yet.\nPut the headset on, accept the USB debugging prompt, and try again.",
+            )
+        }
+        Status::None => return CheckStatus::new(VersionCheck::NoDevice, "Your Quest is no longer connected."),
     }
 
     status("Checking for updates...".into());

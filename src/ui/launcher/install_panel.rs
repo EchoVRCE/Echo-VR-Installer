@@ -7,10 +7,10 @@ use egui::Color32;
 
 use super::hero::{self, JobView};
 use super::install::{myriad, play_version};
-use super::{play, server_info, settings, versions, Dashboard};
+use super::{play, server_info, settings, versions, Dashboard, Msg};
 use crate::core::adb::devices::Status;
+use crate::core::error::UiError;
 use crate::core::launcher::store::InstalledVersion;
-use crate::core::paths;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::style::Icon;
@@ -28,8 +28,7 @@ const ACTION_H: f32 = 40.0;
 const PLAY_W: f32 = 96.0;
 const MANAGE_W: f32 = 150.0;
 const ACTION_GAP: f32 = 8.0;
-/// A tile's faint fill, and the line over ALREADY HAVE IT?.
-const TILE: Color32 = Color32::from_rgba_premultiplied(8, 8, 8, 8);
+/// The line over ALREADY HAVE IT?.
 const RULE: Color32 = Color32::from_rgba_premultiplied(30, 30, 30, 30);
 
 const EXISTING_TEXT: &str = "Echo VR already on this PC? Add its folder, or the copy in your Meta library, instead of downloading it again.";
@@ -141,19 +140,6 @@ fn installed(
     });
 }
 
-/// A tile's background: faint, or VERSIONS' blue with its bar for the selected one.
-fn tile(kit: &Kit, x: f32, y: f32, w: f32, h: f32, selected: bool) {
-    let r = kit.rect(x, y, w, h);
-    let p = kit.ui.painter();
-    if selected {
-        p.rect_filled(r, dz(6.0), design::BLUE.gamma_multiply(0.28));
-        let bar = egui::Rect::from_min_size(r.min, egui::vec2(dz(4.0), r.height()));
-        p.rect_filled(bar, dz(2.0), design::BLUE);
-    } else {
-        p.rect_filled(r, dz(6.0), TILE);
-    }
-}
-
 /// One installed version: its name in DIN caps with its chips on the right, and under
 /// them its folder with PLAY and MANAGE (or the progress of a job on it) on the right.
 fn version_tile(
@@ -166,7 +152,7 @@ fn version_tile(
     w: f32,
 ) {
     let selected = d.state.selected.as_deref() == Some(v.id.as_str());
-    tile(k, x, y, w, dz(TILE_H), selected);
+    hero::tile(k, x, y, w, dz(TILE_H), selected);
     let (tx, right) = (x + dz(TILE_PAD), x + w - dz(TILE_PAD));
 
     let chips = chips(d, v);
@@ -211,7 +197,7 @@ fn chips(d: &Dashboard, v: &InstalledVersion) -> Vec<(&'static str, Color32)> {
 
 /// Whether its game files are there.
 fn files_ok(d: &Dashboard, v: &InstalledVersion) -> bool {
-    d.demo || paths::has_echo_install(&v.root)
+    d.demo || v.present()
 }
 
 /// Its folder, or that the files are gone.
@@ -364,7 +350,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         // The headset: its name and connection, then how it connects and Check again.
         k.caption(x, y, "Headset");
         let ty = y + dz(30.0);
-        tile(k, x, ty, w, dz(TILE_H), false);
+        hero::tile(k, x, ty, w, dz(TILE_H), false);
         let chip_w = k.chip_width(h.conn);
         let name = h
             .device
@@ -420,14 +406,160 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Ok(apk) => (format!("Installed: {apk}"), design::TEXT),
             Err(note) => (note.to_string(), design::GREY),
         };
+        // Save logs beside it, once it is there.
+        let logs = h.echo.is_ok();
+        let lw = if logs {
+            k.button_width("Save logs", Some(Icon::Folder), dz(ACTION_H))
+        } else {
+            0.0
+        };
+        let text_w = right - tx - if logs { lw + dz(12.0) } else { 0.0 };
         let text_h: f32 = k
-            .caps_block(&text, 16.0, color, right - tx)
+            .caps_block(&text, 16.0, color, text_w)
             .iter()
             .map(|g| g.size().y)
             .sum();
-        tile(k, x, ey, w, text_h + dz(2.0 * 22.0), false);
-        k.caps_text(tx, ey + dz(22.0), right - tx, &text, 16.0, color, 0.0);
+        let echo_h = (text_h + dz(2.0 * 22.0)).max(dz(ACTION_H + 2.0 * TILE_PAD));
+        hero::tile(k, x, ey, w, echo_h, false);
+        let ty = ey + (echo_h - text_h) / 2.0;
+        k.caps_text(tx, ty, text_w, &text, 16.0, color, 0.0);
+        if logs
+            && k.button(
+                "quest-logs",
+                right - lw,
+                ey + (echo_h - dz(ACTION_H)) / 2.0,
+                lw,
+                dz(ACTION_H),
+                Tone::Dark,
+                Some(Icon::Folder),
+                "Save logs",
+                !d.quest_busy && !d.any_job(),
+                "Copy Echo VR's logs from the headset into a folder on this PC, and open it",
+            )
+            .clicked
+        {
+            d.quest_busy = true;
+            d.worker.spawn(ctx, |tx| {
+                let r = crate::core::launcher::quest::pull_logs()
+                    .map_err(|e| UiError::from_anyhow(&e, "Couldn't save the logs"));
+                tx.send(Msg::QuestLogs(r));
+            });
+        }
+
+        network(d, k, ctx, x, ey + echo_h + dz(34.0), w);
     });
+}
+
+/// NETWORK: where the Quest is on the Wi-Fi (typed, or found with Find), ADB over the
+/// network, and what answers there.
+fn network(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) {
+    use crate::core::launcher::quest_net;
+    k.caption(x, y, "Network");
+    let ty = y + dz(30.0);
+    let (tx, right) = (x + dz(TILE_PAD), x + w - dz(TILE_PAD));
+
+    // What answers: the game's API, and how ADB reaches the headset.
+    let ip = d.quest_ip();
+    let api = match (ip, d.quest_game()) {
+        (None, _) => "Address unknown: plug in your Quest by USB once, or use Find".to_string(),
+        (Some(_), g) if g.is_running() => "Echo VR's API: answering".to_string(),
+        (Some(_), _) => "Echo VR's API: not answering".to_string(),
+    };
+    let ready = d.quest_conn.status == Some(Status::Ready);
+    let adb = match d.quest_info.as_ref() {
+        Some(i) if ready && i.over_network => "ADB: connected over the network",
+        Some(_) if ready => "ADB: over USB",
+        _ => "ADB: not connected",
+    };
+    let lines: Vec<_> = [api.as_str(), adb]
+        .into_iter()
+        .map(|t| k.label_galley(t, design::din(14.0), design::GREY, right - tx))
+        .collect();
+    let lines_h: f32 = lines.iter().map(|g| g.size().y + dz(6.0)).sum();
+    let row1 = ty + dz(TILE_PAD);
+    let row2 = row1 + BTN_H + dz(14.0);
+    let row3 = row2 + dz(36.0) + dz(10.0);
+    hero::tile(k, x, ty, w, row3 + lines_h + dz(TILE_PAD) - ty, false);
+
+    // The address, and Find.
+    let scanning = d.quest_scan;
+    let find_label = match scanning {
+        Some(p) => format!("{:.0}%", p * 100.0),
+        None => "Find".to_string(),
+    };
+    let bw = k
+        .button_width("Find", Some(Icon::Globe), BTN_H)
+        .max(dz(110.0));
+    let invalid =
+        !d.quest_ip_field.trim().is_empty() && quest_net::parse_ip(&d.quest_ip_field).is_none();
+    if k.field(
+        "quest-ip",
+        &mut d.quest_ip_field,
+        tx,
+        row1,
+        right - tx - bw - dz(12.0),
+        BTN_H,
+        "192.168.1.20",
+        invalid,
+        "Your Quest's address on your Wi-Fi: read over USB, found with Find, or typed",
+    ) {
+        let typed = d.quest_ip_field.trim().to_string();
+        if typed.is_empty() {
+            d.set_quest_ip(None);
+        } else if let Some(ip) = quest_net::parse_ip(&typed) {
+            d.set_quest_ip(Some(ip));
+        }
+    }
+    if k.button(
+        "quest-find",
+        right - bw,
+        row1,
+        bw,
+        BTN_H,
+        Tone::Dark,
+        scanning.is_none().then_some(Icon::Globe),
+        &find_label,
+        scanning.is_none(),
+        "Look for your Quest on this PC's network. It answers while Echo VR runs with API access on, or once ADB over the network is on.",
+    )
+    .clicked
+    {
+        d.scan_quest(ctx);
+    }
+
+    // ADB over the network: turned on over USB once.
+    let mut on = d.state.quest_adb_network;
+    let tip = "Install, update and stop Echo VR without the cable. Turned on over USB once; stays on until the headset restarts.";
+    if k.check(
+        "quest-adb-network",
+        &mut on,
+        "ADB over the network",
+        tx,
+        row2,
+        true,
+        tip,
+    ) {
+        d.state.quest_adb_network = on;
+        d.save();
+        match (on, ip) {
+            (true, Some(ip)) if ready && d.quest_info.as_ref().is_some_and(|i| !i.over_network) => {
+                d.enable_quest_network(ctx, ip)
+            }
+            (true, _) => d.notify("Plug in your Quest by USB once to turn this on"),
+            (false, Some(ip)) => {
+                d.quest_net_tried = false;
+                d.worker.spawn(ctx, move |_| quest_net::disconnect(ip));
+            }
+            (false, None) => d.quest_net_tried = false,
+        }
+    }
+
+    let mut ly = row3;
+    for g in lines {
+        let h = g.size().y;
+        k.put(tx, ly, g);
+        ly += h + dz(6.0);
+    }
 }
 
 /// What the headset card says.

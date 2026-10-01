@@ -47,6 +47,29 @@ pub(super) fn update(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion
     );
 }
 
+/// Reinstalls `v` from `e`: checks its files against the build's checksums and fetches
+/// only the broken ones again (`keep_patch`: a new player's licence patch stays).
+pub(super) fn reinstall(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    e: VersionEntry,
+    v: InstalledVersion,
+    keep_patch: bool,
+) {
+    let id = v.id.clone();
+    d.start_job(
+        ctx,
+        JobKind::Reinstall,
+        &id,
+        &format!("Reinstalling {}", v.name),
+        "Reading the build's checksums...",
+        move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on) {
+            Ok(r) => JobResult::Reinstalled(r),
+            Err(err) => job_err(err, "Reinstall Failed"),
+        },
+    );
+}
+
 fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
     let id = v.id.clone();
     d.start_job(
@@ -63,6 +86,14 @@ fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
 }
 
 pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
+    if !e.downloadable() {
+        d.dialogs.error(
+            &format!("Couldn't download {}", e.name),
+            "This build isn't on the download servers yet.",
+            Default::default(),
+        );
+        return;
+    }
     let library = d.state.library.clone();
     let id = e.id.clone();
     d.start_job(
@@ -72,7 +103,7 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
         &format!("Installing {}", e.name),
         "Preparing download...",
         move |cancel, on| match versions::install(&e, &library, cancel, on) {
-            Ok(v) => JobResult::Installed(v),
+            Ok(i) => JobResult::Installed(i.version, i.update_failed),
             Err(err) => job_err(err, "Install Failed"),
         },
     );
@@ -183,41 +214,55 @@ pub(super) fn manage_menu(
     w: f32,
     h: f32,
 ) {
-    let ok = d.demo || paths::has_echo_install(&v.root);
+    let ok = d.demo || v.present();
     enum Act {
         Update,
         Verify,
         Open,
         Shortcut,
         Patch,
-        PatchLink,
         Unpatch,
+        Account,
         Remove,
     }
-    let mut menu = vec![
-        (
+    let event = v.publisher_lock.is_some();
+    let mut menu = Vec::new();
+    // Event builds get no updates (REINSTALL checks their files).
+    if versions::has_updates(v) {
+        menu.push((
             MenuItem::row("Update", "Download any changed game files"),
             Some(Act::Update),
-        ),
-        (
+        ));
+        menu.push((
             MenuItem::row(
                 "Verify files",
                 "Check every game file against the update manifest",
             ),
             Some(Act::Verify),
-        ),
-        (MenuItem::row("Open folder", ""), Some(Act::Open)),
-        (
+        ));
+    }
+    menu.push((MenuItem::row("Open folder", ""), Some(Act::Open)));
+    // Shortcuts start the game directly, which only works on Windows for now.
+    if cfg!(windows) || d.demo {
+        menu.push((
             MenuItem::row(
                 "Desktop shortcut",
                 "A shortcut that starts this version directly",
             ),
             Some(Act::Shortcut),
-        ),
-        (MenuItem::Divider, None),
-    ];
-    if !setup::LICENCE_PATCH {
-        // Hidden for now (see `setup::LICENCE_PATCH`).
+        ));
+    }
+    // The licence patch, for owners too (it stays optional for them). Event builds play
+    // with EchoRelay's patch instead, and an account on the classic lobbies server.
+    menu.push((MenuItem::Divider, None));
+    if event {
+        menu.push((
+            MenuItem::row(
+                "Classic lobbies account…",
+                "Your name and password on the classic lobbies server",
+            ),
+            Some(Act::Account),
+        ));
     } else if v.patched {
         menu.push((
             MenuItem::row("Remove licence patch", "Put the original pnsovr.dll back"),
@@ -226,22 +271,13 @@ pub(super) fn manage_menu(
     } else {
         menu.push((
             MenuItem::row(
-                "Apply licence patch",
-                "Authorize with Discord to get your personal patch",
+                "Licence patch…",
+                "Your personal patch, through Discord or from a link",
             ),
             Some(Act::Patch),
         ));
-        menu.push((
-            MenuItem::row(
-                "Licence patch from a link…",
-                "Use a patch link you already have",
-            ),
-            Some(Act::PatchLink),
-        ));
     }
-    if setup::LICENCE_PATCH {
-        menu.push((MenuItem::Divider, None));
-    }
+    menu.push((MenuItem::Divider, None));
     menu.push((
         MenuItem::row(
             if v.external { "Forget" } else { "Remove" },
@@ -271,18 +307,11 @@ pub(super) fn manage_menu(
         Some(Act::Update) if ok && !busy => update(d, ctx, v.clone()),
         Some(Act::Verify) if ok && !busy => verify(d, ctx, v.clone()),
         Some(Act::Shortcut) if ok => setup::shortcut(d, &v.id),
-        Some(Act::Patch) if ok && !busy => {
-            setup::patch(d, ctx, &v.id, crate::core::launcher::patch::Source::Discord)
-        }
-        Some(Act::PatchLink) if ok => {
-            d.overlay = Some(setup::Overlay::PatchLink {
-                target: setup::LinkFor::Pc(v.id.clone()),
-                url: String::new(),
-            })
-        }
-        Some(Act::Unpatch) => setup::unpatch(d, &v.id),
+        Some(Act::Patch) if ok && !busy => d.overlay = Some(setup::licence(&v.id)),
+        Some(Act::Unpatch) if ok && !busy => setup::unpatch(d, ctx, &v.id),
+        Some(Act::Account) => d.overlay = Some(setup::relay_account(d, false)),
         Some(Act::Open) => {
-            if let Err(e) = platform::open_folder(&paths::bin_path(&v.root)) {
+            if let Err(e) = platform::open_folder(&v.bin_dir()) {
                 d.dialogs.error(
                     "Couldn't open folder",
                     &format!("{e:#}"),

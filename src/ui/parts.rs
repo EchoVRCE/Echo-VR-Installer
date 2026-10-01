@@ -61,7 +61,7 @@ impl<M: Send + 'static> Worker<M> {
     }
 }
 
-// ---- install path field ----
+// ---- folder picker ----
 
 /// Opens a folder picker; `None` when cancelled.
 pub fn choose_folder() -> Option<String> {
@@ -69,8 +69,6 @@ pub fn choose_folder() -> Option<String> {
         .pick_folder()
         .map(|p| p.to_string_lossy().into_owned())
 }
-
-// ---- patch options panel ----
 
 // ---- Quest connection row ----
 
@@ -85,6 +83,8 @@ pub struct QuestConn {
     pub checking: bool,
     pub status: Option<Status>,
     picker: Option<Vec<Device>>,
+    /// With ADB over the network on: where to connect to before looking.
+    pub network: Option<std::net::Ipv4Addr>,
 }
 
 const PICKER_KEY: &str = "quest-picker";
@@ -93,9 +93,17 @@ impl QuestConn {
     pub fn check(&mut self, ctx: &egui::Context, interactive: bool) {
         self.checking = true;
         self.status = None;
+        let network = self.network;
         self.worker.spawn(ctx, move |tx| {
             let st = adb::bundle::binary()
-                .map(|_| adb::connection_status())
+                .map(|_| {
+                    if let Some(ip) = network {
+                        if let Err(e) = crate::core::launcher::quest_net::connect(ip) {
+                            tracing::info!("quest over the network: {e:#}");
+                        }
+                    }
+                    adb::connection_status()
+                })
                 .unwrap_or(Status::None);
             tx.send(ConnMsg::Done(st, interactive));
         });

@@ -14,7 +14,7 @@ use super::{install_panel, play, setup, versions, Dashboard, Page};
 use crate::core::adb::devices::Status;
 use crate::core::launcher::catalog::{Hosted, Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
-use crate::core::{paths, platform};
+use crate::core::platform;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::{DEV_MODE_URL, USB_DEBUGGING_URL};
 use crate::ui::kit::Kit;
@@ -42,12 +42,8 @@ const NAME_SIZE: f32 = 32.0;
 const TAG_SIZE: f32 = 16.0;
 const NOTES_Y: f32 = 404.0;
 const NOTES_W: f32 = HERO.w - 2.0 * (TEXT_X - HERO.x);
-/// VERSIONS under the hero (PC); the Quest side has two cards there.
+/// VERSIONS under the hero (PC); the Quest side has How it works there.
 const VERSIONS: Dr = Dr::new(137.0, 630.0, 1146.0, 416.0);
-const CARDS: [Dr; 2] = [
-    Dr::new(137.0, 630.0, 555.0, 416.0),
-    Dr::new(728.0, 630.0, 555.0, 416.0),
-];
 /// One row of the VERSIONS card, how far its highlight reaches past the text, the room
 /// right of its chip, and the gap with the line between the main servers' builds and the
 /// rest.
@@ -61,64 +57,6 @@ const EVENT: Color32 = Color32::from_rgb(255, 174, 0);
 /// The line under the main servers' builds, and the rows' summaries.
 const DIVIDER: Color32 = Color32::from_rgba_unmultiplied_const(214, 210, 230, 190);
 const SUMMARY: Color32 = Color32::from_rgb(150, 146, 166);
-
-/// A placeholder version until the catalogue lists more: listed and choosable, never
-/// installable.
-struct Soon {
-    id: &'static str,
-    name: &'static str,
-    channel: &'static str,
-    size: u64,
-    notes: &'static str,
-    summary: &'static str,
-    hosted: Option<Hosted>,
-}
-
-impl Soon {
-    fn entry(&self) -> VersionEntry {
-        VersionEntry {
-            id: self.id.into(),
-            name: self.name.into(),
-            channel: self.channel.into(),
-            platform: Platform::Pc,
-            size: Some(self.size),
-            notes: self.notes.into(),
-            summary: self.summary.into(),
-            hosted: self.hosted,
-            ..Default::default()
-        }
-    }
-}
-
-const SOON: [Soon; 3] = [
-    Soon {
-        id: "soon-beta",
-        name: "Echo VR Beta (PC)",
-        channel: "beta",
-        size: 4_400_000_000,
-        notes: "Community test build: fixes land here first.",
-        summary: "Fixes land here first",
-        hosted: None,
-    },
-    Soon {
-        id: "soon-halloween-2018",
-        name: "Halloween Bash 2018",
-        channel: "event",
-        size: 4_100_000_000,
-        notes: "The 2018 Halloween lobby, back for a limited time.",
-        summary: "Back for a limited time",
-        hosted: Some(Hosted::Event),
-    },
-    Soon {
-        id: "soon-combat-classic",
-        name: "Echo Combat Classic",
-        channel: "legacy",
-        size: 3_900_000_000,
-        notes: "Echo Combat as it played at launch.",
-        summary: "As it played at launch",
-        hosted: None,
-    },
-];
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // A wider window widens the hero and VERSIONS (the right panel moves right); a
@@ -172,11 +110,6 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             version_list(d, kit, ctx);
             install_panel::pc(d, kit, ctx);
         }
-        Platform::Quest if setup::LICENCE_PATCH => {
-            how_it_works(kit, CARDS[0].wider(kit.dx() / 2.0).taller(kit.dy()));
-            licence(d, kit);
-            install_panel::quest(d, kit, ctx);
-        }
         Platform::Quest => {
             how_it_works(kit, VERSIONS.wider(kit.dx()).taller(kit.dy()));
             install_panel::quest(d, kit, ctx);
@@ -188,9 +121,8 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 
 /// What the green button does.
 enum Main {
+    /// Install, or reinstall (check and repair) an installed version.
     Install(Box<VersionEntry>),
-    /// Select this installed version and go to Play.
-    PlayPc(String),
     QuestConnect,
     QuestInstall,
     QuestPlay,
@@ -279,21 +211,13 @@ fn recommended(d: &Dashboard) -> Option<VersionEntry> {
         .cloned()
 }
 
-fn is_soon(id: &str) -> bool {
-    SOON.iter().any(|s| s.id == id)
-}
-
-/// Every PC version to choose from, the catalogue's and the placeholders: first the
-/// main servers' (live, then events), then the others, each in catalogue order.
+/// Every PC version to choose from: first the main servers' (live, then events), then
+/// the others, each in catalogue order.
 fn listed(d: &Dashboard) -> Vec<VersionEntry> {
     let Some(c) = &d.catalog else {
         return Vec::new();
     };
-    let (mut hosted, others): (Vec<_>, Vec<_>) = c
-        .pc()
-        .cloned()
-        .chain(SOON.iter().map(Soon::entry))
-        .partition(VersionEntry::is_hosted);
+    let (mut hosted, others): (Vec<_>, Vec<_>) = c.pc().cloned().partition(VersionEntry::is_hosted);
     hosted.sort_by_key(|e| e.hosted != Some(Hosted::Live));
     hosted.extend(others);
     hosted
@@ -360,39 +284,44 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
     h.name = hero_name(&e.name, h.logo);
     h.tag = e.hosted;
     h.notes = e.notes.clone();
-    if is_soon(&e.id) {
+    if !e.downloadable() {
         h.chips.push(("Coming soon", design::QUEST_OFF));
-        h.line.parts.push("Not available yet".into());
-        h.line
-            .parts
-            .extend(e.size.map(|s| format!("{} download", play::gb(s))));
-        (h.grey, h.enabled) = (true, false);
-        h.tip = "A placeholder: this version can't be downloaded yet".into();
-        return h;
     }
     let installed = d.state.installed_from(&e.id).cloned();
-    let job = hero::job_view(d, installed.as_ref().map_or(&e.id, |v| &v.id));
-    let present = |v: &InstalledVersion| d.demo || paths::has_echo_install(&v.root);
+    let job = setup::job_for(d, installed.as_ref().map_or(&e.id, |v| &v.id));
+    let present = |v: &InstalledVersion| d.demo || v.present();
     match installed {
         Some(v) if present(&v) => {
             h.chips.push(("Installed", design::QUEST_ON));
             h.line.parts.push("Installed".into());
             h.line.path = Some(v.root.clone());
             h.line.path_click = PathClick::Open;
-            (h.face, h.main, h.enabled) = (Face::Label("PLAY"), Main::PlayPc(v.id.clone()), true);
-            h.tip = "Select this version and go to Play".into();
+            // Installed: REINSTALL checks it (the card asks first, as for an install).
             let running = d.game().is_running();
+            h.face = Face::Label("REINSTALL");
+            h.main = Main::Install(Box::new(e.clone()));
+            h.enabled = !running && busy.is_none();
+            h.grey = !h.enabled;
+            h.tip = match (&busy, running) {
+                (Some(b), _) => b.clone(),
+                (None, true) => "Close Echo VR first".into(),
+                (None, false) => "Check every game file against the server's checksums and fetch only the broken ones again".into(),
+            };
             h.side = Side::Updates {
                 alert: d
                     .update_note
                     .get(&v.id)
                     .is_some_and(|n| n.contains("failed")),
             };
-            h.side_enabled = !running && busy.is_none();
-            h.side_tip = match (&busy, running) {
-                (Some(b), _) => b.clone(),
-                (None, true) => "Close Echo VR first".into(),
-                (None, false) => "Download any changed game files".into(),
+            let updates = crate::core::launcher::versions::has_updates(&v);
+            h.side_enabled = updates && !running && busy.is_none();
+            h.side_tip = match (&busy, running, updates) {
+                (_, _, false) => {
+                    "Event builds don't get updates: REINSTALL checks their files".into()
+                }
+                (Some(b), _, _) => b.clone(),
+                (None, true, _) => "Close Echo VR first".into(),
+                (None, false, _) => "Download any changed game files".into(),
             };
             h.side_act = SideAct::UpdatePc(v);
         }
@@ -405,6 +334,10 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
                 h.line.color = design::DANGER;
             }
             let free = d.free_bytes();
+            let version = e.version_line();
+            h.line
+                .parts
+                .extend((!version.is_empty()).then_some(version));
             h.line
                 .parts
                 .extend(free.map(|f| format!("{} free", play::gb(f))));
@@ -435,6 +368,9 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
             }
             h.enabled = !short && !external && busy.is_none();
             h.grey = !h.enabled;
+            if missing {
+                h.face = Face::Label("REINSTALL");
+            }
             h.main = Main::Install(Box::new(e));
         }
     }
@@ -486,7 +422,8 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
         } else {
             "Download Echo VR and install it on your Quest".into()
         };
-        if setup::LICENCE_PATCH {
+        // New players may have a patched build's link already.
+        if d.state.owner == Some(false) {
             h.side = Side::Blue {
                 icon: Icon::Download,
                 label: "From a link",
@@ -526,12 +463,10 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
 fn do_main(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
     match main {
         Main::Install(e) => {
-            d.state.selected = Some(e.id.clone());
-            versions::install(d, ctx, *e);
+            setup::ask_install(d, *e);
         }
-        Main::PlayPc(id) => play_version(d, &id),
         Main::QuestConnect => d.check_quest(ctx, true),
-        Main::QuestInstall => setup::ask_quest_install(d),
+        Main::QuestInstall => setup::ask_quest_install(d, false),
         Main::QuestPlay => d.page = Page::Play,
         Main::Nothing => {}
     }
@@ -542,12 +477,7 @@ fn do_side(d: &mut Dashboard, ctx: &egui::Context, act: SideAct) {
         SideAct::ChangeFolder => hero::choose_library(d),
         SideAct::UpdatePc(v) => versions::update(d, ctx, v),
         SideAct::Help(url) => platform::open_url(url),
-        SideAct::QuestLink => {
-            d.overlay = Some(setup::Overlay::PatchLink {
-                target: setup::LinkFor::Quest,
-                url: String::new(),
-            })
-        }
+        SideAct::QuestLink => setup::ask_quest_install(d, true),
         SideAct::QuestCheck => d.check_quest(ctx, true),
         SideAct::QuestUpdate => setup::quest_update(d, ctx),
         SideAct::Nothing => {}
@@ -689,7 +619,7 @@ fn version_list(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                     ),
                     design::BLUE,
                 ),
-                _ if is_soon(&e.id) => ("Coming soon".into(), design::QUEST_OFF),
+                _ if !e.downloadable() => ("Coming soon".into(), design::QUEST_OFF),
                 _ if d.state.installed_from(&e.id).is_some() => {
                     ("Installed".into(), design::QUEST_ON)
                 }
@@ -720,13 +650,17 @@ fn version_list(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 let nx = nr.max.x - k.origin.x + dz(14.0);
                 k.dot_tag(nx, nr.center().y - k.origin.y, label, 13.0, color);
             }
-            let mut sub = e.size.map(play::gb).unwrap_or_default();
-            if !e.channel.is_empty() {
-                if !sub.is_empty() {
-                    sub.push_str("  ·  ");
-                }
-                sub.push_str(&e.channel);
-            }
+            // Under the name: its size, version and date, and channel.
+            let sub = [
+                e.size.map(play::gb),
+                Some(e.version_line()),
+                Some(e.channel.clone()),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("  ·  ");
             let g = k.label_galley(&sub, design::din(15.0), design::GREY, room);
             k.put(tx, ry + dz(32.0), g);
             let left_end = (nr.max.x - k.origin.x + tag_w).max(tx + dz(200.0));
@@ -767,36 +701,6 @@ fn how_it_works(kit: &mut Kit, r: Dr) {
         .clicked
     {
         platform::open_url(DEV_MODE_URL);
-    }
-}
-
-/// Which build the Quest gets: the store's, or a personal patched one.
-fn licence(d: &mut Dashboard, kit: &mut Kit) {
-    let half = kit.dx() / 2.0;
-    let r = CARDS[1].moved(half).wider(half).taller(kit.dy());
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Your licence");
-    let text = match d.state.owner {
-        Some(true) => setup::OWN_NOTE.to_string(),
-        Some(false) => format!(
-            "{}\n\nHave a patch link already? Use FROM A LINK.",
-            setup::NEW_NOTE
-        ),
-        None => "Owners install the store build of Echo VR; new players get a personal patched one. The launcher asks before the first install.".into(),
-    };
-    kit.caps_text(x, y, w, &text, 15.8, design::TEXT, dz(18.0));
-    let ly = bottom - dz(22.0);
-    if kit
-        .link(
-            "licence-change",
-            x,
-            ly,
-            "Change",
-            16.5,
-            "Answer the licence question again",
-        )
-        .clicked
-    {
-        d.overlay = Some(setup::welcome());
     }
 }
 

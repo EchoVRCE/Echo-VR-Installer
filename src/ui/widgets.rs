@@ -495,6 +495,40 @@ impl Kit<'_> {
         invalid: bool,
         tip: &str,
     ) -> bool {
+        self.field_with(key, text, x, y, w, h, placeholder, invalid, tip, false)
+    }
+
+    /// [`Kit::field`] showing dots instead of what is typed (a password).
+    #[allow(clippy::too_many_arguments)]
+    pub fn secret_field(
+        &mut self,
+        key: &str,
+        text: &mut String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        placeholder: &str,
+        invalid: bool,
+        tip: &str,
+    ) -> bool {
+        self.field_with(key, text, x, y, w, h, placeholder, invalid, tip, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn field_with(
+        &mut self,
+        key: &str,
+        text: &mut String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        placeholder: &str,
+        invalid: bool,
+        tip: &str,
+        secret: bool,
+    ) -> bool {
         let r = self.rect(x, y, w, h);
         let id = self.wid(key);
         let focused = self.ui.memory(|m| m.has_focus(id));
@@ -515,9 +549,15 @@ impl Kit<'_> {
         let font = design::myriad(20.0);
         let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
             let mut job = LayoutJob::default();
+            // A secret is laid out as dots, one per character, so the cursor still fits.
+            let shown = if secret {
+                "•".repeat(buf.as_str().chars().count())
+            } else {
+                buf.as_str().to_string()
+            };
             design::append_text(
                 &mut job,
-                buf.as_str(),
+                &shown,
                 egui::TextFormat::simple(font.clone(), design::TEXT),
             );
             ui.fonts_mut(|f| f.layout_job(job))
@@ -529,6 +569,7 @@ impl Kit<'_> {
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center)
             .desired_width(w - 20.0)
+            .password(secret)
             .interactive(!self.blocked);
         let resp = self.ui.put(r.shrink2(vec2(10.0, 2.0)), edit);
         let resp = if tip.is_empty() || self.blocked {

@@ -7,6 +7,8 @@ pub mod game;
 pub mod launch;
 pub mod patch;
 pub mod quest;
+pub mod quest_net;
+pub mod relay;
 pub mod store;
 pub mod update_check;
 pub mod versions;

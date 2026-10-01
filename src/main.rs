@@ -15,6 +15,20 @@ fn main() {
         std::process::exit(core::elevation::helper_main(&args));
     }
 
+    // A spark:// link clicked elsewhere: for the launcher already running (this one then
+    // exits), or for this one once it is up.
+    if let Some(link) = args.get(1).filter(|a| core::links::parse(a).is_some()) {
+        if core::links::hand_over(link) {
+            return;
+        }
+    }
+
+    // Linux: Steam's shortcut runs the launcher to start the game (see core::linux).
+    if args.get(1).map(String::as_str) == Some(core::linux::PLAY_FLAG) {
+        core::log::init("play.log");
+        std::process::exit(core::linux::play_from_steam());
+    }
+
     core::log::init("EchoVR_Installer.log");
     let result = ui::run();
     core::elevation::shutdown();

@@ -46,6 +46,11 @@ impl Device {
         self.serial.starts_with("emulator-")
     }
 
+    /// Reached over the network (`adb connect`, wireless debugging) rather than USB.
+    pub fn network(&self) -> bool {
+        crate::core::launcher::quest_net::is_network_serial(&self.serial)
+    }
+
     pub fn model(&self) -> Option<&str> {
         self.props.get("model").map(String::as_str)
     }
@@ -191,6 +196,21 @@ pub fn select(devices: Vec<Device>, preferred: Option<&str>) -> Selection {
 
     if candidates.len() > 1 {
         let quests: Vec<&&Device> = candidates.iter().filter(|d| d.quest_like()).collect();
+        // One headset plugged in by USB and reached over the network too: use the cable.
+        let usb: Vec<&&&Device> = quests.iter().filter(|d| !d.network()).collect();
+        if quests.len() > 1 && usb.len() == 1 {
+            let quest = usb[0];
+            let reason = format!(
+                "picked {} on USB over the same headset's network connection",
+                quest.label()
+            );
+            return Selection {
+                serial: Some(quest.serial.clone()),
+                all: devices,
+                reason,
+                status: Status::Ready,
+            };
+        }
         if quests.len() == 1 {
             let quest = quests[0];
             let mut reason = format!(
@@ -308,6 +328,17 @@ mod tests {
         let s = select(parse(&table(&[Q3])), None);
         assert_eq!(s.status, Status::Ready);
         assert_eq!(s.serial.as_deref(), Some("1WMHH8150XX07M"));
+    }
+
+    #[test]
+    fn usb_wins_over_the_same_quest_on_the_network() {
+        let net = "192.168.178.45:5555   device product:eureka model:Quest_3 device:eureka transport_id:5";
+        let s = select(parse(&table(&[net, Q3])), None);
+        assert_eq!(s.status, Status::Ready);
+        assert_eq!(s.serial.as_deref(), Some("1WMHH8150XX07M"));
+        // Unplugged: the network connection alone is used.
+        let s = select(parse(&table(&[net])), None);
+        assert_eq!(s.serial.as_deref(), Some("192.168.178.45:5555"));
     }
 
     #[test]

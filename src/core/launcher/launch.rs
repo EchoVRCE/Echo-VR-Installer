@@ -62,8 +62,6 @@ pub fn join_args(args: &[String]) -> String {
 }
 
 /// A lobby id as the game expects it: a UUID (any `.node` suffix dropped).
-// Unused while the Play page has no lobby field (it comes back with the next design pass).
-#[allow(dead_code)]
 pub fn lobby_uuid(input: &str) -> Option<String> {
     let s = input.trim();
     // Accept pasted spark:// / echo.taxi links: the UUID is the last path segment.
@@ -123,6 +121,32 @@ pub fn build(
             })
         }
     }
+}
+
+/// [`build`] for an event build on the classic lobbies relay, as the relay's own launcher
+/// starts it: no arguments at all (the 2019 build quits on any it doesn't know), from its
+/// game folder. These builds always start in VR, so Flat plays like Meta Link.
+pub fn build_relay(
+    profile: &LaunchProfile,
+    exe: &Path,
+    revive_dir: Option<&str>,
+) -> Result<Command> {
+    let runtime = match profile.runtime {
+        Runtime::Flat => Runtime::MetaLink,
+        rt => rt,
+    };
+    let bare = LaunchProfile {
+        runtime,
+        ..Default::default()
+    };
+    let mut c = build(&bare, exe, revive_dir, None)?;
+    if runtime != Runtime::Revive {
+        // bin/win7/<exe> -> the game folder.
+        if let Some(game) = exe.ancestors().nth(3) {
+            c.cwd = game.to_path_buf();
+        }
+    }
+    Ok(c)
 }
 
 /// Things worth warning about before launching (not errors: the user may know better).
@@ -206,6 +230,15 @@ mod tests {
         assert_eq!(c.program, exe);
         assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);
         assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena/bin/win10"));
+        // An event build starts bare, from its game folder, even in Flat.
+        let old = Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7/echovr.exe");
+        let flat = LaunchProfile {
+            runtime: Runtime::Flat,
+            ..p.clone()
+        };
+        let c = build_relay(&flat, old, None).unwrap();
+        assert!(c.args.is_empty());
+        assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena"));
 
         p.runtime = Runtime::Flat;
         p.spectator = true;
@@ -220,6 +253,12 @@ mod tests {
             ..Default::default()
         };
         assert!(build(&p, exe, None, None).is_err());
+        // An event build: nothing but what Revive itself needs.
+        let relay = build_relay(&p, exe, Some("C:/Program Files/Revive")).unwrap();
+        assert!(!relay
+            .args
+            .iter()
+            .any(|a| a == "-windowed" || a == "-lobbyid"));
         let c = build(&p, exe, Some("C:/Program Files/Revive"), None).unwrap();
         assert_eq!(
             c.program,

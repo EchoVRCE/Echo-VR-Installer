@@ -11,7 +11,9 @@
 //! * a local file larger than the remote one is discarded rather than accepted as done;
 //! * the finished size is verified;
 //! * the mirror probe runs both mirrors concurrently and reports "no mirror reachable"
-//!   instead of building a `null...` URL.
+//!   instead of building a `null...` URL;
+//! * a file one mirror doesn't have is fetched from the other, and a file no mirror has
+//!   says so instead of blaming the connection.
 
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
@@ -58,8 +60,24 @@ impl Job {
     }
 }
 
-/// Picks the mirror that serves the test file fastest.
-pub fn fastest_mirror() -> Result<&'static str> {
+/// A server answered that it doesn't have the file (404 or 410).
+#[derive(Debug)]
+pub struct NotOnServer(pub u16);
+
+impl std::fmt::Display for NotOnServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This file isn't on the download servers (they answered {}).",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotOnServer {}
+
+/// The mirrors that serve the test file, fastest first.
+pub fn ranked_mirrors() -> Result<Vec<&'static str>> {
     http::block_on(async {
         let probes = MIRRORS.iter().map(|m| {
             let url = format!("{m}{MIRROR_TEST_FILE}");
@@ -89,18 +107,47 @@ pub fn fastest_mirror() -> Result<&'static str> {
                 }
             })
         });
-        let mut best: Option<(&'static str, Duration)> = None;
+        let mut timed = Vec::new();
         for (mirror, handle) in MIRRORS.iter().zip(probes.collect::<Vec<_>>()) {
-            if let Ok(Some(t)) = handle.await {
+            let t = handle.await.ok().flatten();
+            if let Some(t) = t {
                 tracing::info!("mirror {mirror}: {t:?}");
-                if best.is_none_or(|(_, b)| t < b) {
-                    best = Some((mirror, t));
-                }
             }
+            timed.push((*mirror, t));
         }
-        best.map(|(m, _)| m)
-            .ok_or_else(|| anyhow!("none of the download servers could be reached"))
+        let ranked = rank(timed);
+        if ranked.is_empty() {
+            bail!("none of the download servers could be reached");
+        }
+        Ok(ranked)
     })
+}
+
+/// Pure: the mirrors that answered, fastest first.
+fn rank(timed: Vec<(&'static str, Option<Duration>)>) -> Vec<&'static str> {
+    let mut up: Vec<_> = timed
+        .into_iter()
+        .filter_map(|(m, t)| t.map(|t| (m, t)))
+        .collect();
+    up.sort_by_key(|(_, t)| *t);
+    up.into_iter().map(|(m, _)| m).collect()
+}
+
+/// Tries `urls` in order, moving on to the next only when a server doesn't have the file;
+/// any other failure ends it.
+fn from_first_that_has(urls: &[String], mut fetch: impl FnMut(&str) -> Result<()>) -> Result<()> {
+    let mut missing = None;
+    for url in urls {
+        match fetch(url) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.downcast_ref::<NotOnServer>().is_some() => {
+                tracing::info!("{} doesn't have this file", redact(url));
+                missing = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(missing.unwrap_or_else(|| anyhow!("nothing to download")))
 }
 
 /// How to continue from a partial local file, decided from the size probe.
@@ -136,14 +183,21 @@ pub fn content_range_matches(content_range: Option<&str>, offset: u64) -> bool {
 
 /// Runs the job on the calling (worker) thread.
 pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Result<PathBuf> {
-    let url = if job.use_mirror {
+    let urls: Vec<String> = if job.use_mirror {
         on(Progress::Status("Preparing Download...".into()));
-        let mirror = fastest_mirror().context(NETWORK_ERROR)?;
-        format!("{mirror}{}", job.url.trim_start_matches('/'))
+        ranked_mirrors()
+            .context(NETWORK_ERROR)?
+            .into_iter()
+            .map(|m| format!("{m}{}", job.url.trim_start_matches('/')))
+            .collect()
     } else {
-        job.url.clone()
+        vec![job.url.clone()]
     };
-    tracing::info!("download {} -> {}", redact(&url), job.target().display());
+    tracing::info!(
+        "download {} -> {}",
+        redact(&urls[0]),
+        job.target().display()
+    );
 
     std::fs::create_dir_all(&job.dir).with_context(|| {
         format!(
@@ -157,7 +211,7 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
             .with_context(|| format!("couldn't delete the old {}", target.display()))?;
     }
 
-    fetch(&url, &target, cancel, on)?;
+    from_first_that_has(&urls, |url| fetch(url, &target, cancel, on))?;
 
     if job.extract {
         on(Progress::Extracting);
@@ -181,6 +235,9 @@ pub fn fetch(
             .send()
             .await
             .map_err(|e| anyhow!("{NETWORK_ERROR} (ERR1)\n\n{e}"))?;
+        if matches!(head.status().as_u16(), 404 | 410) {
+            return Err(NotOnServer(head.status().as_u16()).into());
+        }
         if !head.status().is_success() {
             bail!(
                 "{NETWORK_ERROR} (ERR1)\n\nThe server answered {}.",
@@ -346,6 +403,43 @@ mod tests {
     }
 
     #[test]
+    fn ranks_mirrors_that_answered() {
+        let ms = |n| Some(Duration::from_millis(n));
+        assert_eq!(rank(vec![("a", ms(300)), ("b", ms(100))]), ["b", "a"]);
+        assert_eq!(rank(vec![("a", None), ("b", ms(100))]), ["b"]);
+        assert!(rank(vec![("a", None), ("b", None)]).is_empty());
+    }
+
+    #[test]
+    fn moves_on_only_when_a_mirror_lacks_the_file() {
+        let urls = ["https://a/f".to_string(), "https://b/f".to_string()];
+        // The first mirror doesn't have it: the second is asked.
+        let mut asked = Vec::new();
+        let r = from_first_that_has(&urls, |u| {
+            asked.push(u.to_string());
+            if u.starts_with("https://a") {
+                Err(NotOnServer(404).into())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(r.is_ok());
+        assert_eq!(asked, urls);
+        // Any other failure ends it.
+        let mut asked = 0;
+        let r = from_first_that_has(&urls, |_| {
+            asked += 1;
+            Err(anyhow!("connection reset"))
+        });
+        assert!(r.is_err());
+        assert_eq!(asked, 1);
+        // Nobody has it: that is what the error says.
+        let e = from_first_that_has(&urls, |_| Err(NotOnServer(404).into())).unwrap_err();
+        assert!(e.downcast_ref::<NotOnServer>().is_some());
+        assert!(!format!("{e:#}").contains("Ethernet"));
+    }
+
+    #[test]
     fn content_range_check() {
         assert!(content_range_matches(Some("bytes 40-99/100"), 40));
         assert!(!content_range_matches(Some("bytes 0-99/100"), 40));
@@ -357,7 +451,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_download_and_resume() {
-        let mirror = fastest_mirror().unwrap();
+        let mirror = ranked_mirrors().unwrap()[0];
         let url = format!("{mirror}{MIRROR_TEST_FILE}");
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("t");

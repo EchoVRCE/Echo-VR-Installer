@@ -132,7 +132,10 @@ pub(super) fn job_view(d: &Dashboard, id: &str) -> Option<JobView> {
 impl JobView {
     /// An install (on this PC or the Quest), as opposed to work on something installed.
     pub fn installs(&self) -> bool {
-        matches!(self.kind, JobKind::Install | JobKind::QuestInstall)
+        matches!(
+            self.kind,
+            JobKind::Install | JobKind::Reinstall | JobKind::QuestInstall
+        )
     }
 
     /// The job's progress line, "…" instead of "...".
@@ -579,6 +582,23 @@ pub(super) fn switch(kit: &mut Kit, key: &str, extra: f32, platform: &mut Platfo
 }
 
 // ---- cards ----
+
+/// A tile's faint fill on a card.
+pub(super) const TILE: Color32 = Color32::from_rgba_premultiplied(8, 8, 8, 8);
+
+/// A tile on a card (an installed version, a friend): faint, or VERSIONS' blue with its
+/// bar when `selected`.
+pub(super) fn tile(kit: &Kit, x: f32, y: f32, w: f32, h: f32, selected: bool) {
+    let r = kit.rect(x, y, w, h);
+    let p = kit.ui.painter();
+    if selected {
+        p.rect_filled(r, dz(6.0), design::BLUE.gamma_multiply(0.28));
+        let bar = egui::Rect::from_min_size(r.min, egui::vec2(dz(4.0), r.height()));
+        p.rect_filled(bar, dz(2.0), design::BLUE);
+    } else {
+        p.rect_filled(r, dz(6.0), TILE);
+    }
+}
 
 /// A card like the news cards: card_bg with the violet-to-pink rim and a Conthrax title.
 /// Returns the content's left edge, top, width and bottom (logical pixels).

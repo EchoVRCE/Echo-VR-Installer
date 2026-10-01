@@ -11,6 +11,37 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{bail, Context, Result};
 
 pub fn extract(zip_path: &Path, dest: &Path, cancel: &AtomicBool) -> Result<usize> {
+    extract_root(zip_path, None, dest, cancel)
+}
+
+/// The one folder every entry of the zip at `zip_path` is in ("name/"), if there is one.
+pub fn top_folder(zip_path: &Path) -> Result<Option<String>> {
+    let file = File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;
+    let archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("{} is not a valid zip file", zip_path.display()))?;
+    let mut top: Option<&str> = None;
+    for name in archive.file_names() {
+        let Some((first, _)) = name.split_once('/') else {
+            return Ok(None);
+        };
+        match top {
+            None => top = Some(first),
+            Some(t) if t == first => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(top.filter(|t| !t.is_empty()).map(|t| format!("{t}/")))
+}
+
+/// [`extract`], with the archive's one top folder `from` ("name/") put at `dest` instead:
+/// only entries under it are taken. Builds packed under their own folder name land where
+/// every install has its game (`ready-at-dawn-echo-arena`).
+pub fn extract_root(
+    zip_path: &Path,
+    from: Option<&str>,
+    dest: &Path,
+    cancel: &AtomicBool,
+) -> Result<usize> {
     let file = File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("{} is not a valid zip file", zip_path.display()))?;
@@ -26,6 +57,14 @@ pub fn extract(zip_path: &Path, dest: &Path, cancel: &AtomicBool) -> Result<usiz
         let mut entry = archive.by_index(i)?;
         let Some(rel) = entry.enclosed_name() else {
             bail!("The archive contains an unsafe path: {}", entry.name());
+        };
+        let rel = match from {
+            None => rel,
+            // Outside the top folder (or the folder itself): not part of the game.
+            Some(top) => match rel.strip_prefix(top.trim_end_matches('/')) {
+                Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
+                _ => continue,
+            },
         };
         let out = dest.join(rel);
         if entry.is_dir() {
@@ -66,6 +105,45 @@ mod tests {
             z.write_all(data).unwrap();
         }
         z.finish().unwrap();
+    }
+
+    #[test]
+    fn puts_the_top_folder_where_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("h.zip");
+        make_zip(
+            &zip,
+            &[
+                ("Echo VR Halloween 2017/bin/win7/EchoArena.exe", b"exe"),
+                ("Echo VR Halloween 2017/Play.bat", b"bat"),
+                ("stray.txt", b"not the game"),
+            ],
+        );
+        let out = dir.path().join("v/ready-at-dawn-echo-arena");
+        let n = extract_root(
+            &zip,
+            Some("Echo VR Halloween 2017/"),
+            &out,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(top_folder(&zip).unwrap(), None, "stray.txt is outside it");
+        assert_eq!(
+            std::fs::read(out.join("bin/win7/EchoArena.exe")).unwrap(),
+            b"exe"
+        );
+        let one = dir.path().join("one.zip");
+        make_zip(
+            &one,
+            &[
+                ("echo-vr-6/bin/win7/x.dll", b"x"),
+                ("echo-vr-6/_local/c.json", b"c"),
+            ],
+        );
+        assert_eq!(top_folder(&one).unwrap().as_deref(), Some("echo-vr-6/"));
+        assert!(!out.join("stray.txt").exists());
+        assert!(!dir.path().join("v/stray.txt").exists());
     }
 
     #[test]

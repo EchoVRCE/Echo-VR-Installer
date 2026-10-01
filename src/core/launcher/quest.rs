@@ -14,8 +14,9 @@ use crate::core::oauth::{self, OAuthError};
 use crate::core::quest_update::{self, Marker, VersionCheck};
 use crate::core::{paths, quest_install};
 
-/// Used when the update manifest (which names the current APK) can't be fetched.
-pub const FALLBACK_APK: &str = "echo_quest_16-07-2026.001.apk";
+/// Used when the update manifest (which names the current APK) can't be fetched and the
+/// versions catalogue names none.
+pub const FALLBACK_APK: &str = "echo_quest_27-08-2026.001.apk";
 pub const DATA_ZIP: &str = "_data.zip";
 
 /// Where the Quest APK comes from.
@@ -39,6 +40,15 @@ impl From<anyhow::Error> for JobError {
     fn from(e: anyhow::Error) -> Self {
         JobError::Other(e)
     }
+}
+
+/// How an install ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Installed {
+    /// With the latest update.
+    UpToDate,
+    /// The update manifest couldn't be fetched: installed, but not checked for updates.
+    NotChecked,
 }
 
 /// What an update found.
@@ -84,12 +94,15 @@ fn fetch(
 }
 
 /// Downloads the APK (stock or patched) and the game data, installs both over adb,
-/// records the install on the headset and applies the latest update.
+/// records the install on the headset and applies the latest update. `fallback_apk` is
+/// the APK to take when the update manifest (which names the current one) can't be
+/// fetched: the versions catalogue's.
 pub fn install(
     source: &ApkSource,
+    fallback_apk: Option<&str>,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
-) -> Result<(), JobError> {
+) -> Result<Installed, JobError> {
     ready()?;
     on(Step::Status("Checking for the latest version...".into()));
     let manifest = Manifest::fetch(quest_update::QUEST_MANIFEST_URL)
@@ -98,6 +111,7 @@ pub fn install(
     let base = manifest
         .as_ref()
         .and_then(|m| m.base_apk_name.clone())
+        .or_else(|| fallback_apk.map(str::to_string))
         .unwrap_or_else(|| FALLBACK_APK.into());
 
     let (apk, patched) = match source {
@@ -150,14 +164,18 @@ pub fn install(
         patched,
     );
     let _ = std::fs::remove_file(staging().join(DATA_ZIP));
-    if let Some(m) = manifest {
-        on(Step::Status("Applying the latest update...".into()));
-        quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s))).map_err(|e| {
-            e.context("Echo VR is installed, but applying the latest update failed. Use Update to try again.")
-        })?;
-    }
+    let outcome = match manifest {
+        Some(m) => {
+            on(Step::Status("Applying the latest update...".into()));
+            quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s))).map_err(|e| {
+                e.context("Echo VR is installed, but applying the latest update failed. Use Update to try again.")
+            })?;
+            Installed::UpToDate
+        }
+        None => Installed::NotChecked,
+    };
     adb::exec(&["kill-server"]);
-    Ok(())
+    Ok(outcome)
 }
 
 /// Checks that the headset has the APK the update is built for, then applies it.
@@ -189,6 +207,10 @@ pub struct QuestInfo {
     pub installed: bool,
     /// From the installer's on-device marker, when present.
     pub marker: Option<Marker>,
+    /// Its Wi-Fi address, when it was read over USB.
+    pub wifi_ip: Option<std::net::Ipv4Addr>,
+    /// ADB reaches it over the network rather than USB.
+    pub over_network: bool,
 }
 
 impl QuestInfo {
@@ -218,7 +240,11 @@ fn ready() -> Result<()> {
 
 pub fn info() -> Result<QuestInfo> {
     ready()?;
-    let device = adb::target_device().map(|d| d.label());
+    let target = adb::target_device();
+    let device = target.as_ref().map(|d| d.label());
+    let over_network = target
+        .as_ref()
+        .is_some_and(|d| super::quest_net::is_network_serial(&d.serial));
     let installed = quest_update::installed_apk_path().is_some();
     let marker = if installed {
         quest_update::read_marker()
@@ -229,6 +255,8 @@ pub fn info() -> Result<QuestInfo> {
         device,
         installed,
         marker,
+        wifi_ip: super::quest_net::ip_over_usb(),
+        over_network,
     })
 }
 
@@ -262,17 +290,68 @@ pub fn launch() -> Result<()> {
     Ok(())
 }
 
-// The Play page's Quest Stop button comes back with the next design pass.
-#[allow(dead_code)]
+/// Closes Echo VR on the headset.
 pub fn stop() -> Result<()> {
     ready()?;
     adb::exec(&["shell", "am", "force-stop", PACKAGE]);
     Ok(())
 }
 
+/// Where Echo VR keeps its logs on the headset, and the folder each one is saved as.
+fn log_dirs() -> [(String, &'static str); 2] {
+    [
+        ("/sdcard/r14logs".into(), "r14logs"),
+        (
+            format!("/sdcard/Android/data/{PACKAGE}/files/_local/r14logs"),
+            "_local-r14logs",
+        ),
+    ]
+}
+
+/// Pure: the folder one save of the headset's logs goes into, named by when it was made.
+pub fn logs_folder(at: time::OffsetDateTime) -> PathBuf {
+    let name = format!(
+        "{}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        at.year(),
+        at.month() as u8,
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second()
+    );
+    paths::log_dir().join("quest").join(name)
+}
+
+/// Saves Echo VR's logs from the headset into a new folder beside the launcher's logs,
+/// and returns it.
+pub fn pull_logs() -> Result<PathBuf> {
+    ready()?;
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let dest = logs_folder(now);
+    std::fs::create_dir_all(&dest)?;
+    let saved = log_dirs()
+        .into_iter()
+        .filter(|(remote, name)| adb::pull(remote, &dest.join(name)))
+        .count();
+    if saved == 0 {
+        let _ = std::fs::remove_dir_all(&dest);
+        bail!("There are no Echo VR logs on your Quest yet: play it once, then try again.");
+    }
+    tracing::info!("saved the Quest's logs to {}", dest.display());
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quest_logs_go_into_a_dated_folder() {
+        let at = time::OffsetDateTime::from_unix_timestamp(1790845503).unwrap(); // 2026-10-01 09:05:03 UTC
+        let dir = logs_folder(at);
+        assert!(dir.ends_with("quest/2026-10-01_09-05-03"));
+        assert!(dir.starts_with(paths::log_dir()));
+    }
 
     #[test]
     fn patched_apk_is_kept_apart() {
@@ -299,6 +378,8 @@ mod tests {
             device: None,
             installed: false,
             marker: None,
+            wifi_ip: None,
+            over_network: false,
         };
         assert!(i.version_label().contains("not installed"));
         i.installed = true;

@@ -1,12 +1,18 @@
 //! Where things live: per-user cache/log dirs, and the Echo VR install layout.
 //!
-//! The Echo client always lives at `<root>/ready-at-dawn-echo-arena/bin/win10/echovr.exe`.
-//! Install paths are kept with forward slashes and no trailing slash.
+//! The Echo client lives at `<root>/ready-at-dawn-echo-arena/bin/win10/echovr.exe`; the
+//! 2017 event builds start `EchoArena.exe` instead, which may sit in `bin/win7`. Install
+//! paths are kept with forward slashes and no trailing slash.
 
 use std::path::{Path, PathBuf};
 
 pub const ARENA_DIR: &str = "ready-at-dawn-echo-arena";
-const ARENA_MARKER: &str = "ready-at-dawn-echo-arena/bin/win10/echovr.exe";
+/// The executable of every build since 2018.
+pub const DEFAULT_EXE: &str = "echovr.exe";
+/// Every executable name an Echo build has had (the 2017 ones: `EchoArena.exe`).
+pub const GAME_EXES: [&str; 2] = [DEFAULT_EXE, "EchoArena.exe"];
+/// Where a build keeps its executable, newest layout first.
+const BIN_DIRS: [&str; 2] = ["bin/win10", "bin/win7"];
 
 /// Per-user cache root. Never the shared temp dir (world-writable on Linux), and a folder
 /// of its own: on Windows the system cache folder is the data folder, where
@@ -56,13 +62,28 @@ pub fn bin_path(root: &str) -> PathBuf {
     PathBuf::from(format!("{root}/{ARENA_DIR}/bin/win10"))
 }
 
-pub fn exe_path(root: &str) -> PathBuf {
-    bin_path(root).join("echovr.exe")
+/// Where the executable `exe` (a file name) of the install at `root` is: in the first
+/// bin folder that has it, else where the newest layout puts it.
+pub fn exe_in(root: &str, exe: &str) -> PathBuf {
+    BIN_DIRS
+        .iter()
+        .map(|dir| PathBuf::from(format!("{root}/{ARENA_DIR}/{dir}/{exe}")))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| bin_path(root).join(exe))
+}
+
+/// The executable an install at `root` has: `echovr.exe`, or `EchoArena.exe` for the
+/// 2017 builds. `None` when there is no Echo install there.
+pub fn find_exe(root: &str) -> Option<&'static str> {
+    if root.is_empty() {
+        return None;
+    }
+    GAME_EXES.into_iter().find(|e| exe_in(root, e).is_file())
 }
 
 /// True when an Echo install exists directly under `root`.
 pub fn has_echo_install(root: &str) -> bool {
-    !root.is_empty() && Path::new(&format!("{root}/{ARENA_MARKER}")).is_file()
+    find_exe(root).is_some()
 }
 
 /// Resolves the Echo install ROOT from whatever folder the user picked: the root itself,
@@ -117,6 +138,24 @@ mod tests {
         let bin = root.join("ready-at-dawn-echo-arena/bin/win10");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("echovr.exe"), b"").unwrap();
+    }
+
+    #[test]
+    fn finds_either_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let new = tmp.path().join("new");
+        fake_install(&new);
+        let new = normalize(&new.to_string_lossy());
+        assert_eq!(find_exe(&new), Some("echovr.exe"));
+        let old = tmp.path().join("old");
+        let bin = old.join("ready-at-dawn-echo-arena/bin/win7");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("EchoArena.exe"), b"").unwrap();
+        let old = normalize(&old.to_string_lossy());
+        assert_eq!(find_exe(&old), Some("EchoArena.exe"));
+        assert_eq!(exe_in(&old, "EchoArena.exe"), bin.join("EchoArena.exe"));
+        assert!(has_echo_install(&old));
+        assert_eq!(find_exe(&normalize(&tmp.path().to_string_lossy())), None);
     }
 
     #[test]

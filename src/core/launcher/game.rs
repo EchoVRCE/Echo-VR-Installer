@@ -1,9 +1,9 @@
 //! Game state: is Echo running, is its local API up, is it in a match.
 //!
-//! A background thread polls once a second: an OS process scan (which also sees games
-//! started outside the launcher, and Proton's `echovr.exe` wrappers) plus the game's local
-//! HTTP API on port 6721. An HTTP error answer means "running, not in a match"; a refused
-//! connection means "not running, or API access disabled".
+//! A background thread polls once a second: an OS process scan for any build's executable
+//! (which also sees games started outside the launcher, and Proton's wrappers) plus the
+//! game's local HTTP API on port 6721. An HTTP error answer means "running, not in a
+//! match"; a refused connection means "not running, or API access disabled".
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -63,6 +63,42 @@ pub fn process_running(exe_name: &str) -> bool {
     })
 }
 
+/// Ends every game process (any build's executable, by name or Proton command line)
+/// started at or after `since` (Unix seconds): the game the launcher started, even when
+/// a wrapper (Revive's injector) started it, and never one started before. Returns how
+/// many were ended.
+pub fn stop_started_since(since: u64) -> usize {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let names: Vec<String> = crate::core::paths::GAME_EXES
+        .iter()
+        .map(|e| e.to_ascii_lowercase())
+        .collect();
+    let mut ended = 0;
+    for p in sys.processes().values() {
+        let name = p.name().to_string_lossy().to_ascii_lowercase();
+        let is_game = names.iter().any(|n| {
+            name == *n
+                || p.cmd().iter().any(|a| {
+                    a.to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(n.as_str())
+                })
+        });
+        // Process start times are whole seconds: allow for the one we launched in.
+        if is_game && p.start_time() + 1 >= since && p.kill() {
+            tracing::info!("stopped {} (pid {})", name, p.pid());
+            ended += 1;
+        }
+    }
+    ended
+}
+
 #[derive(Deserialize)]
 struct Session {
     #[serde(default)]
@@ -101,30 +137,53 @@ fn poll_api() -> Result<(u16, String), ()> {
     })
 }
 
-/// Shared, continuously updated game state.
+/// Shared, continuously updated game state: on this PC, and on the Quest at its
+/// network address (through its API) once that is known.
 #[derive(Clone, Default)]
 pub struct Monitor {
     state: Arc<Mutex<GameState>>,
+    quest: Arc<Mutex<GameState>>,
+    quest_ip: Arc<Mutex<Option<std::net::Ipv4Addr>>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Stores `next` in `shared`; whether it changed.
+fn store(shared: &Mutex<GameState>, next: GameState) -> bool {
+    let mut s = lock(shared);
+    let changed = *s != next;
+    *s = next;
+    changed
 }
 
 impl Monitor {
-    /// Starts the polling thread; `on_change` runs whenever the state changes.
-    pub fn start(on_change: impl Fn() + Send + 'static) -> Monitor {
+    /// Starts the polling threads; `on_change` runs whenever a state changes.
+    pub fn start(on_change: impl Fn() + Send + Sync + 'static) -> Monitor {
         let m = Monitor::default();
+        let on_change = Arc::new(on_change);
+        let (quest, quest_ip, notify) = (m.quest.clone(), m.quest_ip.clone(), on_change.clone());
+        std::thread::Builder::new()
+            .name("quest-monitor".into())
+            .spawn(move || loop {
+                let ip = *lock(&quest_ip);
+                let next = ip.map_or(GameState::NotRunning, super::quest_net::api_state);
+                if store(&quest, next) {
+                    notify();
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            })
+            .expect("spawn quest monitor");
         let shared = m.state.clone();
         std::thread::Builder::new()
             .name("game-monitor".into())
             .spawn(move || loop {
-                let process = process_running("echovr.exe");
+                let process = crate::core::paths::GAME_EXES
+                    .iter()
+                    .any(|exe| process_running(exe));
                 let api = if process { poll_api() } else { Err(()) };
-                let next = interpret(api, process);
-                let changed = {
-                    let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    let changed = *s != next;
-                    *s = next;
-                    changed
-                };
-                if changed {
+                if store(&shared, interpret(api, process)) {
                     on_change();
                 }
                 std::thread::sleep(Duration::from_secs(1));
@@ -133,8 +192,21 @@ impl Monitor {
         m
     }
 
+    /// Where the Quest is on the network (`None`: not known, nothing polled).
+    pub fn set_quest_ip(&self, ip: Option<std::net::Ipv4Addr>) {
+        *lock(&self.quest_ip) = ip;
+        if ip.is_none() {
+            store(&self.quest, GameState::NotRunning);
+        }
+    }
+
+    /// Echo VR on the Quest, from its API over the network.
+    pub fn quest(&self) -> GameState {
+        lock(&self.quest).clone()
+    }
+
     pub fn get(&self) -> GameState {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        lock(&self.state).clone()
     }
 }
 

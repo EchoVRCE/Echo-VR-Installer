@@ -15,6 +15,7 @@ mod style;
 mod theme;
 mod tipbox;
 mod video;
+mod web;
 mod widgets;
 
 use launcher::Dashboard;
@@ -74,7 +75,7 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         fit_zoom(&ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
@@ -91,6 +92,8 @@ impl eframe::App for App {
         let mut kit = kit::Kit::new(ui, &self.assets, blocked);
         self.menu.show(&mut kit);
         self.menu.dialogs.show(&mut kit);
+        // The embedded site goes where the page placed it, after everything else.
+        self.menu.sync_web(&ctx, frame);
     }
 
     /// Only the window is remembered (`persist_window`), not the UI's state.
@@ -120,8 +123,10 @@ fn fit_zoom(ctx: &egui::Context) {
 
 /// Personal patch files never outlive the session (the Java shutdown hook).
 fn cleanup_staged_patches() {
+    use crate::core::launcher::patch;
     let dir = crate::core::paths::downloads_dir();
-    let _ = std::fs::remove_file(dir.join("pnsovr.dll"));
+    let _ = std::fs::remove_file(dir.join(patch::DLL));
+    let _ = std::fs::remove_file(dir.join(patch::LINK_DLL));
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();

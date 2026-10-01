@@ -2,11 +2,13 @@
 //! purple backdrop. See `ui/design.rs` and `ui/style.rs` for the widgets. Installing,
 //! patching, SteamVR setup and the Quest all run inline (`setup.rs`).
 
+mod echovrce;
 mod hero;
 mod install;
 mod install_panel;
 mod play;
 mod server_info;
+mod servers;
 mod settings;
 mod setup;
 mod versions;
@@ -33,6 +35,7 @@ use crate::core::launcher::quest::QuestInfo;
 use crate::core::launcher::store::{InstalledVersion, LauncherState, Runtime, Target};
 use crate::core::launcher::update_check;
 use crate::core::launcher::versions::Step;
+use crate::core::links;
 
 pub const CREDITS: &str = "Copyright for Echo VR is by Meta/Ready at Dawn!\n\
 This launcher is not at all associated with them!\n\n\
@@ -51,7 +54,7 @@ const RAIL: f32 = dz(91.0);
 const X0: f32 = dz(138.0);
 const CW: f32 = W - X0 - dz(48.0);
 /// The page's header strip under the status bar (design pixels).
-const HEADER: Dr = Dr::new(138.0, 80.0, 1734.0, 46.0);
+pub(super) const HEADER: Dr = Dr::new(138.0, 80.0, 1734.0, 46.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Page {
@@ -95,18 +98,30 @@ impl Page {
 }
 
 enum JobResult {
-    Installed(InstalledVersion),
+    /// Installed; with why its update failed when it did (installed, not up to date).
+    Installed(InstalledVersion, Option<String>),
+    /// Reinstalled: checked, the broken files fetched again.
+    Reinstalled(crate::core::launcher::versions::Reinstalled),
     Updated,
     Verified(Vec<String>),
     /// `None` = cancelled.
     Failed(Option<UiError>),
     /// The licence patch was applied.
     Patched,
+    /// The licence patch was taken off again.
+    Unpatched,
+    /// A new player's patch is in the download folder, waiting for its version's install.
+    LicenceFetched(PathBuf),
     /// Discord authorization for the patch failed.
     OAuthFailed(crate::core::oauth::OAuthError),
-    /// Revive (SteamVR) is installed.
-    ReviveReady,
-    QuestInstalled,
+    /// Revive (SteamVR) is installed; with what of the rest (artwork, library entry)
+    /// couldn't be done.
+    ReviveReady(Vec<String>),
+    /// Echo VR was put into SteamVR's library (`true`) or taken out.
+    LibraryEntry(bool),
+    /// Linux: set up, with the Steam shortcut's appid.
+    LinuxReady(u32),
+    QuestInstalled(crate::core::launcher::quest::Installed),
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
     QuestNeedsReinstall(String),
@@ -133,8 +148,18 @@ enum Msg {
     Revive(Option<String>),
     /// Bytes "Delete cache" would free.
     CacheSize(u64),
+    /// How far a scan for the Quest on the network is (0 to 1).
+    QuestScanProgress(f32),
+    /// What it found.
+    QuestScanDone(Vec<crate::core::launcher::quest_net::Found>),
+    /// ADB over the network was turned on, or why not.
+    QuestNetwork(Result<(), UiError>),
     /// The launcher's latest release, if newer (`Err`: couldn't look).
     LauncherUpdate(Result<Option<update_check::Release>, String>),
+    /// Who opens spark:// links now (`Err`: registering failed, and why).
+    LinkHandler(links::Handler, Option<String>),
+    /// The headset's logs were saved into this folder, or why not.
+    QuestLogs(Result<PathBuf, UiError>),
 }
 
 /// Whether a newer launcher is out (Settings shows it, the rail marks it).
@@ -249,9 +274,14 @@ impl Feed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobKind {
     Install,
+    /// Checking an installed version's files and fetching the broken ones again.
+    Reinstall,
     Update,
     Verify,
     Patch,
+    Unpatch,
+    /// Fetching a new player's patch while their version installs.
+    Licence,
     Revive,
     QuestInstall,
     QuestUpdate,
@@ -288,8 +318,22 @@ pub enum SnapVariant {
     DialogConfirm,
     /// A version's Manage menu, open.
     MenuOpen,
-    /// The first-run setup card.
-    Setup,
+    /// The Install card's questions, as an owner (prefilled).
+    InstallAsk,
+    /// ...as a new player, with a patch link.
+    InstallAskNew,
+    /// ...for the Quest, as a new player.
+    InstallAskQuest,
+    /// PLAY of a version not installed here: the licence question first.
+    Owner,
+    /// Installed; the new player's patch is still on its way.
+    LicenceWaiting,
+    /// An event build installed and selected, an account on the relay.
+    EventSelected,
+    /// The Install card of an event build.
+    InstallAskEvent,
+    /// The classic lobbies account card, before an event build's first PLAY.
+    RelayAccount,
     /// Settings: "Delete cache" asks.
     DeleteCache,
     /// Settings: "Upload logs" says what the logs contain.
@@ -298,6 +342,8 @@ pub enum SnapVariant {
     QuestSide,
     /// The Quest side, a headset without Echo VR.
     QuestFresh,
+    /// The Quest side, Echo VR running on the headset (seen through its API).
+    QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
     Launching,
     /// Echo VR runs, started elsewhere (RUNNING).
@@ -308,6 +354,32 @@ pub enum SnapVariant {
     VersionMenu,
     /// A placeholder version chosen on the Install page.
     Placeholder,
+    /// The "Join a lobby" card with a pasted link.
+    JoinLobby,
+    /// Settings with SteamVR chosen (its artwork and library options).
+    SettingsSteamVr,
+    /// Servers: signed in, the live list (and you in a party queueing).
+    ServersLive,
+    /// Servers: your match history.
+    ServersHistory,
+    /// Servers: starting a server.
+    ServersStart,
+    /// Servers: you in a match, an invite to you, a friend invited.
+    ServersInvites,
+    /// Servers: the card of a match you just started.
+    ServersShare,
+    /// Settings with Spark opening spark:// links.
+    SettingsLinks,
+    /// EchoVRCE: signed in.
+    VrceSignedIn,
+    /// EchoVRCE: waiting for the sign-in code to be approved.
+    VrceSigning,
+    /// A new player: PATCH on Play.
+    NewPlayer,
+    /// The licence card for the selected version.
+    Licence,
+    /// ...with a patch link pasted.
+    LicenceLink,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -316,6 +388,34 @@ enum SnapGame {
     Launching,
     Ours,
     Elsewhere,
+    /// Echo VR runs on the Quest (its API answers over the network).
+    QuestRunning,
+}
+
+/// The game PLAY started, remembered after its starter (Revive's injector) exits so
+/// STOP still ends it.
+#[derive(Clone, Copy)]
+struct Launched {
+    at: std::time::Instant,
+    /// The same moment in Unix seconds, to tell the game's process from older ones.
+    unix: u64,
+    /// The game has been seen running since.
+    seen: bool,
+}
+
+impl Launched {
+    /// How long a started game may take to show up before PLAY is back.
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn now() -> Launched {
+        Launched {
+            at: std::time::Instant::now(),
+            unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            seen: false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -329,11 +429,17 @@ pub struct Dashboard {
     worker: Worker<Msg>,
     monitor: Option<Monitor>,
     child: Option<std::process::Child>,
+    /// The game PLAY started, until it has ended (or never showed up).
+    launched: Option<Launched>,
+    /// The lobby to join once "Launch anyway" is answered.
+    pending_lobby: Option<play::Join>,
     /// PC or Quest, on the Play and the Install page alike.
     platform: Platform,
     quest_conn: QuestConn,
     quest_info: Option<QuestInfo>,
     quest_busy: bool,
+    /// The headset's Echo VR was a patched build when last read (its marker says so).
+    quest_was_patched: bool,
     /// The Install page's list of installed versions.
     library_scroll: f32,
     /// The version the Install page's hero shows (a row of its version list).
@@ -343,6 +449,26 @@ pub struct Dashboard {
     /// Snapshots: the game's state instead of the monitor's.
     snap_game: Option<SnapGame>,
     library_field: String,
+    /// The Quest's address as typed on the YOUR QUEST card.
+    quest_ip_field: String,
+    /// Settings' classic lobbies server, as typed.
+    relay_server_field: String,
+    /// The EchoVRCE session (its page).
+    vrce: echovrce::Vrce,
+    /// Linux: GE-Proton and EchoXR are in place (checked at start).
+    linux_set_up: bool,
+    /// echovrce.com inside the window, on the EchoVRCE page.
+    web: crate::ui::web::WebPane,
+    /// The game service's servers, party, friends and history (the Servers page).
+    servers: servers::Servers,
+    /// Who opens spark:// links (Windows, Linux), once read.
+    link_handler: Option<links::Handler>,
+    /// When a link handed over by another launcher was last looked for.
+    link_checked: Option<std::time::Instant>,
+    /// A scan for the Quest on the network is running: how far.
+    quest_scan: Option<f32>,
+    /// ADB over the network was set up over USB in this session (or tried).
+    quest_net_tried: bool,
     pending_remove: Option<String>,
     pending_repair: Option<String>,
     /// Last update result per version, shown on the Play page's Updates card.
@@ -359,7 +485,7 @@ pub struct Dashboard {
     game_since: Option<std::time::Instant>,
     /// The Quest was checked quietly once already.
     quest_auto_checked: bool,
-    /// A full-window card on top (first-run setup, patch from a link).
+    /// A full-window card on top (the install questions, the licence patch, joining…).
     overlay: Option<setup::Overlay>,
     /// A job waiting for the administrator-rights answer.
     consent: Option<std::sync::mpsc::SyncSender<bool>>,
@@ -375,8 +501,8 @@ pub struct Dashboard {
     feed: Feed,
     /// Something that went well, shown in the status bar for a few seconds.
     notice: Option<(String, std::time::Instant)>,
-    /// What to do once the first-run setup is answered.
-    after_setup: Option<setup::Resume>,
+    /// A new player's patch on its way into the version being installed.
+    pending_patch: Option<setup::PendingPatch>,
     /// Pages drawn at least once, seen or not (`prewarm`).
     warmed: std::collections::HashSet<Page>,
     video: super::video::BackgroundVideo,
@@ -410,19 +536,150 @@ impl Dashboard {
             tracing::info!("imported {n} existing install(s)");
             self.save();
         }
-        self.library_field = self.state.library.clone();
-        if !self.state.setup_done && !self.demo {
-            self.overlay = Some(setup::welcome());
+        // Debug builds: ECHOVR_PAGE=<title> opens on that page (for trying a page out).
+        #[cfg(debug_assertions)]
+        if let Ok(name) = std::env::var("ECHOVR_PAGE") {
+            if let Some(p) = Page::ALL
+                .into_iter()
+                .find(|p| p.title().eq_ignore_ascii_case(&name))
+            {
+                self.page = p;
+            }
         }
+        self.library_field = self.state.library.clone();
+        self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
+        self.relay_server_field = self.state.relay_server.clone();
+        self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
         self.check_launcher_update(ctx);
         self.load_custom_background();
         if self.demo {
             self.catalog = Some(demo_catalog());
             return;
         }
+        if cfg!(any(windows, target_os = "linux")) {
+            let off = self.state.spark_links_off;
+            self.worker.spawn(ctx, move |tx| {
+                // Only when no other app (Spark) has them, and not turned off.
+                let h = links::handler();
+                let r = (h == links::Handler::None && !off).then(links::register);
+                let err = r.and_then(Result::err).map(|e| format!("{e:#}"));
+                tx.send(Msg::LinkHandler(links::handler(), err));
+            });
+        }
         let c = ctx.clone();
-        self.monitor = Some(Monitor::start(move || c.request_repaint()));
+        let monitor = Monitor::start(move || c.request_repaint());
+        monitor.set_quest_ip(self.quest_ip());
+        self.monitor = Some(monitor);
         self.refresh_catalog(ctx);
+    }
+
+    /// Once a second: a spark:// link this launcher was started with, or that one started
+    /// by a click handed over, opens the "Join a lobby" card (the window coming to the
+    /// front).
+    fn take_link(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        let second = std::time::Duration::from_secs(1);
+        if self.link_checked.is_some_and(|t| t.elapsed() < second) {
+            return;
+        }
+        self.link_checked = Some(std::time::Instant::now());
+        if cfg!(any(windows, target_os = "linux")) {
+            ctx.request_repaint_after(second);
+        }
+        let Some(link) = links::take_incoming().filter(|l| links::parse(l).is_some()) else {
+            return;
+        };
+        tracing::info!("opening a spark:// link");
+        self.page = Page::Play;
+        self.overlay = Some(setup::Overlay::JoinLobby { input: link });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Settings: open spark:// links with the launcher (taking them over from Spark), or
+    /// stop.
+    fn set_spark_links(&mut self, ctx: &egui::Context, on: bool) {
+        self.state.spark_links_off = !on;
+        self.save();
+        self.worker.spawn(ctx, move |tx| {
+            let err = if on {
+                links::register().err().map(|e| format!("{e:#}"))
+            } else {
+                links::unregister();
+                None
+            };
+            tx.send(Msg::LinkHandler(links::handler(), err));
+        });
+    }
+
+    /// After the frame: the embedded site where its page placed it (hidden under dialogs
+    /// and cards, which it would cover).
+    pub fn sync_web(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let blocked = self.dialogs.is_open() || self.overlay.is_some();
+        self.web.sync(ctx, frame, blocked);
+    }
+
+    /// Where the Quest is on the network, when known.
+    fn quest_ip(&self) -> Option<std::net::Ipv4Addr> {
+        self.state
+            .quest_ip
+            .as_deref()
+            .and_then(crate::core::launcher::quest_net::parse_ip)
+    }
+
+    /// Remembers where the Quest is on the network (and watches its game there).
+    fn set_quest_ip(&mut self, ip: Option<std::net::Ipv4Addr>) {
+        self.state.quest_ip = ip.map(|i| i.to_string());
+        self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
+        self.save();
+        if let Some(m) = &self.monitor {
+            m.set_quest_ip(ip);
+        }
+    }
+
+    /// Echo VR on the Quest, from its API over the network.
+    fn quest_game(&self) -> GameState {
+        match self.snap_game {
+            Some(SnapGame::QuestRunning) => GameState::Running,
+            _ => self
+                .monitor
+                .as_ref()
+                .map(Monitor::quest)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Looks for the Quest on this PC's local network (its game's API, or ADB).
+    fn scan_quest(&mut self, ctx: &egui::Context) {
+        use crate::core::launcher::quest_net;
+        let Some(own) = quest_net::local_ipv4() else {
+            self.dialogs.error(
+                "No network",
+                "This PC doesn't seem to be on a local network.",
+                Default::default(),
+            );
+            return;
+        };
+        self.quest_scan = Some(0.0);
+        self.worker.spawn(ctx, move |tx| {
+            let cancel = AtomicBool::new(false);
+            let hosts = quest_net::subnet_hosts(own);
+            let found =
+                quest_net::scan(&hosts, &cancel, &mut |p| tx.send(Msg::QuestScanProgress(p)));
+            tx.send(Msg::QuestScanDone(found));
+        });
+    }
+
+    /// Turns on ADB over the network while the Quest is on USB.
+    fn enable_quest_network(&mut self, ctx: &egui::Context, ip: std::net::Ipv4Addr) {
+        self.quest_net_tried = true;
+        self.worker.spawn(ctx, move |tx| {
+            let r = crate::core::launcher::quest_net::enable_adb_network(ip)
+                .map_err(|e| UiError::from_anyhow(&e, "ADB over the network"));
+            tx.send(Msg::QuestNetwork(r));
+        });
     }
 
     /// Free bytes where new versions are installed (measured on a worker, at most every
@@ -506,9 +763,8 @@ impl Dashboard {
     /// What PLAY acts on.
     fn target(&self) -> Target {
         let demo = self.demo;
-        self.state.target(self.catalog.as_ref(), |root| {
-            demo || crate::core::paths::has_echo_install(root)
-        })
+        self.state
+            .target(self.catalog.as_ref(), |v| demo || v.present())
     }
 
     /// Snapshot mode: puts the dashboard into `snap_variant`'s state.
@@ -533,8 +789,13 @@ impl Dashboard {
                 base_apk: Some("r15_26-06-23.apk".into()),
                 ..Default::default()
             }),
+            wifi_ip: Some(std::net::Ipv4Addr::new(192, 168, 178, 45)),
+            over_network: false,
         });
         self.update_note.clear();
+        self.vrce = echovrce::Vrce::default();
+        self.servers = servers::Servers::default();
+        self.state.profile = demo_state().profile;
         self.snap_game = None;
         self.install_pick = None;
         self.state.versions = demo_state().versions;
@@ -589,11 +850,29 @@ impl Dashboard {
             }
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
-            Some(SnapVariant::Setup) => {
-                self.state.owner = None;
-                self.overlay = Some(setup::welcome());
+            Some(v @ (SnapVariant::InstallAsk | SnapVariant::InstallAskNew)) => {
+                let entry = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|c| c.versions.iter().find(|e| e.id == "pc-latest").cloned());
+                if v == SnapVariant::InstallAskNew {
+                    self.state.owner = Some(false);
+                }
+                if let Some(e) = entry {
+                    setup::ask_install(self, e);
+                }
+                if let Some(setup::Overlay::Install(ask)) = &mut self.overlay {
+                    if v == SnapVariant::InstallAskNew {
+                        ask.link = true;
+                        ask.url = "https://files.echovr.de/dlls/1727000000/pnsovr.dll".into();
+                    }
+                }
             }
             Some(SnapVariant::QuestSide) => self.platform = Platform::Quest,
+            Some(SnapVariant::QuestRunning) => {
+                self.platform = Platform::Quest;
+                self.snap_game = Some(SnapGame::QuestRunning);
+            }
             Some(SnapVariant::Launching) => self.snap_game = Some(SnapGame::Launching),
             Some(SnapVariant::Running) => self.snap_game = Some(SnapGame::Elsewhere),
             Some(SnapVariant::RunningOurs) => self.snap_game = Some(SnapGame::Ours),
@@ -601,7 +880,127 @@ impl Dashboard {
                 let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
                 ctx.data_mut(|d| d.insert_temp(id, true));
             }
-            Some(SnapVariant::Placeholder) => self.install_pick = Some("soon-beta".into()),
+            Some(SnapVariant::SettingsSteamVr) => self.state.profile.runtime = Runtime::Revive,
+            Some(SnapVariant::SettingsLinks) => {
+                self.link_handler = Some(links::Handler::Other("Spark".into()))
+            }
+            Some(SnapVariant::VrceSignedIn) => self.vrce.demo(true),
+            Some(
+                v @ (SnapVariant::ServersLive
+                | SnapVariant::ServersHistory
+                | SnapVariant::ServersStart
+                | SnapVariant::ServersInvites
+                | SnapVariant::ServersShare),
+            ) => {
+                self.vrce.demo(true);
+                let tab = if v == SnapVariant::ServersHistory {
+                    servers::Tab::History
+                } else {
+                    servers::Tab::Live
+                };
+                self.servers.demo(tab);
+                if v == SnapVariant::ServersStart {
+                    self.overlay = Some(setup::Overlay::StartServer {
+                        mode: 2,
+                        region: Some("eu-west".into()),
+                        guild: None,
+                        level: 1,
+                    });
+                }
+                if v == SnapVariant::ServersInvites {
+                    self.servers.demo_social(true);
+                }
+                if v == SnapVariant::ServersShare {
+                    let id = self.servers.demo_social(false);
+                    self.overlay = Some(setup::Overlay::ShareMatch {
+                        match_id: id,
+                        started: true,
+                    });
+                }
+            }
+            Some(SnapVariant::VrceSigning) => self.vrce.demo(false),
+            Some(SnapVariant::NewPlayer) => self.state.owner = Some(false),
+            Some(SnapVariant::Licence) => {
+                self.state.owner = Some(false);
+                self.overlay = Some(setup::licence("pc-latest"));
+            }
+            Some(SnapVariant::LicenceLink) => {
+                self.state.owner = Some(false);
+                self.overlay = Some(setup::Overlay::Licence {
+                    id: "pc-latest".into(),
+                    url: "https://files.echovr.de/dlls/1727000000/pnsovr.dll".into(),
+                    link: true,
+                });
+            }
+            Some(SnapVariant::InstallAskQuest) => {
+                self.state.owner = Some(false);
+                self.platform = Platform::Quest;
+                setup::ask_quest_install(self, false);
+            }
+            Some(SnapVariant::EventSelected) => {
+                self.state.versions.push(InstalledVersion {
+                    id: "pc-halloween-2018".into(),
+                    name: "Halloween 2018".into(),
+                    root: "C:/EchoVR/versions/pc-halloween-2018".into(),
+                    catalog_id: Some("pc-halloween-2018".into()),
+                    publisher_lock: Some("rad15_halloween".into()),
+                    ..Default::default()
+                });
+                self.state.selected = Some("pc-halloween-2018".into());
+                self.state.relay_account = Some(crate::core::launcher::store::RelayAccount {
+                    name: "Pebbles".into(),
+                    password: "secret".into(),
+                });
+            }
+            Some(SnapVariant::InstallAskEvent) => {
+                let entry = self.catalog.as_ref().and_then(|c| {
+                    c.versions
+                        .iter()
+                        .find(|e| e.id == "pc-summer-2019")
+                        .cloned()
+                });
+                if let Some(e) = entry {
+                    self.install_pick = Some(e.id.clone());
+                    setup::ask_install(self, e);
+                }
+            }
+            Some(SnapVariant::RelayAccount) => {
+                self.state.relay_account = None;
+                self.overlay = Some(setup::Overlay::RelayAccount {
+                    name: "Pebbles".into(),
+                    password: "hunter22".into(),
+                    play: true,
+                });
+            }
+            Some(SnapVariant::Owner) => {
+                self.state.owner = None;
+                self.overlay = Some(setup::Overlay::Owner);
+            }
+            Some(SnapVariant::LicenceWaiting) => {
+                self.state.owner = Some(false);
+                self.pending_patch = Some(setup::PendingPatch {
+                    version: "pc-latest".into(),
+                    dll: None,
+                });
+                self.jobs.insert(
+                    setup::LICENCE_JOB.into(),
+                    Job {
+                        kind: JobKind::Licence,
+                        title: "Getting your licence patch".into(),
+                        label: "Discord authorization opened in your browser.".into(),
+                        fraction: None,
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    },
+                );
+            }
+            Some(SnapVariant::JoinLobby) => {
+                self.overlay = Some(setup::Overlay::JoinLobby {
+                    input: "spark://c/0F5C1A2B-3C4D-5E6F-7A8B-9C0D1E2F3A4B".into(),
+                })
+            }
+            Some(SnapVariant::Placeholder) => {
+                self.install_pick = Some("pc-halloween-2017".into())
+            }
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
@@ -680,26 +1079,38 @@ impl Dashboard {
     fn game(&self) -> GameState {
         match self.snap_game {
             Some(SnapGame::Ours | SnapGame::Elsewhere) => GameState::Running,
-            Some(SnapGame::Launching) => GameState::NotRunning,
+            Some(SnapGame::Launching | SnapGame::QuestRunning) => GameState::NotRunning,
             None => self.monitor.as_ref().map(Monitor::get).unwrap_or_default(),
         }
     }
 
     /// The launcher started the game that runs (or is starting).
     fn ours(&self) -> bool {
-        self.child.is_some() || matches!(self.snap_game, Some(SnapGame::Launching | SnapGame::Ours))
+        self.child.is_some()
+            || self.launched.is_some()
+            || matches!(self.snap_game, Some(SnapGame::Launching | SnapGame::Ours))
     }
 
     fn check_quest(&mut self, ctx: &egui::Context, interactive: bool) {
         self.quest_info = None;
+        self.quest_conn.network = self.quest_ip().filter(|_| self.state.quest_adb_network);
         self.quest_conn.check(ctx, interactive);
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
-        // Forget our child once it exited.
+        // Forget our child once it exited, and the game we started once it has ended
+        // (or never showed up).
         if let Some(c) = self.child.as_mut() {
             if !matches!(c.try_wait(), Ok(None)) {
                 self.child = None;
+            }
+        }
+        let running = self.game().is_running();
+        if let Some(l) = self.launched.as_mut() {
+            if running {
+                l.seen = true;
+            } else if l.seen || l.at.elapsed() > Launched::WAIT {
+                self.launched = None;
             }
         }
         for m in self.worker.drain() {
@@ -728,17 +1139,37 @@ impl Dashboard {
                                 };
                                 j.label = format!("{verb}... {p:.1}%");
                             }
+                            Step::Checking(p) => {
+                                j.fraction = Some(p as f32 / 100.0);
+                                j.label = format!("Checking game files... {p:.0}%");
+                            }
                         }
                     }
                 }
                 Msg::JobDone(id, r) => {
                     let kind = self.jobs.remove(&id).map(|j| j.kind);
-                    self.job_done(&id, kind, r);
+                    self.job_done(ctx, &id, kind, r);
                 }
                 Msg::QuestInfo(r) => {
                     self.quest_busy = false;
                     match r {
-                        Ok(i) => self.quest_info = Some(i),
+                        Ok(i) => {
+                            // Over USB: learn where it is on the network, and set up ADB
+                            // there when asked to.
+                            if let (Some(ip), false) = (i.wifi_ip, i.over_network) {
+                                if self.quest_ip() != Some(ip) {
+                                    self.set_quest_ip(Some(ip));
+                                }
+                                if self.state.quest_adb_network && !self.quest_net_tried {
+                                    self.enable_quest_network(ctx, ip);
+                                }
+                            }
+                            if i.installed {
+                                self.quest_was_patched =
+                                    i.marker.as_ref().is_some_and(|m| m.patched);
+                            }
+                            self.quest_info = Some(i)
+                        }
                         Err(e) => {
                             self.quest_info = None;
                             self.dialogs.error_ui(&e);
@@ -759,6 +1190,12 @@ impl Dashboard {
                         "This step needs administrator rights (it installs into Program Files).\n\nStart the privileged helper now? Windows will ask you to confirm.",
                         crate::ui::dialogs::Icon::Question,
                     );
+                }
+                Msg::LinkHandler(h, err) => {
+                    self.link_handler = Some(h);
+                    if let Some(e) = err {
+                        self.notify(&format!("Couldn't take over spark:// links: {e}"));
+                    }
                 }
                 Msg::CacheDeleted(failed) => {
                     self.deleting_cache = false;
@@ -794,6 +1231,44 @@ impl Dashboard {
                 }
                 Msg::FreeSpace(lib, b) => self.free.done(lib, b),
                 Msg::CacheSize(b) => self.cache.done((), b),
+                Msg::QuestScanProgress(p) => {
+                    if self.quest_scan.is_some() {
+                        self.quest_scan = Some(p);
+                    }
+                }
+                Msg::QuestScanDone(found) => {
+                    self.quest_scan = None;
+                    match found.first() {
+                        Some(f) => {
+                            self.set_quest_ip(Some(f.ip));
+                            let what = if f.api { "Echo VR's API" } else { "ADB" };
+                            self.notify(&format!("Found your Quest at {} ({what})", f.ip));
+                        }
+                        None => self.dialogs.info(
+                            "No Quest found",
+                            "Nothing on your network answered as a Quest.\n\n\
+                             The scan finds it while Echo VR runs with API access on, or \
+                             once ADB over the network is on. You can also type its address, \
+                             or plug it in by USB once so the launcher can read it.",
+                        ),
+                    }
+                }
+                Msg::QuestLogs(r) => {
+                    self.quest_busy = false;
+                    match r {
+                        Ok(dir) => {
+                            self.notify("Saved your Quest's logs");
+                            if let Err(e) = crate::core::platform::open_folder(&dir) {
+                                tracing::warn!("opening {}: {e:#}", dir.display());
+                            }
+                        }
+                        Err(e) => self.dialogs.error_ui(&e),
+                    }
+                }
+                Msg::QuestNetwork(r) => match r {
+                    Ok(()) => self.notify("ADB over the network is on: you can unplug your Quest"),
+                    Err(e) => self.dialogs.error_ui(&e),
+                },
                 Msg::LauncherUpdate(r) => {
                     self.launcher_update = match r {
                         Ok(Some(release)) => LauncherUpdate::Available(release),
@@ -828,21 +1303,28 @@ impl Dashboard {
             .take(setup::JOIN_KEY)
             .is_some_and(|a| a.is_yes())
         {
-            crate::core::platform::open_url(crate::core::oauth::INVITE_URL);
+            crate::core::platform::open_url(crate::core::oauth::PATCHER_INVITE);
         }
         self.quest_conn.poll(&mut self.dialogs);
+        if let Some(notice) = self.vrce.tick(ctx, self.demo) {
+            self.notify(&notice);
+        }
+        echovrce::site_linked(self);
+        let session = self.vrce.session();
+        let on_page = self.page == Page::Servers;
+        if let Some(notice) = self.servers.tick(ctx, session, on_page) {
+            self.notify(&notice);
+        }
+        servers::follow_up(self, ctx);
+        self.take_link(ctx);
         // Read the headset's version once it is connected.
+        // A reinstall asks the install's questions again.
         if self
             .dialogs
-            .take(setup::QUEST_INSTALL_KEY)
+            .take(setup::QUEST_REINSTALL_KEY)
             .is_some_and(|a| a.is_yes())
-            || self
-                .dialogs
-                .take(setup::QUEST_REINSTALL_KEY)
-                .is_some_and(|a| a.is_yes())
         {
-            let source = setup::quest_source(self);
-            setup::quest_install(self, ctx, source);
+            setup::ask_quest_install(self, false);
         }
         let ready = self.quest_conn.status == Some(Status::Ready);
         // Probing while a Quest job runs would trip over its adb restarts.
@@ -862,20 +1344,71 @@ impl Dashboard {
         self.notice = Some((text.to_string(), std::time::Instant::now()));
     }
 
-    fn job_done(&mut self, id: &str, kind: Option<JobKind>, r: JobResult) {
+    fn job_done(&mut self, ctx: &egui::Context, id: &str, kind: Option<JobKind>, r: JobResult) {
+        // A new player's patch: gone with its fetch, or with its version's install.
+        if id == setup::LICENCE_JOB && !matches!(r, JobResult::LicenceFetched(_)) {
+            self.pending_patch = None;
+        }
+        let install_failed = matches!(kind, Some(JobKind::Install | JobKind::Reinstall))
+            && matches!(r, JobResult::Failed(_));
+        if install_failed && self.pending_patch.as_ref().is_some_and(|p| p.version == id) {
+            self.pending_patch = None;
+            self.cancel_job(setup::LICENCE_JOB);
+        }
         if id == setup::QUEST_JOB {
             // Read the headset again once the job is over.
             self.quest_info = None;
         }
         match r {
-            JobResult::Installed(v) => {
+            JobResult::Installed(v, update_failed) => {
                 let name = v.name.clone();
                 if self.state.selected.is_none() {
                     self.state.selected = Some(v.id.clone());
                 }
                 self.state.upsert(v);
                 self.save();
-                self.notify(&format!("{name} is installed. Have fun!"));
+                // A new player's patch goes in now, if it is already here.
+                setup::apply_pending(self, ctx);
+                match update_failed {
+                    None => self.notify(&format!("{name} is installed. Have fun!")),
+                    Some(why) => {
+                        self.update_note
+                            .insert(id.to_string(), "Last update failed".into());
+                        self.dialogs.error(
+                            "Installed, but not updated",
+                            &format!(
+                                "{name} is installed, but its update failed:\n\n{why}\n\n\
+                                 Use Update in its MANAGE menu on the Install page to try again."
+                            ),
+                            Default::default(),
+                        );
+                    }
+                }
+            }
+            JobResult::Reinstalled(r) => {
+                let name = r.version.name.clone();
+                self.state.upsert(r.version);
+                self.save();
+                setup::apply_pending(self, ctx);
+                match (r.update_failed, r.repaired.len()) {
+                    (Some(why), _) => {
+                        self.update_note
+                            .insert(id.to_string(), "Last update failed".into());
+                        self.dialogs.error(
+                            "Reinstalled, but not updated",
+                            &format!(
+                                "{name}'s files are all right again, but its update failed:\n\n{why}\n\n\
+                                 Use Update in its MANAGE menu on the Install page to try again."
+                            ),
+                            Default::default(),
+                        );
+                    }
+                    (None, 0) => self.notify(&format!("{name}: every game file was intact")),
+                    (None, 1) => self.notify(&format!("{name}: 1 broken game file was fetched again")),
+                    (None, n) => {
+                        self.notify(&format!("{name}: {n} broken game files were fetched again"))
+                    }
+                }
             }
             JobResult::Updated => {
                 self.update_note.insert(id.to_string(), "Up to date".into());
@@ -904,6 +1437,19 @@ impl Dashboard {
                 self.save();
                 self.notify("Your licence patch is in place. Have fun!");
             }
+            JobResult::LicenceFetched(dll) => {
+                if let Some(p) = &mut self.pending_patch {
+                    p.dll = Some(dll);
+                    setup::apply_pending(self, ctx);
+                }
+            }
+            JobResult::Unpatched => {
+                if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
+                    v.patched = false;
+                }
+                self.save();
+                self.notify("The licence patch is removed: the original pnsovr.dll is back");
+            }
             JobResult::OAuthFailed(e) => {
                 use crate::core::oauth::OAuthError;
                 match (&e, e.dialog()) {
@@ -922,12 +1468,39 @@ impl Dashboard {
                 self.load_custom_background();
                 self.notify("Your background is set");
             }
-            JobResult::ReviveReady => {
+            JobResult::ReviveReady(notes) => {
                 self.revive = Probe::default();
                 self.notify("SteamVR is ready: PLAY starts Echo VR through it");
+                if !notes.is_empty() {
+                    self.dialogs.info(
+                        "SteamVR is ready",
+                        &format!(
+                            "Echo VR plays through SteamVR now, but not everything worked:\n\n{}",
+                            notes.join("\n\n")
+                        ),
+                    );
+                }
             }
-            JobResult::QuestInstalled => {
+            JobResult::LinuxReady(appid) => {
+                self.state.linux_appid = Some(appid);
+                self.linux_set_up = true;
+                self.save();
+                self.notify("Echo VR is set up for Linux: PLAY starts it through Steam");
+            }
+            JobResult::LibraryEntry(true) => {
+                self.notify("Echo VR is in SteamVR's library (restart SteamVR to see it)")
+            }
+            JobResult::LibraryEntry(false) => {
+                self.notify("Echo VR is out of SteamVR's library (restart SteamVR to see it)")
+            }
+            JobResult::QuestInstalled(crate::core::launcher::quest::Installed::UpToDate) => {
                 self.notify("Echo VR is installed on your Quest and up to date")
+            }
+            JobResult::QuestInstalled(crate::core::launcher::quest::Installed::NotChecked) => {
+                self.dialogs.info(
+                    "Installed, but not checked for updates",
+                    "Echo VR is installed on your Quest, but the update server couldn't be reached, so it may not be the latest version.\n\nUse Update on the Quest side of the Install page later.",
+                )
             }
             JobResult::QuestUpdated => self.notify("Your Quest has the latest update"),
             JobResult::QuestNeedsReinstall(detail) => self.dialogs.options(
@@ -1144,8 +1717,11 @@ impl Dashboard {
 
     /// A page under the status bar.
     fn page_body(&mut self, kit: &mut Kit, ctx: &egui::Context, page: Page) {
-        // Every page but Play and Install starts with its header strip.
-        if !matches!(page, Page::Play | Page::Install | Page::Settings) {
+        // The other pages start with their header strip.
+        if !matches!(
+            page,
+            Page::Play | Page::Install | Page::Settings | Page::Servers
+        ) {
             let h = HEADER.wider(kit.dx());
             kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), page.title());
         }
@@ -1159,13 +1735,9 @@ impl Dashboard {
                 "Mods & plugins",
                 "Enable and disable DLL plugins and game tweaks per version.",
             ),
-            Page::Servers => empty_state(
-                kit,
-                Icon::Globe,
-                "Servers",
-                "Browse, join and create EchoVRCE lobbies right from the launcher.",
-            ),
-            p @ (Page::Spark | Page::EchoVrce | Page::Community) => empty_state(
+            Page::Servers => servers::show(self, kit, ctx),
+            Page::EchoVrce => echovrce::show(self, kit, ctx),
+            p @ (Page::Spark | Page::Community) => empty_state(
                 kit,
                 Icon::Info,
                 p.title(),
@@ -1241,6 +1813,18 @@ impl Dashboard {
             dz(1.5),
             egui::Color32::from_rgb(142, 144, 143),
         );
+        // The EchoVRCE session ended: a dot on its icon until signed in again.
+        if self.vrce.ended {
+            let c = kit.drect(Dr::new(63.0, 753.0 - 21.0, 0.0, 0.0)).min;
+            kit.ui
+                .painter()
+                .circle_filled(c, dz(6.0), design::QUEST_WARN);
+        }
+        // Invites to a match: a dot on Servers.
+        if !self.servers.open_invites().is_empty() {
+            let c = kit.drect(Dr::new(63.0, 538.0 - 21.0, 0.0, 0.0)).min;
+            kit.ui.painter().circle_filled(c, dz(6.0), design::QUEST_ON);
+        }
         // A newer launcher is out: a dot on Settings.
         if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
             let c = kit.drect(Dr::new(63.0, settings_y - 21.0, 0.0, 0.0)).min;
@@ -1264,7 +1848,11 @@ impl Dashboard {
 
     /// The PCVR side's state, for the status bar's chip.
     fn pc_chip(&mut self) -> (&'static str, egui::Color32) {
-        if self.jobs.values().any(|j| j.kind == JobKind::Install) {
+        if self
+            .jobs
+            .values()
+            .any(|j| matches!(j.kind, JobKind::Install | JobKind::Reinstall))
+        {
             return ("PCVR: installing", design::BLUE);
         }
         match self.target() {
@@ -1345,6 +1933,10 @@ impl Dashboard {
         }
 
         let game = self.game();
+        // On the Quest side: the headset's game, as its API says over the network.
+        let quest_game = (self.platform == Platform::Quest)
+            .then(|| self.quest_game())
+            .filter(GameState::is_running);
         let busy = self.any_job() || self.quest_busy || self.quest_conn.checking;
         const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(8);
         let notice = self
@@ -1357,11 +1949,24 @@ impl Dashboard {
             });
         let status = if let Some(text) = &notice {
             text.clone()
-        } else if let Some(j) = self.jobs.values().next() {
+        } else if let Some(j) = self
+            .jobs
+            .values()
+            .find(|j| j.kind != JobKind::Licence)
+            .or_else(|| self.jobs.values().next())
+        {
+            // The install before the patch it waits for.
             match j.fraction {
                 Some(f) => format!("{}   ·   {:.0}%", j.title, f * 100.0),
                 None => format!("{}   ·   {}", j.title, j.label),
             }
+        } else if let Some(q) = &quest_game {
+            match q {
+                GameState::InMatch { .. } => "In a match on your Quest".to_string(),
+                _ => "Echo VR is running on your Quest".to_string(),
+            }
+        } else if let (false, Some(queue)) = (game.is_running(), self.servers.queue_line()) {
+            queue
         } else if let (true, Some(since)) = (game.is_running(), self.game_since) {
             let mins = since.elapsed().as_secs() / 60;
             ctx.request_repaint_after(std::time::Duration::from_secs(20));
@@ -1373,7 +1978,7 @@ impl Dashboard {
         } else {
             game.label()
         };
-        let color = if notice.is_some() || game.is_running() {
+        let color = if notice.is_some() || game.is_running() || quest_game.is_some() {
             design::QUEST_ON
         } else if busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -1466,6 +2071,7 @@ fn demo_state() -> LauncherState {
     });
     s.selected = Some("pc-latest".into());
     s.profile.windowed = true;
+    s.quest_ip = Some("192.168.178.45".into());
     s
 }
 

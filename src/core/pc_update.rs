@@ -55,21 +55,13 @@ fn is_locked(e: &std::io::Error) -> bool {
         || e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
-pub fn apply(
-    manifest_url: &str,
-    bin_path: &Path,
-    cancel: &AtomicBool,
-    status: &mut dyn FnMut(String),
-) -> Result<()> {
-    apply_skipping(manifest_url, bin_path, &[], cancel, status)
-}
-
 /// True when the manifest path names one of the `skip` files (case-insensitive).
 pub fn skipped(path: &str, skip: &[&str]) -> bool {
     skip.iter().any(|s| path.eq_ignore_ascii_case(s))
 }
 
-/// [`apply`], leaving the files in `skip` alone (a licence-patched `pnsovr.dll`).
+/// Applies the update at `manifest_url` to `bin_path`, leaving the files in `skip` alone
+/// (a licence-patched `pnsovr.dll`).
 pub fn apply_skipping(
     manifest_url: &str,
     bin_path: &Path,

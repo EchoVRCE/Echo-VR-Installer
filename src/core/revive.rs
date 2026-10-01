@@ -1,5 +1,6 @@
-//! SteamVR support through Revive: locating/installing Revive,
-//! the Revive-injector desktop shortcut, and the Meta Horizon store artwork.
+//! SteamVR support through Revive: locating/installing Revive, the Revive-injector desktop
+//! shortcut, the Meta Horizon store artwork, and Echo VR's entry in SteamVR's library
+//! (in Revive's `revive.vrmanifest`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -14,12 +15,14 @@ pub const REVIVE_INSTALLER_SHA256: &str =
 pub const DEFAULT_REVIVE_DIR: &str = "C:\\Program Files\\Revive";
 pub const REVIVE_INJECTOR: &str = "ReviveInjector.exe";
 pub const APP_ID: &str = "ready-at-dawn-echo-arena";
-#[allow(dead_code)] // for the launcher's revive.vrmanifest support
+/// Echo VR's key in SteamVR's library.
 pub const APP_KEY: &str = "revive.app.ready-at-dawn-echo-arena";
-pub const STORE_ASSETS_DIR: &str =
-    "C:\\Program Files\\Meta Horizon\\CoreData\\Software\\StoreAssets\\ready-at-dawn-echo-arena_assets";
-#[allow(dead_code)] // for the launcher's revive.vrmanifest support
-pub const IMAGE_PATH: &str = "C:/Program Files/Meta Horizon/CoreData/Software/StoreAssets/ready-at-dawn-echo-arena_assets/cover_landscape_image_large.png";
+/// Revive's app manifest, in its folder: SteamVR's library lists what it holds.
+pub const MANIFEST: &str = "revive.vrmanifest";
+/// Where the Meta app keeps Echo's store artwork when its install path can't be read.
+const DEFAULT_META_DIR: &str = "C:\\Program Files\\Meta Horizon";
+const STORE_ASSETS_SUBDIR: &str =
+    "CoreData\\Software\\StoreAssets\\ready-at-dawn-echo-arena_assets";
 pub const ARTWORK_ZIP_URL: &str =
     "https://files.echovr.de/stuff/patches/ready-at-dawn-echo-arena_assets.zip";
 pub const SHORTCUT_NAME: &str = "Echo VR (Revive)";
@@ -86,23 +89,38 @@ pub fn download_installer(
     Ok(path)
 }
 
-/// Arguments of the injector shortcut -- the "can't press any buttons in-game" fix.
-pub fn injector_arguments(exe: &str) -> String {
-    format!("\"{exe}\" -nosymbollookup /app {APP_ID}")
+/// Arguments of the injector shortcut, in the order PLAY passes them: the game, the
+/// "can't press any buttons in-game" fix, the launch options (`game_args`, already joined
+/// as a command line), and the app.
+pub fn injector_arguments(exe: &str, game_args: &str) -> String {
+    let args = if game_args.is_empty() {
+        String::new()
+    } else {
+        format!(" {game_args}")
+    };
+    format!("\"{exe}\" -nosymbollookup{args} /app {APP_ID}")
 }
 
-/// Creates the desktop shortcut launching Echo VR through the Revive injector.
-pub fn create_injector_shortcut(revive_dir: &str, exe: &Path) -> Result<()> {
+/// Creates the desktop shortcut launching Echo VR through the Revive injector, with the
+/// launch options (`game_args`, joined as a command line).
+pub fn create_injector_shortcut(revive_dir: &str, exe: &Path, game_args: &str) -> Result<()> {
     let injector = Path::new(revive_dir).join(REVIVE_INJECTOR);
     let exe_abs = std::path::absolute(exe).unwrap_or_else(|_| exe.to_path_buf());
     let exe_str = exe_abs.to_string_lossy().replace('/', "\\");
     super::platform::create_shortcut(
         SHORTCUT_NAME,
         &injector,
-        Some(&injector_arguments(&exe_str)),
+        Some(&injector_arguments(&exe_str, game_args)),
         Some(Path::new(revive_dir)),
         Some(&injector),
     )
+}
+
+/// Where Echo's store artwork goes: inside the Meta app's install (from the registry,
+/// which only administrators can change), else its default folder.
+pub fn store_assets_dir() -> PathBuf {
+    let base = super::platform::oculus_base_path().unwrap_or_else(|| DEFAULT_META_DIR.into());
+    Path::new(base.trim_end_matches(['\\', '/'])).join(STORE_ASSETS_SUBDIR)
 }
 
 /// Downloads the game artwork and extracts it into the Meta Horizon store assets.
@@ -112,9 +130,9 @@ pub fn install_artwork(cancel: &AtomicBool) -> Result<()> {
     let zip = dir.join(format!("{APP_ID}_assets.zip"));
     super::http::download_to(ARTWORK_ZIP_URL, &zip, Some(cancel))
         .context("Downloading the artwork failed")?;
-    let dest = Path::new(STORE_ASSETS_DIR);
-    std::fs::create_dir_all(dest).with_context(|| format!("create {STORE_ASSETS_DIR}"))?;
-    super::zip::extract(&zip, dest, cancel)?;
+    let dest = store_assets_dir();
+    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+    super::zip::extract(&zip, &dest, cancel)?;
     let _ = std::fs::remove_file(&zip);
     Ok(())
 }
@@ -130,38 +148,52 @@ pub fn needs_elevation(e: &anyhow::Error) -> bool {
     })
 }
 
-// ---- revive.vrmanifest (not wired in yet) ----
+// ---- SteamVR's library (revive.vrmanifest) ----
 
-/// Extracts the shared library id from the first existing entry's `/library <id>`.
-#[allow(dead_code)] // for the launcher's revive.vrmanifest support
-pub fn detect_library_id(apps: &[serde_json::Value]) -> Option<String> {
-    apps.iter()
-        .filter_map(|a| a.get("arguments")?.as_str())
-        .find_map(|args| {
-            let mut it = args.split_whitespace();
-            while let Some(tok) = it.next() {
-                if tok == "/library" {
-                    let id = it.next()?;
-                    if !id.eq_ignore_ascii_case("put-library-ID-here") {
-                        return Some(id.to_string());
-                    }
-                }
-            }
-            None
-        })
+/// Echo VR's entry for SteamVR's library: Revive's injector starting `exe` with the
+/// launch options (`game_args`, joined as a command line), as PLAY does.
+pub fn library_entry(exe: &Path, game_args: &str) -> serde_json::Value {
+    let exe = exe.to_string_lossy().replace('/', "\\");
+    let image = store_assets_dir().join("cover_landscape_image_large.png");
+    serde_json::json!({
+        "app_key": APP_KEY,
+        "launch_type": "binary",
+        "binary_path_windows": REVIVE_INJECTOR,
+        "arguments": injector_arguments(&exe, game_args),
+        "action_manifest_path": "Input/action_manifest.json",
+        "image_path": image.to_string_lossy(),
+        "strings": { "en_us": { "name": "Echo VR" } }
+    })
 }
 
-#[allow(dead_code)] // for the launcher's revive.vrmanifest support
-pub fn echo_manifest_entry(library_id: &str) -> serde_json::Value {
-    serde_json::json!({
-        "action_manifest_path": "Input/action_manifest.json",
-        "app_key": APP_KEY,
-        "arguments": format!("/app {APP_ID} /library {library_id} \"Software\\ready-at-dawn-echo-arena\\bin\\win10\\echovr.exe\" -nosymbollookup"),
-        "binary_path_windows": REVIVE_INJECTOR,
-        "image_path": IMAGE_PATH,
-        "launch_type": "binary",
-        "strings": { "en_us": { "name": APP_ID } }
-    })
+/// The manifest text with Echo VR's entry put in (or `None`: taken out), replacing any
+/// earlier one; every other app stays as it was.
+pub fn manifest_with(text: &str, entry: Option<serde_json::Value>) -> Result<String> {
+    let mut doc: serde_json::Value = if text.trim().is_empty() {
+        serde_json::json!({ "source": "builtin", "applications": [] })
+    } else {
+        serde_json::from_str(text).context("revive.vrmanifest isn't valid JSON")?
+    };
+    let apps = doc
+        .get_mut("applications")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("revive.vrmanifest has no application list")?;
+    apps.retain(|a| a.get("app_key").and_then(serde_json::Value::as_str) != Some(APP_KEY));
+    apps.extend(entry);
+    Ok(serde_json::to_string_pretty(&doc)?)
+}
+
+/// Puts Echo VR into SteamVR's library (`entry`), or takes it out (`None`). Needs
+/// administrator rights where Revive lives in Program Files.
+pub fn set_library_entry(entry: Option<serde_json::Value>) -> Result<()> {
+    let dir = find_revive_dir().context("Revive is not installed")?;
+    let path = Path::new(&dir).join(MANIFEST);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let out = manifest_with(&text, entry)?;
+    let tmp = path.with_extension("vrmanifest.tmp");
+    std::fs::write(&tmp, out).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("replace {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -169,29 +201,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn library_id_detection() {
-        let apps = vec![
-            serde_json::json!({"app_key": "x"}),
-            serde_json::json!({"arguments": "/app a /library put-library-ID-here x"}),
-            serde_json::json!({"arguments": "/app b /library Software2 \"x.exe\""}),
-        ];
-        assert_eq!(detect_library_id(&apps).as_deref(), Some("Software2"));
-        assert_eq!(detect_library_id(&[]), None);
+    fn library_entry_shape() {
+        let exe =
+            Path::new("C:/EchoVR/versions/pc-latest/ready-at-dawn-echo-arena/bin/win10/echovr.exe");
+        let e = library_entry(exe, "-windowed");
+        assert_eq!(e["app_key"], APP_KEY);
+        assert_eq!(e["binary_path_windows"], REVIVE_INJECTOR);
+        let args = e["arguments"].as_str().unwrap();
+        assert!(args.starts_with("\"C:\\EchoVR\\versions\\pc-latest\\"));
+        assert!(args.ends_with("-nosymbollookup -windowed /app ready-at-dawn-echo-arena"));
+        assert_eq!(e["strings"]["en_us"]["name"], "Echo VR");
     }
 
     #[test]
-    fn manifest_entry_shape() {
-        let e = echo_manifest_entry("Lib");
-        assert_eq!(e["app_key"], APP_KEY);
-        assert!(e["arguments"].as_str().unwrap().contains("/library Lib"));
-        assert_eq!(e["strings"]["en_us"]["name"], APP_ID);
+    fn manifest_keeps_other_apps() {
+        let text = r#"{"source":"builtin","applications":[
+            {"app_key":"revive.app.other","arguments":"/app other"},
+            {"app_key":"revive.app.ready-at-dawn-echo-arena","arguments":"old"}]}"#;
+        let entry = serde_json::json!({"app_key": APP_KEY, "arguments": "new"});
+        let out: serde_json::Value =
+            serde_json::from_str(&manifest_with(text, Some(entry)).unwrap()).unwrap();
+        let apps = out["applications"].as_array().unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0]["app_key"], "revive.app.other");
+        assert_eq!(apps[1]["arguments"], "new");
+        let removed: serde_json::Value =
+            serde_json::from_str(&manifest_with(text, None).unwrap()).unwrap();
+        assert_eq!(removed["applications"].as_array().unwrap().len(), 1);
+        // No manifest yet: one is made.
+        let fresh: serde_json::Value = serde_json::from_str(
+            &manifest_with("", Some(serde_json::json!({"app_key": APP_KEY}))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fresh["applications"].as_array().unwrap().len(), 1);
+        assert!(manifest_with("not json", None).is_err());
     }
 
     #[test]
     fn injector_args() {
+        let exe = "C:\\EchoVR\\ready-at-dawn-echo-arena\\bin\\win10\\echovr.exe";
         assert_eq!(
-            injector_arguments("C:\\EchoVR\\ready-at-dawn-echo-arena\\bin\\win10\\echovr.exe"),
-            "\"C:\\EchoVR\\ready-at-dawn-echo-arena\\bin\\win10\\echovr.exe\" -nosymbollookup /app ready-at-dawn-echo-arena"
+            injector_arguments(exe, ""),
+            format!("\"{exe}\" -nosymbollookup /app ready-at-dawn-echo-arena")
+        );
+        assert_eq!(
+            injector_arguments(exe, "-windowed -lobbyid X"),
+            format!("\"{exe}\" -nosymbollookup -windowed -lobbyid X /app ready-at-dawn-echo-arena")
         );
     }
 

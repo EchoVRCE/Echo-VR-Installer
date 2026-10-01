@@ -18,7 +18,8 @@ const CALLBACK_PORT: u16 = 53124;
 /// Discord's in-browser "Service got rate limited" page never redirects back, so the only
 /// signal is the callback not arriving; keep the wait short so trying again is quick.
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(60);
-pub const INVITE_URL: &str = "https://discord.gg/bMpsva6fmA";
+/// The Echo VR Patcher server: only its members get a patch.
+pub const PATCHER_INVITE: &str = "https://discord.gg/bMpsva6fmA";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -217,14 +218,19 @@ fn exchange(code: &str, file_type: FileType) -> Result<String, OAuthError> {
     let (status, text) = crate::core::http::post_json(&format!("{SERVER_URL}/api/exchange"), &body)
         .map_err(|e| OAuthError::Server(format!("Couldn't reach the patch server:\n{e:#}")))?;
     tracing::info!("OAuth: exchange returned status {status}");
-    interpret_exchange(status, &text)
+    interpret_exchange(status, &text, file_type)
 }
 
-/// Pure: maps the exchange response to a validated patch URL or an error.
-pub fn interpret_exchange(status: u16, body: &str) -> Result<String, OAuthError> {
+/// Pure: maps the exchange response for a `file_type` request to a validated patch URL or
+/// an error.
+pub fn interpret_exchange(
+    status: u16,
+    body: &str,
+    file_type: FileType,
+) -> Result<String, OAuthError> {
     if status == 403 && body.contains("not_in_guild") {
         return Err(OAuthError::NotInGuild(format!(
-            "You must join the Echo VR Patcher server first.\n{INVITE_URL}"
+            "You must join the Echo VR Patcher server first.\n{PATCHER_INVITE}"
         )));
     }
     if status == 403 && body.contains("phone_verification") {
@@ -245,7 +251,18 @@ pub fn interpret_exchange(status: u16, body: &str) -> Result<String, OAuthError>
         .ok()
         .and_then(|r| r.patch_url)
         .ok_or_else(|| OAuthError::Server("Failed to get patch URL from server".into()))?;
-    if !is_trusted_patch_host(&url) {
+    // The patch server posts a PC patch as an attachment in your Discord thread and
+    // answers with its link (a Quest build goes on files.echovr.de): the same links a
+    // pasted patch link may be.
+    let trusted = match file_type {
+        FileType::Dll => is_trusted_patch_host(&url) || validate_dll_url(&url).is_some(),
+        FileType::Apk => is_trusted_patch_host(&url),
+    };
+    if !trusted {
+        tracing::warn!(
+            "OAuth: the patch server sent an unexpected download location: {}",
+            crate::core::download::redact(&url)
+        );
         return Err(OAuthError::Server(
             "The server returned an unexpected download location.".into(),
         ));
@@ -320,27 +337,42 @@ mod tests {
     #[test]
     fn exchange_mapping() {
         assert!(matches!(
-            interpret_exchange(403, "{\"error\":\"not_in_guild\"}"),
+            interpret_exchange(403, "{\"error\":\"not_in_guild\"}", FileType::Dll),
             Err(OAuthError::NotInGuild(_))
         ));
         assert!(matches!(
-            interpret_exchange(409, "busy"),
+            interpret_exchange(409, "busy", FileType::Dll),
             Err(OAuthError::Busy(_))
         ));
         assert!(matches!(
-            interpret_exchange(500, "x"),
+            interpret_exchange(500, "x", FileType::Dll),
             Err(OAuthError::Server(_))
         ));
         assert_eq!(
             interpret_exchange(
                 200,
-                "{\"patchUrl\": \"https://files.echovr.de/p/abc/pnsovr.dll\"}"
+                "{\"patchUrl\": \"https://files.echovr.de/p/abc/pnsovr.dll\"}",
+                FileType::Dll
             )
             .unwrap(),
             "https://files.echovr.de/p/abc/pnsovr.dll"
         );
-        assert!(interpret_exchange(200, "{\"patchUrl\":\"https://evil.example/x\"}").is_err());
-        assert!(interpret_exchange(200, "{}").is_err());
+        // A PC patch comes as a Discord attachment, as the patch server answers today.
+        let discord = "https://cdn.discordapp.com/attachments/1555314284198625333/1555314300749357208/pnsovr.dll?backend=b2&ex=1&is=2&hm=3&";
+        let body = format!("{{\"patchUrl\": \"{discord}\"}}");
+        assert_eq!(
+            interpret_exchange(200, &body, FileType::Dll).unwrap(),
+            discord
+        );
+        // ...but not as a Quest build, nor any other file there.
+        assert!(interpret_exchange(200, &body, FileType::Apk).is_err());
+        let other = "{\"patchUrl\":\"https://cdn.discordapp.com/attachments/1/2/evil.exe\"}";
+        assert!(interpret_exchange(200, other, FileType::Dll).is_err());
+        let apk = "{\"patchUrl\":\"https://files.echovr.de/apks/1/personilizedechoapk.apk\"}";
+        assert!(interpret_exchange(200, apk, FileType::Apk).is_ok());
+        let evil = "{\"patchUrl\":\"https://evil.example/x\"}";
+        assert!(interpret_exchange(200, evil, FileType::Dll).is_err());
+        assert!(interpret_exchange(200, "{}", FileType::Dll).is_err());
     }
 
     #[test]
