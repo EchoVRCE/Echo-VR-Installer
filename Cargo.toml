@@ -17,11 +17,14 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 arboard = { version = "3", default-features = false }
 dirs = "7.0.0"
-eframe = "0.36.2"
+# persistence: the window's size, position and full screen are remembered.
+eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 open = "5.4.4"
+# The animated background (H.264, built from Cisco's source).
+openh264 = "0.9.8"
 rand = "0.10.3"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -67,6 +70,11 @@ embed-resource = "3.0.11"
 tempfile = "3"
 # Headless UI snapshots (an ignored test; see ui::headless).
 egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
+
+# Dependencies optimized in dev builds too: in debug, scaling a panel image to a new size
+# takes seconds (release: ~50 ms), which made pages slow to open the first time.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

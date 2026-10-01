@@ -116,7 +116,11 @@ pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step
 }
 
 /// Files of the update manifest that are missing or differ on disk.
-pub fn verify(v: &InstalledVersion, on: &mut dyn FnMut(Step)) -> Result<Vec<String>> {
+pub fn verify(
+    v: &InstalledVersion,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<Vec<String>> {
     ensure_present(v)?;
     let m = Manifest::fetch(manifest_url(v))?;
     let bin = paths::bin_path(&v.root);
@@ -126,6 +130,9 @@ pub fn verify(v: &InstalledVersion, on: &mut dyn FnMut(Step)) -> Result<Vec<Stri
         .collect();
     let mut bad = Vec::new();
     for (i, e) in adds.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(crate::core::http::Cancelled.into());
+        }
         on(Step::Percent(100.0 * i as f64 / adds.len().max(1) as f64));
         let f = bin.join(&e.path);
         if !f.is_file() || !download::sha256_matches(&f, e.sha256.as_deref().unwrap_or_default()) {
@@ -145,11 +152,13 @@ pub fn remove(v: &InstalledVersion, library: &str) -> Result<()> {
     }
     let root = Path::new(&v.root);
     let lib = Path::new(library);
-    // Guard against a corrupted state file pointing somewhere unexpected.
+    // Guard against a corrupted state file pointing somewhere unexpected: only a folder in
+    // the library, or one named after the version (installed before the library moved).
     let inside = root.parent().is_some_and(|p| {
         paths::normalize(&p.to_string_lossy()) == paths::normalize(&lib.to_string_lossy())
     });
-    if !inside || !root.join(paths::ARENA_DIR).is_dir() {
+    let named = root.file_name().is_some_and(|n| n == v.id.as_str());
+    if !(inside || named) || !root.join(paths::ARENA_DIR).is_dir() {
         bail!(
             "Refusing to delete {}: it is not a version folder inside the library.",
             v.root
@@ -182,18 +191,24 @@ mod tests {
     }
 
     #[test]
-    fn remove_only_managed_versions_inside_library() {
+    fn remove_only_managed_version_folders() {
         let dir = tempfile::tempdir().unwrap();
         let lib = paths::normalize(&dir.path().join("lib").to_string_lossy());
         let v = fake_version(Path::new(&lib), "a");
         let mut ext = v.clone();
         ext.external = true;
         assert!(remove(&ext, &lib).is_err());
-        let elsewhere = fake_version(dir.path(), "outside");
+        // A folder outside the library that isn't named after the version.
+        let mut elsewhere = fake_version(dir.path(), "outside");
+        elsewhere.id = "pc-latest".into();
         assert!(remove(&elsewhere, &lib).is_err());
         assert!(Path::new(&elsewhere.root).exists());
         remove(&v, &lib).unwrap();
         assert!(!Path::new(&v.root).exists());
+        // Installed into an earlier library: still its own folder.
+        let old = fake_version(&dir.path().join("old-lib"), "pc-1");
+        remove(&old, &lib).unwrap();
+        assert!(!Path::new(&old.root).exists());
     }
 
     #[test]

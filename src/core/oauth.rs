@@ -16,7 +16,7 @@ const SERVER_URL: &str = "https://files.echovr.de";
 /// Must match the redirect registered in the Discord developer portal.
 const CALLBACK_PORT: u16 = 53124;
 /// Discord's in-browser "Service got rate limited" page never redirects back, so the only
-/// signal is the callback not arriving; keep the wait short so Retry is quick.
+/// signal is the callback not arriving; keep the wait short so trying again is quick.
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(60);
 pub const INVITE_URL: &str = "https://discord.gg/bMpsva6fmA";
 
@@ -62,15 +62,15 @@ impl OAuthError {
             OAuthError::Cancelled => return None,
             OAuthError::Timeout => (
                 "Try again in a minute",
-                "Discord didn't complete the authorization in time.\n\nIf you saw a \"Service got rate limited\" message, that's Discord throttling —\nwait about a minute, then hit Retry.".into(),
+                "Discord didn't complete the authorization in time.\n\nIf you saw a \"Service got rate limited\" message, that's Discord throttling —\nwait about a minute, then try again.".into(),
             ),
             OAuthError::Denied => (
                 "Authorization Failed",
-                "The Discord authorization was cancelled in the browser.\nHit Retry and click \"Authorize\" to continue.".into(),
+                "The Discord authorization was cancelled in the browser.\nTry again and click \"Authorize\" to continue.".into(),
             ),
             OAuthError::PortInUse => (
                 "Authorization busy",
-                format!("Couldn't open the Discord callback port ({CALLBACK_PORT}).\nAnother authorization may still be finishing — wait a moment and hit Retry."),
+                format!("Couldn't open the Discord callback port ({CALLBACK_PORT}).\nAnother authorization may still be finishing — wait a moment and try again."),
             ),
             OAuthError::NoBrowser(url) => (
                 "Authorization Failed",
@@ -200,7 +200,7 @@ pub fn run(
             }
         }
     };
-    drop(server); // free the port right away for a Retry
+    drop(server); // free the port right away for another try
 
     status("Generating your patch file...".into());
     exchange(&code, file_type)

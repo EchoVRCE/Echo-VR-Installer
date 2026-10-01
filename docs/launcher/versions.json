@@ -10,7 +10,9 @@
       "size": null,
       "sha256": null,
       "update_manifest": "https://files.echovr.de/updates/update.manifest",
-      "notes": "The current PC client with community updates."
+      "notes": "The current PC client with community updates.",
+      "hosted": "live",
+      "summary": "Played on the community servers"
     },
     {
       "id": "quest-latest",

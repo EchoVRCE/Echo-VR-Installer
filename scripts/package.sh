@@ -10,14 +10,14 @@ trap 'rm -rf "$stage"' EXIT
 case "$platform" in
   windows)
     mkdir -p "$stage/EchoVR_Installer"
-    cp target/release/EchoVR_Installer.exe LICENSE "$stage/EchoVR_Installer/"
+    cp target/release/EchoVR_Installer.exe LICENSE THIRD_PARTY_NOTICES.txt "$stage/EchoVR_Installer/"
     (cd "$stage" && 7z a -tzip "$out" EchoVR_Installer >/dev/null)
     ;;
   macos)
     app="$stage/EchoVR_Installer.app/Contents"
     mkdir -p "$app/MacOS" "$app/Resources"
     cp target/release/EchoVR_Installer "$app/MacOS/"
-    cp LICENSE "$app/Resources/"
+    cp LICENSE THIRD_PARTY_NOTICES.txt "$app/Resources/"
     version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
     cat > "$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,7 +38,7 @@ PLIST
     ;;
   linux)
     mkdir -p "$stage/EchoVR_Installer"
-    cp target/release/EchoVR_Installer LICENSE "$stage/EchoVR_Installer/"
+    cp target/release/EchoVR_Installer LICENSE THIRD_PARTY_NOTICES.txt "$stage/EchoVR_Installer/"
     (cd "$stage" && zip -qr "$out" EchoVR_Installer)
     ;;
   *)

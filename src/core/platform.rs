@@ -111,7 +111,31 @@ pub fn create_shortcut(
     }
 }
 
+/// Free bytes on the disk holding `path`. Windows asks about that folder only: listing
+/// every disk can wait seconds on a sleeping network or optical drive.
+#[cfg(windows)]
+pub fn free_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let path = std::path::absolute(path).ok()?;
+    // A new library folder may not exist yet: ask about its nearest existing parent.
+    let dir = path.ancestors().find(|p| p.is_dir())?;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the totals may be null.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(free)
+}
+
 /// Free bytes on the disk holding `path` (the longest matching mount point).
+#[cfg(not(windows))]
 pub fn free_space(path: &Path) -> Option<u64> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let path = std::path::absolute(path).ok()?;

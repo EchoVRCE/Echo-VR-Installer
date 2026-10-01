@@ -1,74 +1,17 @@
-//! The launcher's widgets, drawn in the installer's visual language: slanted bitmap
-//! buttons (9-slice stretched to any width), magenta translucent panels with the dark
-//! 1px rim, the wine sidebar colour, banner headers with cyan stripes, the blue status
-//! bar and green/grey chips as status badges. Every clickable thing is a slanted button.
-//! Page layout is the launcher's; the look is the installer's (`kit.rs`).
+//! Shared drawing basics: hover/click areas with an animated hover amount, 3-slice
+//! stretched images, colour mixing and the vector icons. The controls themselves are in
+//! `widgets.rs`, the design's tokens in `design.rs`.
 
 use egui::{
-    pos2, vec2, Color32, CursorIcon, Id, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
-    TextureId,
+    pos2, vec2, Color32, CursorIcon, Id, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureId,
 };
 
-use super::assets;
 use super::kit::Kit;
 use super::theme;
 
-// ---- palette (the installer's) ----
-
-/// Base behind the art.
-pub const BG: Color32 = Color32::from_rgb(0x0D, 0x0B, 0x14);
-/// Section box fill: the installer's magenta, a little stronger over the dark art.
-pub const SURFACE: Color32 = Color32::from_rgba_unmultiplied_const(200, 0, 150, 70);
-/// Wine sidebar / popup colour.
-pub const SURFACE_SOLID: Color32 = Color32::from_rgba_unmultiplied_const(100, 0, 50, 240);
-/// Hover rows.
-pub const SURFACE_HI: Color32 = Color32::from_rgba_unmultiplied_const(200, 0, 150, 150);
-/// Text field background (`SpecialTextfield`).
-pub const SURFACE_LO: Color32 = Color32::from_rgba_unmultiplied_const(30, 30, 30, 200);
-/// `BOX_BORDER`
-pub const BORDER: Color32 = theme::BOX_BORDER;
-pub const BORDER_HI: Color32 = Color32::from_rgba_unmultiplied_const(50, 50, 50, 230);
-pub const TEXT: Color32 = Color32::WHITE;
-pub const TEXT_DIM: Color32 = Color32::from_rgb(225, 215, 228);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(192, 180, 198);
-/// The cyan of the banner stripes.
-pub const ACCENT: Color32 = Color32::from_rgb(63, 193, 201);
-pub const ACCENT_2: Color32 = Color32::from_rgb(200, 0, 150);
-/// Step-chip green.
-pub const OK: Color32 = theme::CHIP_CURRENT_BG;
-pub const CHIP_OFF: Color32 = theme::CHIP_UPCOMING_BG;
-pub const WARN: Color32 = Color32::from_rgb(210, 140, 20);
-pub const DANGER: Color32 = theme::MARK_BAD;
-
-/// The installer's button image heights. Buttons are only ever drawn at these heights
-/// (stretched in width only), so their rims look exactly like the installer's.
-pub const BIG: f32 = 50.0;
-pub const MID: f32 = 38.0;
-pub const SMALL: f32 = 25.0;
-
-/// The native button height closest to `h`.
-pub fn snap(h: f32) -> f32 {
-    if h >= 44.0 {
-        BIG
-    } else if h >= 32.0 {
-        MID
-    } else {
-        SMALL
-    }
-}
-
-pub const R_CARD: u8 = 8; // arc 15
-pub const R_CONTROL: u8 = 4; // arc 8
 pub const ANIM: f32 = 0.12;
 
-pub fn body(size: f32) -> egui::FontId {
-    theme::arial(size)
-}
-
-pub fn bold(size: f32) -> egui::FontId {
-    theme::arial_bold(size)
-}
-
+/// Conthrax.
 pub fn display(size: f32) -> egui::FontId {
     theme::conthrax(size)
 }
@@ -85,11 +28,7 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-pub fn with_alpha(c: Color32, a: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
-}
-
-/// The installer's status-bar pulse (`phase += 0.15` per 50 ms), 0..1.
+/// A slow pulse for busy text (`phase += 0.15` per 50 ms), 0..1.
 pub fn pulse(ctx: &egui::Context) -> f32 {
     let t = ctx.input(|i| i.time) as f32;
     (t * 3.0).sin() * 0.5 + 0.5
@@ -103,58 +42,12 @@ pub enum Icon {
     Gear,
     Folder,
     Refresh,
-    Check,
     Warning,
     Headset,
     ChevronDown,
     Info,
-}
-
-/// One entry of a popup menu.
-pub enum MenuItem {
-    Divider,
-    Row(MenuRow),
-}
-
-#[derive(Default)]
-pub struct MenuRow {
-    pub label: String,
-    /// A second, smaller line.
-    pub sub: Option<String>,
-    /// Marked with a green check.
-    pub current: bool,
-    /// A chip after the label, in the given colour.
-    pub badge: Option<(String, Color32)>,
-    pub icon: Option<Icon>,
-    pub tip: String,
-}
-
-impl MenuItem {
-    pub fn row(label: &str) -> MenuRow {
-        MenuRow {
-            label: label.to_string(),
-            ..Default::default()
-        }
-    }
-
-    fn height(&self) -> f32 {
-        match self {
-            MenuItem::Divider => 9.0,
-            MenuItem::Row(r) if r.sub.is_some() => 46.0,
-            MenuItem::Row(_) => 34.0,
-        }
-    }
-}
-
-impl MenuRow {
-    pub fn tip(mut self, tip: impl Into<String>) -> MenuRow {
-        self.tip = tip.into();
-        self
-    }
-
-    pub fn item(self) -> MenuItem {
-        MenuItem::Row(self)
-    }
+    Close,
+    Copy,
 }
 
 /// What a control reports back.
@@ -162,16 +55,6 @@ impl MenuRow {
 pub struct Resp {
     pub clicked: bool,
     pub hovered: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Variant {
-    /// The big slanted button (PLAY, INSTALL).
-    Primary,
-    /// A regular slanted button.
-    Secondary,
-    /// A regular slanted button, slightly transparent (minor actions).
-    Ghost,
 }
 
 // ---- 9-slice ----
@@ -212,54 +95,9 @@ pub fn nine_h(
     }
 }
 
-/// Conthrax label size for a button height.
-fn label_size(h: f32) -> f32 {
-    if h >= BIG {
-        20.0
-    } else if h >= MID {
-        13.0
-    } else {
-        11.0
-    }
-}
-
-/// Button image set for a target height, with its cut-corner cap width (px in the image).
-fn button_set(h: f32) -> ([&'static str; 3], f32) {
-    if h < 32.0 {
-        (
-            [
-                "button_up_small.png",
-                "button_highlighted_small.png",
-                "button_down_small.png",
-            ],
-            9.0,
-        )
-    } else if h < 44.0 {
-        (
-            [
-                "button_up_middle.png",
-                "button_highlighted_middle.png",
-                "button_down_middle.png",
-            ],
-            13.0,
-        )
-    } else {
-        (
-            ["button_up.png", "button_highlighted.png", "button_down.png"],
-            16.0,
-        )
-    }
-}
-
 impl Kit<'_> {
     fn sid(&self, key: &str) -> Id {
         Id::new(("style", key))
-    }
-
-    fn native_tex(&self, name: &str) -> (TextureId, (f32, f32)) {
-        let (w, h) = assets::native_size(name);
-        let t = self.assets.tex(self.ui.ctx(), name, w, h);
-        (t.id(), (w as f32, h as f32))
     }
 
     /// A hover/click area with an animated hover amount (0..1) and an egui tooltip.
@@ -293,549 +131,21 @@ impl Kit<'_> {
         (out, t, pressed)
     }
 
-    // ---- surfaces ----
-
-    /// The installer's section box: translucent magenta, dark 1px rim, arc 15.
-    pub fn card(&self, x: f32, y: f32, w: f32, h: f32) {
-        let r = self.rect(x, y, w, h);
-        self.ui.painter().rect_filled(r, R_CARD, SURFACE);
+    /// How far the pointer is over `r` (0..1, animated), without taking clicks.
+    pub fn hover_t(&self, key: &str, r: Rect) -> f32 {
+        let over = !self.blocked && self.ui.rect_contains_pointer(r);
         self.ui
-            .painter()
-            .rect_stroke(r, R_CARD, Stroke::new(1.0, BORDER), StrokeKind::Inside);
-    }
-
-    /// The `tipbox_top` banner (cyan-striped caps, dark slanted middle) with Conthrax text.
-    pub fn banner(&self, x: f32, y: f32, w: f32, h: f32, text: &str, size: f32) {
-        let (tex, sz) = self.native_tex("tipbox_top.png");
-        nine_h(
-            self.ui.painter(),
-            tex,
-            sz,
-            self.rect(x, y, w, h),
-            (150.0, 170.0),
-            Color32::WHITE,
-        );
-        self.text_center(x, y, w, h, text, display(size), TEXT, None);
-    }
-
-    /// Banner width that fits `text` at `h` (caps plus the text).
-    pub fn banner_width(&self, text: &str, h: f32, size: f32) -> f32 {
-        self.text_width(text, display(size)) + h * 4.4
-    }
-
-    /// A section box with a banner title strip at its top-left.
-    pub fn titled_card(&self, x: f32, y: f32, w: f32, h: f32, title: &str) {
-        self.card(x, y, w, h);
-        let bw = self.banner_width(title, 26.0, 12.0).min(w - 24.0);
-        self.banner(x + 12.0, y + 10.0, bw, 26.0, title, 12.0);
-    }
-
-    /// Section label: Conthrax, like the installer's small headings.
-    pub fn caps(&self, x: f32, y: f32, text: &str, color: Color32) {
-        self.text_left(x, y, 14.0, text, display(11.0), color);
-    }
-
-    pub fn text(&self, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) {
-        self.ui.painter().text(
-            self.origin + vec2(x, y),
-            egui::Align2::LEFT_TOP,
-            text,
-            font,
-            color,
-        );
-    }
-
-    /// Text clipped to `w` with an ellipsis.
-    pub fn text_fit(&self, x: f32, y: f32, w: f32, text: &str, font: egui::FontId, color: Color32) {
-        let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-        let g = self.ui.ctx().fonts_mut(|f| f.layout_job(job));
-        self.ui.painter().galley(self.origin + vec2(x, y), g, color);
+            .ctx()
+            .animate_bool_with_time(self.sid(key).with("hover"), over, ANIM)
     }
 
     pub fn text_width(&self, text: &str, font: egui::FontId) -> f32 {
-        self.ui
-            .ctx()
-            .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, TEXT).size().x)
+        self.ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(text.to_string(), font, Color32::WHITE)
+                .size()
+                .x
+        })
     }
-
-    // ---- buttons ----
-
-    /// The slanted bitmap for `r` (at a native height): pressed, hovered (`t > 0.5`) or up.
-    fn slanted(&self, r: Rect, t: f32, pressed: bool, tint: Color32) {
-        let ([up, hi, down], cap) = button_set(r.height());
-        let img = if pressed {
-            down
-        } else if t > 0.5 {
-            hi
-        } else {
-            up
-        };
-        let (tex, sz) = self.native_tex(img);
-        nine_h(self.ui.painter(), tex, sz, r, (cap, cap), tint);
-    }
-
-    /// Icon and Conthrax label centered in `r`; `check` puts the installer's green ✓ first.
-    fn button_label(&self, r: Rect, icon: Option<Icon>, label: &str, fg: Color32, check: bool) {
-        let h = r.height();
-        let font = display(label_size(h));
-        let tw = if label.is_empty() {
-            0.0
-        } else {
-            self.text_width(label, font.clone())
-        };
-        let isz = if h >= BIG { 18.0 } else { 14.0 };
-        let icon = if check { Some(Icon::Check) } else { icon };
-        let gap = if icon.is_some() && !label.is_empty() {
-            10.0
-        } else {
-            0.0
-        };
-        let total = tw + gap + if icon.is_some() { isz } else { 0.0 };
-        let mut cx = r.center().x - total / 2.0;
-        if let Some(i) = icon {
-            let color = if check { theme::MARK_OK } else { fg };
-            icon_at(
-                self.ui.painter(),
-                i,
-                pos2(cx, r.center().y - isz / 2.0),
-                isz,
-                color,
-            );
-            cx += isz + gap;
-        }
-        if !label.is_empty() {
-            self.ui.painter().with_clip_rect(r).text(
-                pos2(cx, r.center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                font,
-                fg,
-            );
-        }
-    }
-
-    /// The installer's slanted bitmap button, stretched to `w`x`h`, with an optional icon.
-    #[allow(clippy::too_many_arguments)]
-    pub fn flat_button(
-        &mut self,
-        key: &str,
-        variant: Variant,
-        icon: Option<Icon>,
-        label: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> Resp {
-        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
-        let r = self.rect(x, y, w, h);
-        let (resp, t, pressed) = self.hot(key, r, enabled, tip);
-        let tint = match (enabled, variant) {
-            (false, _) => Color32::from_gray(140),
-            (true, Variant::Ghost) => Color32::from_rgba_unmultiplied(255, 255, 255, 215),
-            _ => Color32::WHITE,
-        };
-        self.slanted(r, t, pressed, tint);
-        let fg = if !enabled {
-            Color32::from_gray(150)
-        } else {
-            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
-        };
-        self.button_label(r, icon, label, fg, false);
-        resp
-    }
-
-    /// One answer of a choice: a slanted button that stays pressed, with a green ✓, while
-    /// it is the `selected` one.
-    #[allow(clippy::too_many_arguments)]
-    pub fn choice(
-        &mut self,
-        key: &str,
-        label: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        selected: bool,
-        tip: &str,
-    ) -> Resp {
-        let (y, h) = (y + (h - snap(h)) / 2.0, snap(h));
-        let r = self.rect(x, y, w, h);
-        let (resp, t, pressed) = self.hot(key, r, true, tip);
-        self.slanted(
-            r,
-            if selected { 0.0 } else { t },
-            pressed || selected,
-            Color32::WHITE,
-        );
-        let fg = if selected {
-            TEXT
-        } else {
-            mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t)
-        };
-        self.button_label(r, None, label, fg, selected);
-        resp
-    }
-
-    // ---- small parts ----
-
-    /// A step-chip badge in `color` (green = on, grey = neutral); returns its width.
-    pub fn pill(&self, x: f32, y: f32, text: &str, color: Color32, dot: bool) -> f32 {
-        let font = display(9.5);
-        let tw = self.text_width(text, font.clone());
-        let w = tw + if dot { 28.0 } else { 18.0 };
-        let r = self.rect(x, y, w, 22.0);
-        self.ui.painter().rect_filled(r, R_CONTROL, color);
-        self.ui
-            .painter()
-            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, BORDER), StrokeKind::Inside);
-        let mut tx = r.min.x + 9.0;
-        if dot {
-            self.ui
-                .painter()
-                .circle_filled(pos2(tx + 3.0, r.center().y), 3.5, TEXT);
-            tx += 10.0;
-        }
-        self.ui.painter().text(
-            pos2(tx, r.center().y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            font,
-            TEXT,
-        );
-        w
-    }
-
-    pub fn pill_width(&self, text: &str, dot: bool) -> f32 {
-        self.text_width(text, display(9.5)) + if dot { 28.0 } else { 18.0 }
-    }
-
-    /// The installer's progress label (white box, black Conthrax) with a green fill.
-    pub fn progress(&self, x: f32, y: f32, w: f32, fraction: Option<f32>, label: &str) {
-        let r = self.rect(x, y + 4.0, w, 26.0);
-        self.ui.painter().rect_filled(r, 0.0, theme::PROGRESS_BG);
-        match fraction {
-            Some(f) => {
-                let fill = Rect::from_min_size(r.min, vec2(w * f.clamp(0.0, 1.0), r.height()));
-                self.ui
-                    .painter()
-                    .rect_filled(fill, 0.0, with_alpha(theme::STATUS_DONE, 200));
-            }
-            None => {
-                // Indeterminate: a sliding green segment.
-                let t = self.ui.input(|i| i.time) as f32;
-                let seg = w * 0.25;
-                let pos = ((t * 0.8).fract() * (w + seg)) - seg;
-                let a = (r.min.x + pos).max(r.min.x);
-                let b = (r.min.x + pos + seg).min(r.max.x);
-                if b > a {
-                    self.ui.painter().rect_filled(
-                        Rect::from_x_y_ranges(a..=b, r.y_range()),
-                        0.0,
-                        with_alpha(theme::STATUS_DONE, 170),
-                    );
-                }
-                self.ui.ctx().request_repaint();
-            }
-        }
-        self.ui
-            .painter()
-            .rect_stroke(r, 0.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            label.to_string(),
-            display(11.0),
-            theme::BLACK,
-        );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(w - 12.0);
-        let g = self.ui.ctx().fonts_mut(|f| f.layout_job(job));
-        let pos = pos2(
-            r.center().x - g.size().x / 2.0,
-            r.center().y - g.size().y / 2.0,
-        );
-        self.ui.painter().galley(pos, g, theme::BLACK);
-    }
-
-    /// The installer's Metal checkbox with a Conthrax label; returns true when flipped.
-    #[allow(clippy::too_many_arguments)]
-    pub fn toggle(
-        &mut self,
-        key: &str,
-        on: &mut bool,
-        label: &str,
-        x: f32,
-        y: f32,
-        enabled: bool,
-        tip: &str,
-    ) -> bool {
-        let w = self.text_width(label, display(12.0)) + 24.0;
-        self.checkbox(key, on, label, 12.0, x, y, w, 24.0, false, enabled, tip)
-    }
-
-    /// [`Kit::input`] in another font (paths read better in Arial).
-    #[allow(clippy::too_many_arguments)]
-    pub fn input_with(
-        &mut self,
-        key: &str,
-        text: &mut String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        placeholder: &str,
-        invalid: bool,
-        tip: &str,
-        font: egui::FontId,
-    ) -> bool {
-        let r = self.rect(x, y, w, h);
-        let id = self.sid(key);
-        let focused = self.ui.memory(|m| m.has_focus(id));
-        let bg = if invalid {
-            theme::FIELD_BG_INVALID
-        } else {
-            SURFACE_LO
-        };
-        self.ui.painter().rect_filled(r, R_CONTROL, bg);
-        let rim = if focused { ACCENT_2 } else { BORDER };
-        self.ui
-            .painter()
-            .rect_stroke(r, R_CONTROL, Stroke::new(1.0, rim), StrokeKind::Inside);
-        let edit = egui::TextEdit::singleline(text)
-            .id(id)
-            .font(font.clone())
-            .text_color(TEXT)
-            .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
-            .vertical_align(egui::Align::Center)
-            .desired_width(w - 20.0)
-            .interactive(!self.blocked);
-        let resp = self.ui.put(r.shrink2(vec2(10.0, 2.0)), edit);
-        let resp = if tip.is_empty() || self.blocked {
-            resp
-        } else {
-            resp.on_hover_text(tip)
-        };
-        if text.is_empty() && !placeholder.is_empty() {
-            self.ui.painter().with_clip_rect(r).text(
-                pos2(r.min.x + 10.0, r.center().y),
-                egui::Align2::LEFT_CENTER,
-                placeholder,
-                font,
-                theme::PLACEHOLDER,
-            );
-        }
-        resp.lost_focus()
-    }
-
-    // ---- dropdowns / popovers ----
-
-    /// Opens or closes the popup menu of `key`.
-    pub fn toggle_menu(&self, key: &str) {
-        let open_id = self.sid(key).with("open");
-        let open = self
-            .ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-        self.ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
-    }
-
-    /// A small slanted button with a label and a chevron that opens a menu of actions;
-    /// returns the picked index.
-    #[allow(clippy::too_many_arguments)]
-    pub fn menu_button(
-        &mut self,
-        key: &str,
-        label: &str,
-        items: &[MenuItem],
-        x: f32,
-        y: f32,
-        w: f32,
-        tip: &str,
-    ) -> Option<usize> {
-        let h = SMALL;
-        let r = self.rect(x, y, w, h);
-        let (resp, t, pressed) = self.hot(key, r, true, tip);
-        self.slanted(r, t, pressed, Color32::WHITE);
-        let fg = mix(theme::BUTTON_TEXT, theme::BUTTON_TEXT_HOVER, t);
-        self.ui.painter().text(
-            pos2(r.center().x - 8.0, r.center().y),
-            egui::Align2::CENTER_CENTER,
-            label,
-            display(11.0),
-            fg,
-        );
-        icon_at(
-            self.ui.painter(),
-            Icon::ChevronDown,
-            pos2(r.max.x - 26.0, r.center().y - 5.0),
-            10.0,
-            fg,
-        );
-        if resp.clicked {
-            self.toggle_menu(key);
-            return None;
-        }
-        let pw = 230.0f32.max(w);
-        let anchor = Rect::from_min_size(pos2(r.max.x - pw, r.min.y), vec2(pw, h));
-        self.menu_popup(key, anchor, pw, items)
-    }
-
-    /// The popup list under `anchor` if `key` is open: a wine panel with magenta hover
-    /// rows, section headers and dividers. Returns the index (into `items`) of the picked
-    /// row. Closes on pick, outside click or Escape.
-    pub fn menu_popup(
-        &mut self,
-        key: &str,
-        anchor: Rect,
-        w: f32,
-        items: &[MenuItem],
-    ) -> Option<usize> {
-        let open_id = self.sid(key).with("open");
-        let open = self
-            .ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
-        if !open || self.blocked {
-            return None;
-        }
-        let h = items.iter().map(MenuItem::height).sum::<f32>() + 8.0;
-        let screen = self.ui.ctx().content_rect();
-        let below = anchor.max.y + 6.0 + h <= screen.max.y;
-        let pos = if below {
-            pos2(anchor.min.x, anchor.max.y + 6.0)
-        } else {
-            pos2(anchor.min.x, anchor.min.y - 6.0 - h)
-        };
-        let popup = Rect::from_min_size(pos, vec2(w, h));
-        let mut picked = None;
-        let ctx = self.ui.ctx().clone();
-        egui::Area::new(open_id.with("area"))
-            .order(Order::Foreground)
-            .fixed_pos(pos)
-            .show(&ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-                let p = ui.painter();
-                p.rect_filled(
-                    rect.translate(vec2(0.0, 4.0)).expand(2.0),
-                    R_CARD,
-                    with_alpha(Color32::BLACK, 90),
-                );
-                p.rect_filled(rect, R_CARD, with_alpha(SURFACE_SOLID, 252));
-                p.rect_stroke(
-                    rect,
-                    R_CARD,
-                    Stroke::new(1.0, BORDER_HI),
-                    StrokeKind::Inside,
-                );
-                let mut y = rect.min.y + 4.0;
-                for (i, item) in items.iter().enumerate() {
-                    let rr = Rect::from_min_size(
-                        pos2(rect.min.x + 4.0, y),
-                        vec2(w - 8.0, item.height()),
-                    );
-                    y += item.height();
-                    match item {
-                        MenuItem::Divider => {
-                            ui.painter().hline(
-                                rr.x_range().shrink(8.0),
-                                rr.center().y,
-                                Stroke::new(1.0, with_alpha(Color32::WHITE, 40)),
-                            );
-                        }
-                        MenuItem::Row(row) => {
-                            let mut resp = ui.interact(rr, open_id.with(i), Sense::click());
-                            if !row.tip.is_empty() {
-                                resp = resp.on_hover_text(&row.tip);
-                            }
-                            if resp.hovered() {
-                                ui.painter().rect_filled(rr, R_CONTROL, SURFACE_HI);
-                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                            }
-                            let mut tx = rr.min.x + 12.0;
-                            if let Some(icon) = row.icon {
-                                icon_at(
-                                    ui.painter(),
-                                    icon,
-                                    pos2(tx, rr.center().y - 8.0),
-                                    16.0,
-                                    ACCENT,
-                                );
-                                tx += 24.0;
-                            }
-                            let right = if row.current { 36.0 } else { 12.0 };
-                            let badge_w = row.badge.as_ref().map_or(0.0, |(b, _)| {
-                                ui.ctx().fonts_mut(|f| {
-                                    f.layout_no_wrap(b.clone(), display(9.0), TEXT).size().x
-                                }) + 22.0
-                            });
-                            let text_w = (rr.max.x - right - badge_w - tx).max(20.0);
-                            let (ly, sy) = if row.sub.is_some() {
-                                (rr.center().y - 8.0, rr.center().y + 10.0)
-                            } else {
-                                (rr.center().y, 0.0)
-                            };
-                            let mut job = egui::text::LayoutJob::simple_singleline(
-                                row.label.clone(),
-                                body(14.0),
-                                TEXT,
-                            );
-                            job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
-                            let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                            let lw = g.size().x;
-                            ui.painter()
-                                .galley(pos2(tx, ly - g.size().y / 2.0), g, TEXT);
-                            if let Some(sub) = &row.sub {
-                                let mut job = egui::text::LayoutJob::simple_singleline(
-                                    sub.clone(),
-                                    body(11.5),
-                                    TEXT_MUTED,
-                                );
-                                job.wrap = egui::text::TextWrapping::truncate_at_width(text_w);
-                                let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                                ui.painter()
-                                    .galley(pos2(tx, sy - g.size().y / 2.0), g, TEXT_MUTED);
-                            }
-                            if let Some((b, color)) = &row.badge {
-                                let bx = tx + lw + 10.0;
-                                let br = Rect::from_min_size(
-                                    pos2(bx, ly - 9.0),
-                                    vec2(badge_w - 10.0, 18.0),
-                                );
-                                ui.painter().rect_filled(br, R_CONTROL, *color);
-                                ui.painter().text(
-                                    br.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    b,
-                                    display(9.0),
-                                    TEXT,
-                                );
-                            }
-                            if row.current {
-                                let c = pos2(rr.max.x - 24.0, rr.center().y - 8.0);
-                                icon_at(ui.painter(), Icon::Check, c, 16.0, theme::MARK_OK);
-                            }
-                            if resp.clicked() {
-                                picked = Some(i);
-                            }
-                        }
-                    }
-                }
-            });
-        let outside_click = ctx.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|p| !popup.contains(p) && !anchor.contains(p))
-        });
-        if picked.is_some() || outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ctx.data_mut(|d| d.insert_temp(open_id, false));
-        }
-        picked
-    }
-
-    // ---- backdrop ----
 }
 
 /// Vector icons in an `s`-sized box at `o`.
@@ -912,7 +222,6 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
                 end + vec2(-s * 0.02, s * 0.2),
             ]);
         }
-        Icon::Check => line(vec![pt(0.16, 0.52), pt(0.4, 0.76), pt(0.86, 0.24)]),
         Icon::Warning => {
             p.add(Shape::convex_polygon(
                 vec![pt(0.5, 0.08), pt(0.95, 0.9), pt(0.05, 0.9)],
@@ -934,6 +243,16 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             ]);
         }
         Icon::ChevronDown => line(vec![pt(0.15, 0.32), pt(0.5, 0.68), pt(0.85, 0.32)]),
+        Icon::Close => {
+            line(vec![pt(0.2, 0.2), pt(0.8, 0.8)]);
+            line(vec![pt(0.8, 0.2), pt(0.2, 0.8)]);
+        }
+        Icon::Copy => {
+            let back = Rect::from_min_max(pt(0.14, 0.1), pt(0.62, 0.62));
+            let front = Rect::from_min_max(pt(0.38, 0.36), pt(0.86, 0.9));
+            p.rect_stroke(back, s * 0.06, st, StrokeKind::Middle);
+            p.rect_stroke(front, s * 0.06, st, StrokeKind::Middle);
+        }
         Icon::Info => {
             p.circle_stroke(pt(0.5, 0.5), s * 0.42, st);
             line(vec![pt(0.5, 0.44), pt(0.5, 0.74)]);
@@ -951,20 +270,5 @@ mod tests {
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.0), Color32::BLACK);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 1.0), Color32::WHITE);
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, 2.0), Color32::WHITE);
-    }
-
-    #[test]
-    fn heights_snap_to_images() {
-        assert_eq!(snap(56.0), BIG);
-        assert_eq!(snap(44.0), BIG);
-        assert_eq!(snap(40.0), MID);
-        assert_eq!(snap(30.0), SMALL);
-    }
-
-    #[test]
-    fn button_sets_by_height() {
-        assert_eq!(button_set(25.0).0[0], "button_up_small.png");
-        assert_eq!(button_set(38.0).0[0], "button_up_middle.png");
-        assert_eq!(button_set(56.0).0[0], "button_up.png");
     }
 }

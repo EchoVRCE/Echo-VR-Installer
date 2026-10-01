@@ -1,4 +1,4 @@
-//! The egui front end: the launcher in one window, plus modal dialog windows. The
+//! The egui front end: the launcher in one window, with its dialogs as cards on top. The
 //! installer's steps (install, patch, SteamVR setup, Quest) run inside the launcher.
 
 mod assets;
@@ -14,6 +14,8 @@ mod snapshot;
 mod style;
 mod theme;
 mod tipbox;
+mod video;
+mod widgets;
 
 use launcher::Dashboard;
 
@@ -22,10 +24,12 @@ pub fn run() -> anyhow::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(crate::version::VERSION_TITLE)
             .with_inner_size([launcher::W, launcher::H])
-            .with_resizable(false)
-            .with_maximize_button(false)
+            .with_min_inner_size([launcher::W * 0.75, launcher::H * 0.75])
             .with_icon(std::sync::Arc::new(assets::icon())),
         centered: true,
+        // Reopens at the last size, position and full screen.
+        persist_window: true,
+        persistence_path: Some(crate::core::paths::data_dir().join("window.ron")),
         ..Default::default()
     };
     eframe::run_native(
@@ -49,6 +53,9 @@ struct App {
     assets: assets::Assets,
     menu: Dashboard,
     snapshots: Option<snapshot::Snapshotter>,
+    /// Tests: scale images in the background, as the real app does, despite `demo`.
+    #[cfg(test)]
+    async_assets: bool,
 }
 
 impl App {
@@ -69,18 +76,45 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        fit_zoom(&ctx);
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
         snapshot::capture(ui);
         self.drive_snapshots(&ctx);
-        let own_rect = ui.input(|i| i.viewport().outer_rect);
+        let sync = self.menu.demo || self.snapshots.is_some();
+        #[cfg(test)]
+        let sync = sync && !self.async_assets;
+        self.assets.sync.set(sync);
         let blocked = self.menu.dialogs.is_open();
-        let mut kit = kit::Kit::new(ui, &self.assets, "main", blocked);
+        let mut kit = kit::Kit::new(ui, &self.assets, blocked);
         self.menu.show(&mut kit);
-        self.menu.dialogs.show(&ctx, &self.assets, own_rect);
+        self.menu.dialogs.show(&mut kit);
+    }
+
+    /// Only the window is remembered (`persist_window`), not the UI's state.
+    fn persist_egui_memory(&self) -> bool {
+        false
     }
 
     fn on_exit(&mut self) {
         crate::core::elevation::shutdown();
         cleanup_staged_patches();
+    }
+}
+
+/// Scales the launcher with its window: the design's 1280×720 fills it on one side, and
+/// the room left on the other goes to the layout (`Kit::ex`, `Kit::ey`).
+fn fit_zoom(ctx: &egui::Context) {
+    let ppp = ctx.pixels_per_point();
+    let native = ctx
+        .native_pixels_per_point()
+        .unwrap_or(ppp / ctx.zoom_factor());
+    let px = ctx.viewport_rect().size() * ppp;
+    let zoom = (px.x / (launcher::W * native)).min(px.y / (launcher::H * native));
+    if zoom.is_finite() && zoom > 0.1 && (zoom - ctx.zoom_factor()).abs() > 0.001 {
+        ctx.set_zoom_factor(zoom);
     }
 }
 

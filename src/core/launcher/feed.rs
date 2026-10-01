@@ -39,6 +39,38 @@ pub struct Servers {
     pub modes: Modes,
     #[serde(default)]
     pub locations: Vec<Location>,
+    /// The matchmaking queue (needs the status service's EchoVRCE login).
+    #[serde(default)]
+    pub queue: Option<Queue>,
+    /// The week's Arena top 3 (same).
+    #[serde(default)]
+    pub top: Option<Top>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Queue {
+    /// Players searching, all modes.
+    #[serde(default)]
+    pub total: u32,
+    /// Typical wait of the latest matches made, in seconds.
+    #[serde(default)]
+    pub wait_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Top {
+    #[serde(default)]
+    pub entries: Vec<TopEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TopEntry {
+    #[serde(default)]
+    pub rank: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub wins: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -84,6 +116,9 @@ pub struct Players {
     /// Since when players are counted (RFC 3339).
     #[serde(default)]
     pub since: Option<String>,
+    /// Players on today's official Arena list (when the status service can read it).
+    #[serde(default)]
+    pub arena_today: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -333,6 +368,7 @@ pub fn mock_servers() -> Servers {
             last_24h: 843,
             last_30d: 4054,
             since: rfc(now - time::Duration::days(60)),
+            arena_today: Some(700),
         },
         modes: Modes {
             lobby: Mode {
@@ -354,6 +390,21 @@ pub fn mock_servers() -> Servers {
             at(51.0, 11.0, 2, 0),
             at(-27.5, 153.0, 3, 0),
         ],
+        queue: Some(Queue {
+            total: 6,
+            wait_s: Some(95),
+        }),
+        top: Some(Top {
+            entries: [("Rainy32", 77), ("pepe_1", 43), ("Ace", 35)]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (name, wins))| TopEntry {
+                    rank: i as u32 + 1,
+                    name: name.into(),
+                    wins,
+                })
+                .collect(),
+        }),
     }
 }
 

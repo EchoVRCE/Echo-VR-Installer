@@ -99,6 +99,10 @@ pub struct LauncherState {
     pub revive_artwork: bool,
     /// The Play page shows the launch options under PLAY.
     pub show_launch_options: bool,
+    /// The background is the designer's video instead of its first frame.
+    pub animated_background: bool,
+    /// How fast it plays, in percent (100 = as made).
+    pub background_speed: u32,
 }
 
 /// What the PLAY button acts on: the selected version, installed or not.
@@ -127,6 +131,8 @@ impl Default for LauncherState {
             setup_done: false,
             revive_artwork: true,
             show_launch_options: false,
+            animated_background: true,
+            background_speed: 100,
         }
     }
 }
@@ -210,17 +216,11 @@ impl LauncherState {
             .unwrap_or(Target::None)
     }
 
-    /// Catalogue PC versions that are not installed yet.
-    pub fn not_installed<'a>(&self, catalog: &'a Catalog) -> Vec<&'a VersionEntry> {
-        catalog
-            .pc()
-            .filter(|e| {
-                !self
-                    .versions
-                    .iter()
-                    .any(|v| v.id == e.id || v.catalog_id.as_deref() == Some(&e.id))
-            })
-            .collect()
+    /// The installed copy of catalogue version `id`, if there is one.
+    pub fn installed_from(&self, id: &str) -> Option<&InstalledVersion> {
+        self.versions
+            .iter()
+            .find(|v| v.id == id || v.catalog_id.as_deref() == Some(id))
     }
 
     /// Adds or replaces (by id) a version, keeping the list stable.
@@ -373,7 +373,7 @@ mod tests {
         // A selected catalogue version.
         s.selected = Some("pc-old".into());
         assert!(matches!(s.target(Some(&c), |_| true), Target::Available(e) if e.id == "pc-old"));
-        assert_eq!(s.not_installed(&c).len(), 2);
+        assert!(s.installed_from("pc-old").is_none());
         // Installed and selected; its folder may be gone.
         s.upsert(InstalledVersion {
             id: "pc-old".into(),
@@ -383,7 +383,7 @@ mod tests {
         });
         assert!(matches!(s.target(Some(&c), |_| true), Target::Installed(v) if v.id == "pc-old"));
         assert!(matches!(s.target(Some(&c), |_| false), Target::Missing(_)));
-        assert_eq!(s.not_installed(&c).len(), 1);
+        assert_eq!(s.installed_from("pc-old").unwrap().root, "/lib/pc-old");
         // An unknown selection falls back to the first installed version.
         s.selected = Some("gone".into());
         assert!(matches!(s.target(Some(&c), |_| true), Target::Installed(v) if v.id == "pc-old"));

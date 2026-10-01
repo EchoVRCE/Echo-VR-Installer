@@ -3,18 +3,18 @@
 
 use std::sync::mpsc::sync_channel;
 
-use egui::{Order, Sense};
-
 use super::versions::job_err;
-use super::{Dashboard, JobResult, Msg, H, W};
+use super::{Dashboard, JobKind, JobResult, Msg, H, W};
 use crate::core::error::UiError;
+use crate::core::launcher::launch;
 use crate::core::launcher::patch::{self, FetchError, Source};
 use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
-use crate::core::launcher::store::Runtime;
+use crate::core::launcher::store::{InstalledVersion, Runtime};
 use crate::core::launcher::versions::Step;
 use crate::core::{download, elevation, oauth, paths, platform, revive};
+use crate::ui::design::{self, dz};
 use crate::ui::kit::Kit;
-use crate::ui::style::{self, Variant};
+use crate::ui::widgets::{Tone, BTN_H};
 
 pub(super) const REVIVE_JOB: &str = "revive";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
@@ -22,6 +22,12 @@ pub(super) const JOIN_KEY: &str = "join-server";
 pub(super) const QUEST_JOB: &str = "quest";
 pub(super) const QUEST_INSTALL_KEY: &str = "quest-install";
 pub(super) const QUEST_REINSTALL_KEY: &str = "quest-reinstall";
+
+/// Something to carry on with once the first-run setup is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Resume {
+    QuestInstall,
+}
 
 /// A card over the whole window.
 pub(super) enum Overlay {
@@ -36,9 +42,7 @@ pub(super) enum Overlay {
 pub(super) enum LinkFor {
     /// The licence patch for this PC version.
     Pc(String),
-    /// A patched APK, installed on the Quest. (Its button left the Play page with the
-    /// new design and comes back later.)
-    #[allow(dead_code)]
+    /// A patched APK, installed on the Quest.
     Quest,
 }
 
@@ -55,6 +59,7 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
     };
     d.start_job(
         ctx,
+        JobKind::Patch,
         id,
         &format!("Patching {}", v.name),
         first,
@@ -90,10 +95,7 @@ pub(super) fn unpatch(d: &mut Dashboard, id: &str) {
                 x.patched = false;
             }
             d.save();
-            d.dialogs.info(
-                "Licence patch removed",
-                "The original pnsovr.dll is back in place.",
-            );
+            d.notify("The licence patch is removed: the original pnsovr.dll is back");
         }
         Err(e) => d.dialogs.error(
             "Couldn't remove patch",
@@ -109,6 +111,7 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
     let artwork = d.state.revive_artwork;
     d.start_job(
         ctx,
+        JobKind::Revive,
         REVIVE_JOB,
         "Setting up SteamVR",
         "Downloading Revive...",
@@ -160,18 +163,24 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         return;
     };
     let exe = paths::exe_path(&v.root);
-    let result = match (d.state.profile.runtime, d.revive_dir()) {
+    let revive = match d.state.profile.runtime {
+        Runtime::Revive if !d.demo => revive::find_revive_dir(),
+        _ => None,
+    };
+    // The launch options from Settings go into the shortcut too.
+    let args = launch::join_args(&launch::game_args(&d.state.profile, None));
+    let result = match (d.state.profile.runtime, revive) {
         (Runtime::Revive, Some(dir)) => revive::create_injector_shortcut(&dir, &exe),
         _ => platform::create_shortcut(
             "Echo VR",
             &exe,
-            None,
+            (!args.is_empty()).then_some(args.as_str()),
             Some(&paths::bin_path(&v.root)),
             Some(&exe),
         ),
     };
     match result {
-        Ok(()) => d.dialogs.info("Done", "Desktop shortcut created!"),
+        Ok(()) => d.notify("The desktop shortcut is ready"),
         Err(e) => d.dialogs.error(
             "Couldn't create shortcut",
             &format!("{e:#}"),
@@ -180,9 +189,27 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
     }
 }
 
+/// The licence patch: PATCH on PLAY, the Manage menu's patch entries, patched Quest
+/// builds and the welcome's licence question. Off until it comes back in another form;
+/// meanwhile everyone is treated as owning Echo VR.
+pub(super) const LICENCE_PATCH: bool = false;
+
+/// The welcome's first question: the licence, or how you play.
+const FIRST_STEP: u8 = if LICENCE_PATCH { 0 } else { 1 };
+
+/// The first-run welcome, at its first question.
+pub(super) fn welcome() -> Overlay {
+    Overlay::Setup { step: FIRST_STEP }
+}
+
+/// Version `v` needs the licence patch before PLAY.
+pub(super) fn needs_patch(d: &Dashboard, v: &InstalledVersion) -> bool {
+    LICENCE_PATCH && d.state.owner == Some(false) && !v.patched
+}
+
 /// The Quest APK to install: stock for owners, a personal patched one for new players.
 pub(super) fn quest_source(d: &Dashboard) -> ApkSource {
-    if d.state.owner == Some(false) {
+    if LICENCE_PATCH && d.state.owner == Some(false) {
         ApkSource::Discord
     } else {
         ApkSource::Stock
@@ -191,8 +218,9 @@ pub(super) fn quest_source(d: &Dashboard) -> ApkSource {
 
 /// Asks before replacing Echo VR on the headset (the setup comes first if unanswered).
 pub(super) fn ask_quest_install(d: &mut Dashboard) {
-    if d.state.owner.is_none() {
-        d.overlay = Some(Overlay::Setup { step: 0 });
+    if LICENCE_PATCH && d.state.owner.is_none() {
+        d.overlay = Some(welcome());
+        d.after_setup = Some(Resume::QuestInstall);
         return;
     }
     d.dialogs.confirm(
@@ -210,6 +238,7 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkS
     };
     d.start_job(
         ctx,
+        JobKind::QuestInstall,
         QUEST_JOB,
         "Installing Echo VR on your Quest",
         first,
@@ -224,6 +253,7 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkS
 pub(super) fn quest_update(d: &mut Dashboard, ctx: &egui::Context) {
     d.start_job(
         ctx,
+        JobKind::QuestUpdate,
         QUEST_JOB,
         "Updating Echo VR on your Quest",
         "Checking your Quest...",
@@ -241,39 +271,23 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
     if d.overlay.is_none() {
         return;
     }
-    let screen = kit.rect(0.0, 0.0, W, H);
-    let assets = kit.assets;
-    let mut tip = None;
-    egui::Area::new(egui::Id::new("launcher-overlay"))
-        .order(Order::Foreground)
-        .fixed_pos(screen.min)
-        .show(ctx, |ui| {
-            // Swallow clicks so the dashboard underneath stays inert.
-            ui.allocate_exact_size(screen.size(), Sense::click());
-            let mut k = Kit::new(ui, assets, "overlay", kit.blocked);
-            k.origin = screen.min;
-            k.fill(0.0, 0.0, W, H, style::with_alpha(style::BG, 175));
-            match &d.overlay {
-                Some(Overlay::Setup { step }) => {
-                    let step = *step;
-                    setup_card(d, &mut k, step)
-                }
-                Some(Overlay::PatchLink { .. }) => link_card(d, &mut k, ctx),
-                None => {}
-            }
-            tip = k.tip.take();
-        });
-    if tip.is_some() {
-        kit.tip = tip;
-    }
+    let blocked = kit.blocked;
+    kit.modal("overlay", blocked, |k| match &d.overlay {
+        Some(Overlay::Setup { step }) => {
+            let step = *step;
+            setup_card(d, k, ctx, step)
+        }
+        Some(Overlay::PatchLink { .. }) => link_card(d, k, ctx),
+        None => {}
+    });
 }
 
-const OWN_NOTE: &str =
+pub(super) const OWN_NOTE: &str =
     "You play with your own licence from the Meta store. The licence patch stays optional.";
-const NEW_NOTE: &str =
+pub(super) const NEW_NOTE: &str =
     "No licence yet? You get a personal licence patch through Discord before your first match.";
 
-fn runtime_note(r: Runtime) -> &'static str {
+pub(super) fn runtime_note(r: Runtime) -> &'static str {
     match r {
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
         Runtime::VirtualDesktop => "Quest over Virtual Desktop; start its streamer first.",
@@ -282,112 +296,124 @@ fn runtime_note(r: Runtime) -> &'static str {
     }
 }
 
-/// "Welcome To Echo VR", the installer's way: one question per step, big slanted answers,
-/// and a tip line for the hovered one.
-fn setup_card(d: &mut Dashboard, k: &mut Kit, step: u8) {
-    let (w, h) = (640.0, 400.0);
-    let (x, y) = (((W - w) / 2.0).floor(), ((H - h) / 2.0).floor());
-    solid_card(k, x, y, w, h, "Welcome To Echo VR");
+/// A runtime's name on its tile (the welcome's, Settings').
+pub(super) fn runtime_title(r: Runtime) -> &'static str {
+    match r {
+        Runtime::Revive => "SteamVR (Revive)",
+        Runtime::Flat => "Flat (no headset)",
+        _ => runtime_label(r),
+    }
+}
+
+pub(super) fn runtime_label(r: Runtime) -> &'static str {
+    match r {
+        Runtime::MetaLink => "Meta Link",
+        Runtime::VirtualDesktop => "Virtual Desktop",
+        Runtime::Revive => "SteamVR",
+        Runtime::Flat => "Flat",
+    }
+}
+
+/// A modal card with a header strip; returns its padding-inset content rect's left, top
+/// and width.
+fn card(k: &Kit, w: f32, h: f32, title: &str) -> (f32, f32, f32, f32) {
+    let (x, y) = (
+        ((W + k.ex - w) / 2.0).round(),
+        ((H + k.ey - h) / 2.0).round(),
+    );
+    k.solid_panel(x, y, w, h);
+    k.header_strip(x, y, w, dz(46.0), title);
+    let pad = dz(30.0);
+    (x + pad, y + dz(46.0) + pad, w - 2.0 * pad, y + h - pad)
+}
+
+/// "Welcome to Echo VR": one question per step, each answer a tile with its explanation.
+fn setup_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, step: u8) {
+    // Both steps share one size: the four answers of step 2 set it.
+    let (w, h) = (dz(1000.0), dz(515.0));
+    let (x, y, cw, bottom) = card(k, w, h, "Welcome to Echo VR");
     let question = if step == 0 {
         "Do you own Echo VR on your Meta account?"
     } else {
         "How do you play Echo VR?"
     };
-    let qw = k.banner_width(question, 40.0, 15.0).min(w - 48.0);
-    k.banner(x + (w - qw) / 2.0, y + 56.0, qw, 40.0, question, 15.0);
-
-    let mut tip = None;
-    let row = |i: usize| y + 118.0 + i as f32 * (style::BIG + 12.0);
+    let q = k.spaced_fit(
+        &question.to_uppercase(),
+        design::conthrax(20.0),
+        design::TEXT,
+        dz(2.0),
+        false,
+        cw,
+    );
+    k.put(x, y, q);
+    let top = y + dz(52.0);
+    let gap = dz(20.0);
+    let tw = (cw - gap) / 2.0;
     if step == 0 {
-        let bw = 380.0;
-        let bx = x + (w - bw) / 2.0;
+        let th = dz(260.0);
         let answers = [
-            (true, "I own Echo on Meta", OWN_NOTE),
+            (true, "I own Echo VR on Meta", OWN_NOTE),
             (false, "I'm a new player", NEW_NOTE),
         ];
         for (i, (own, label, note)) in answers.into_iter().enumerate() {
-            let r = k.choice(
+            let tx = x + i as f32 * (tw + gap);
+            let on = d.state.owner == Some(own);
+            if k.tile(
                 &format!("setup-owner-{i}"),
+                tx,
+                top,
+                tw,
+                th,
                 label,
-                bx,
-                row(i),
-                bw,
-                style::BIG,
-                d.state.owner == Some(own),
-                "",
-            );
-            if r.hovered {
-                tip = Some(note);
-            }
-            if r.clicked {
+                note,
+                on,
+            )
+            .clicked
+            {
                 d.state.owner = Some(own);
                 d.overlay = Some(Overlay::Setup { step: 1 });
             }
         }
     } else {
-        let labels = [
-            "Meta Link",
-            "Virtual Desktop",
-            "SteamVR (Revive)",
-            "Flat (no headset)",
-        ];
-        let bw = 280.0;
-        let x0 = x + (w - 2.0 * bw - 16.0) / 2.0;
-        for (i, (rt, label)) in Runtime::ALL.iter().zip(labels).enumerate() {
-            let r = k.choice(
+        let th = dz(120.0);
+        for (i, rt) in Runtime::ALL.iter().enumerate() {
+            let tx = x + (i % 2) as f32 * (tw + gap);
+            let ty = top + (i / 2) as f32 * (th + gap);
+            let label = runtime_title(*rt);
+            let on = d.state.profile.runtime == *rt;
+            let note = runtime_note(*rt);
+            if k.tile(
                 &format!("setup-runtime-{i}"),
+                tx,
+                ty,
+                tw,
+                th,
                 label,
-                x0 + (i % 2) as f32 * (bw + 16.0),
-                row(i / 2),
-                bw,
-                style::BIG,
-                d.state.profile.runtime == *rt,
-                "",
-            );
-            if r.hovered {
-                tip = Some(runtime_note(*rt));
-            }
-            if r.clicked {
+                note,
+                on,
+            )
+            .clicked
+            {
                 d.state.profile.runtime = *rt;
                 finish_setup(d);
             }
         }
     }
 
-    // The tip line, in a quiet box like the installer's tipbox.
-    let ty = y + 250.0;
-    k.round_box(
-        x + 32.0,
-        ty,
-        w - 64.0,
-        64.0,
-        15.0,
-        style::with_alpha(style::BG, 110),
-        Some(style::BORDER),
-    );
-    k.text_center(
-        x + 48.0,
-        ty,
-        w - 96.0,
-        64.0,
-        tip.unwrap_or("Hover over a choice for details. You can change both later in Settings."),
-        style::body(14.0),
-        style::TEXT_DIM,
-        Some(w - 96.0),
-    );
-
-    let by = y + h - 24.0 - style::MID;
-    let mut bx = x + 24.0;
-    if step == 1 {
-        if k.flat_button(
+    // BACK, SKIP FOR NOW and the step.
+    let by = bottom - BTN_H;
+    let mut bx = x;
+    if step > FIRST_STEP {
+        let bw = k.button_width("Back", None, BTN_H).max(110.0);
+        if k.button(
             "setup-back",
-            Variant::Secondary,
-            None,
-            "< Back",
             bx,
             by,
-            140.0,
-            style::MID,
+            bw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Back",
             true,
             "",
         )
@@ -395,46 +421,37 @@ fn setup_card(d: &mut Dashboard, k: &mut Kit, step: u8) {
         {
             d.overlay = Some(Overlay::Setup { step: 0 });
         }
-        bx += 152.0;
+        bx += bw + dz(24.0);
     }
-    if k.flat_button(
-        "setup-skip",
-        Variant::Ghost,
-        None,
-        "Skip for now",
-        bx,
-        by,
-        200.0,
-        style::MID,
-        true,
-        "Ask later; you can set this in Settings",
-    )
-    .clicked
+    let skip_tip = "Ask later; you can change it in Settings";
+    let skip_y = by + (BTN_H - dz(20.0)) / 2.0;
+    if k.link("setup-skip", bx, skip_y, "Skip for now", 16.0, skip_tip)
+        .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
     {
         finish_setup(d);
+        return;
     }
-    let steps = format!("Step {} of 2", step + 1);
-    let sw = k.text_width(&steps, style::display(11.0));
-    k.caps(x + w - 24.0 - sw, by + 12.0, &steps, style::TEXT_MUTED);
-}
-
-/// A titled card with an opaque backing, so the dashboard doesn't show through.
-fn solid_card(k: &Kit, x: f32, y: f32, w: f32, h: f32, title: &str) {
-    k.round_box(x, y, w, h, 15.0, style::SURFACE_SOLID, None);
-    k.round_box(x, y, w, h, 15.0, style::with_alpha(style::BG, 200), None);
-    k.titled_card(x, y, w, h, title);
+    if FIRST_STEP == 0 {
+        let steps = format!("Step {} of 2", step + 1);
+        let g = k.label_galley(&steps, design::din(15.0), design::GREY, f32::INFINITY);
+        let gx = x + cw - g.size().x;
+        k.put(gx, by + (BTN_H - g.size().y) / 2.0, g);
+    }
 }
 
 fn finish_setup(d: &mut Dashboard) {
     d.state.setup_done = true;
     d.overlay = None;
     d.save();
+    if d.after_setup.take() == Some(Resume::QuestInstall) && d.state.owner.is_some() {
+        ask_quest_install(d);
+    }
 }
 
 /// The licence patch from a link the user already has.
 fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
-    let (w, h) = (620.0, 250.0);
-    let (x, y) = (((W - w) / 2.0).floor(), ((H - h) / 2.0).floor());
+    let busy = d.any_job();
     let Some(Overlay::PatchLink { target, url }) = &mut d.overlay else {
         return;
     };
@@ -449,39 +466,36 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     } else {
         "Licence patch from a link"
     };
-    solid_card(k, x, y, w, h, title);
-    k.text(
-        x + 24.0,
-        y + 52.0,
-        "Paste the patch link you got from the Echo VR Discord (files.echovr.de).",
-        style::body(14.0),
-        style::TEXT_DIM,
-    );
-    let bw = 110.0;
+    let (w, h) = (dz(960.0), dz(310.0));
+    let (x, y, cw, bottom) = card(k, w, h, title);
+    let hint = "Paste the patch link you got from the Echo VR Discord (files.echovr.de).";
+    let th = k.caps_text(x, y, cw, hint, 17.0, design::BODY, 0.0);
+    let fy = y + th + dz(20.0);
+    let pw = k.button_width("Paste", None, BTN_H).max(100.0);
     let invalid = !url.trim().is_empty() && validate(url.trim()).is_none();
-    k.input_with(
+    k.field(
         "patch-url",
         url,
-        x + 24.0,
-        y + 92.0,
-        w - 48.0 - bw - 10.0,
-        style::MID,
+        x,
+        fy,
+        cw - pw - 10.0,
+        BTN_H,
         "https://files.echovr.de/...",
         invalid,
         "The link to your personal patch",
-        style::body(14.0),
     );
-    if k.flat_button(
+    let paste_tip = "Paste a link from your clipboard";
+    if k.button(
         "patch-paste",
-        Variant::Secondary,
+        x + cw - pw,
+        fy,
+        pw,
+        BTN_H,
+        Tone::Dark,
         None,
         "Paste",
-        x + w - 24.0 - bw,
-        y + 92.0,
-        bw,
-        style::MID,
         true,
-        "Paste a link from your clipboard",
+        paste_tip,
     )
     .clicked
     {
@@ -493,26 +507,25 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         }
     }
     if invalid {
-        k.text(
-            x + 24.0,
-            y + 138.0,
-            "That doesn't look like a patch link.",
-            style::body(13.0),
-            style::DANGER,
-        );
+        let msg = "That doesn't look like a patch link.";
+        k.caps_text(x, fy + BTN_H + dz(12.0), cw, msg, 16.0, design::DANGER, 0.0);
     }
     let valid = validate(url.trim()).is_some();
     let (target, link) = (target.clone(), url.trim().to_string());
-    let by = y + h - 24.0 - style::MID;
-    if k.flat_button(
+    let by = bottom - BTN_H;
+    let apply = if quest { "Install" } else { "Apply patch" };
+    let aw = k.button_width(apply, None, BTN_H).max(140.0);
+    let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let right = x + cw;
+    if k.button(
         "patch-cancel",
-        Variant::Ghost,
+        right - cw2,
+        by,
+        cw2,
+        BTN_H,
+        Tone::Dark,
         None,
         "Cancel",
-        x + 24.0,
-        by + (style::MID - style::SMALL) / 2.0,
-        130.0,
-        style::SMALL,
         true,
         "",
     )
@@ -522,21 +535,23 @@ fn link_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         d.overlay = None;
         return;
     }
-    if k.flat_button(
+    let apply_tip = if quest {
+        "Download the patched APK and install it on your Quest"
+    } else {
+        "Download the patch and put it into this version"
+    };
+    let ax = right - cw2 - 8.0 - aw;
+    if k.button(
         "patch-apply",
-        Variant::Primary,
-        None,
-        if quest { "Install" } else { "Apply patch" },
-        x + w - 24.0 - 220.0,
+        ax,
         by,
-        220.0,
-        style::MID,
-        valid && !d.any_job(),
-        if quest {
-            "Download the patched APK and install it on your Quest"
-        } else {
-            "Download the patch and put it into this version"
-        },
+        aw,
+        BTN_H,
+        Tone::Go,
+        None,
+        apply,
+        valid && !busy,
+        apply_tip,
     )
     .clicked
     {

@@ -30,14 +30,20 @@ pub struct Shot {
     pub name: String,
     pub page: Page,
     pub variant: Option<SnapVariant>,
+    /// Where the pointer rests (design pixels), for hover states. Headless only.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub hover: Option<(f32, f32)>,
+    /// ...with the mouse button held down there.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub press: bool,
 }
 
-/// Every page, then the Play page's extra states. `ECHOVR_SNAPSHOTS_ONLY=play,setup`
+/// Every page, then extra states (mostly of the Play page). `ECHOVR_SNAPSHOTS_ONLY=play,setup`
 /// keeps only shots whose name contains one of these.
 pub fn shots() -> Vec<Shot> {
     let mut shots: Vec<Shot> = [
         ("play", Page::Play),
-        ("versions", Page::Versions),
+        ("install", Page::Install),
         ("mods", Page::Mods),
         ("servers", Page::Servers),
         ("spark", Page::Spark),
@@ -50,20 +56,85 @@ pub fn shots() -> Vec<Shot> {
         name: format!("launcher_{n}"),
         page,
         variant: None,
+        hover: None,
+        press: false,
     })
     .collect();
-    for (n, v) in [
-        ("play_not_installed", SnapVariant::NotInstalled),
-        ("play_installing", SnapVariant::Installing),
-        ("play_needs_patch", SnapVariant::NeedsPatch),
-        ("play_quest", SnapVariant::QuestSide),
-        ("setup", SnapVariant::Setup),
-        ("setup_headset", SnapVariant::SetupHeadset),
+    for (n, page, v) in [
+        ("play_not_installed", Page::Play, SnapVariant::Fresh),
+        ("play_installing", Page::Play, SnapVariant::Installing),
+        ("play_extracting", Page::Play, SnapVariant::Extracting),
+        ("play_quest", Page::Play, SnapVariant::QuestSide),
+        ("play_notice", Page::Play, SnapVariant::Notice),
+        ("setup", Page::Play, SnapVariant::Setup),
+        ("dialog_error", Page::Play, SnapVariant::DialogError),
+        (
+            "dialog_install_error",
+            Page::Play,
+            SnapVariant::DialogInstallError,
+        ),
+        ("play_quest_fresh", Page::Play, SnapVariant::QuestFresh),
+        ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
+        (
+            "settings_delete_cache",
+            Page::Settings,
+            SnapVariant::DeleteCache,
+        ),
+        (
+            "settings_upload_logs",
+            Page::Settings,
+            SnapVariant::UploadLogs,
+        ),
+        ("install_menu", Page::Install, SnapVariant::MenuOpen),
+        ("install_fresh", Page::Install, SnapVariant::Fresh),
+        ("install_extracting", Page::Install, SnapVariant::Extracting),
+        ("install_quest", Page::Install, SnapVariant::QuestSide),
+        (
+            "install_quest_fresh",
+            Page::Install,
+            SnapVariant::QuestFresh,
+        ),
+        ("install_installing", Page::Install, SnapVariant::Installing),
+        ("play_launching", Page::Play, SnapVariant::Launching),
+        ("play_running", Page::Play, SnapVariant::Running),
+        ("play_stop", Page::Play, SnapVariant::RunningOurs),
+        ("play_version_menu", Page::Play, SnapVariant::VersionMenu),
+        (
+            "install_placeholder",
+            Page::Install,
+            SnapVariant::Placeholder,
+        ),
+    ] {
+        shots.push(Shot {
+            name: format!("launcher_{n}"),
+            page,
+            variant: Some(v),
+            hover: None,
+            press: false,
+        });
+    }
+    // The concept's hover states (PLAY, CHECK FOR UPDATES, the switch, a rail icon, the
+    // grey PLAY with nothing installed) and its "clicked" ones (held down).
+    for (n, variant, at, press) in [
+        ("play_hover", None, (200.0, 276.0), false),
+        ("play_hover_update", None, (520.0, 276.0), false),
+        ("play_hover_switch", None, (800.0, 290.0), false),
+        ("play_hover_rail", None, (47.0, 335.0), false),
+        (
+            "play_hover_grey",
+            Some(SnapVariant::Fresh),
+            (200.0, 276.0),
+            false,
+        ),
+        ("play_press", None, (200.0, 276.0), true),
+        ("play_press_update", None, (520.0, 276.0), true),
     ] {
         shots.push(Shot {
             name: format!("launcher_{n}"),
             page: Page::Play,
-            variant: Some(v),
+            variant,
+            hover: Some(at),
+            press,
         });
     }
     if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {

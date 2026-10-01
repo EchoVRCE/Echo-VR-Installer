@@ -5,6 +5,7 @@ pub mod cache;
 pub mod download;
 pub mod elevation;
 pub mod error;
+pub mod ffmpeg;
 pub mod http;
 pub mod launcher;
 pub mod log;

@@ -2,6 +2,9 @@
 //! purple backdrop. See `ui/design.rs` and `ui/style.rs` for the widgets. Installing,
 //! patching, SteamVR setup and the Quest all run inline (`setup.rs`).
 
+mod hero;
+mod install;
+mod install_panel;
 mod play;
 mod server_info;
 mod settings;
@@ -21,11 +24,14 @@ use super::style::{self, Icon};
 use super::tipbox::Clippy;
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
+use crate::core::ffmpeg;
+use crate::core::launcher::background;
 use crate::core::launcher::catalog::{Catalog, Platform, VersionEntry};
 use crate::core::launcher::feed;
 use crate::core::launcher::game::{GameState, Monitor};
 use crate::core::launcher::quest::QuestInfo;
-use crate::core::launcher::store::{InstalledVersion, LauncherState, Target};
+use crate::core::launcher::store::{InstalledVersion, LauncherState, Runtime, Target};
+use crate::core::launcher::update_check;
 use crate::core::launcher::versions::Step;
 
 pub const CREDITS: &str = "Copyright for Echo VR is by Meta/Ready at Dawn!\n\
@@ -44,16 +50,15 @@ const RAIL: f32 = dz(91.0);
 /// Left edge and width of page content.
 const X0: f32 = dz(138.0);
 const CW: f32 = W - X0 - dz(48.0);
-/// The page-title banner under the status bar, and where controls next to it start.
-const TITLE_Y: f32 = 56.0;
-const TITLE_W: f32 = 260.0;
-const BESIDE_TITLE: f32 = X0 + TITLE_W + 16.0;
+/// The page's header strip under the status bar (design pixels).
+const HEADER: Dr = Dr::new(138.0, 80.0, 1734.0, 46.0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Page {
     #[default]
     Play,
-    Versions,
+    /// Installing and managing versions (the rail's download icon).
+    Install,
     Mods,
     Servers,
     /// The community modules (placeholders for now).
@@ -64,10 +69,21 @@ pub enum Page {
 }
 
 impl Page {
+    pub const ALL: [Page; 8] = [
+        Page::Play,
+        Page::Install,
+        Page::Settings,
+        Page::Servers,
+        Page::Mods,
+        Page::Spark,
+        Page::EchoVrce,
+        Page::Community,
+    ];
+
     fn title(self) -> &'static str {
         match self {
             Page::Play => "Play",
-            Page::Versions => "Versions",
+            Page::Install => "Install",
             Page::Mods => "Mods",
             Page::Servers => "Servers",
             Page::Spark => "Spark",
@@ -94,6 +110,8 @@ enum JobResult {
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
     QuestNeedsReinstall(String),
+    /// A custom background is converted and in place.
+    BackgroundSet,
 }
 
 enum Msg {
@@ -109,6 +127,76 @@ enum Msg {
     FeedNews(Option<feed::News>),
     /// A feed image by file name (`None`: it couldn't be loaded).
     FeedImage(String, Option<image::RgbaImage>),
+    /// Free bytes in a library folder.
+    FreeSpace(String, Option<u64>),
+    /// Where Revive is installed.
+    Revive(Option<String>),
+    /// Bytes "Delete cache" would free.
+    CacheSize(u64),
+    /// The launcher's latest release, if newer (`Err`: couldn't look).
+    LauncherUpdate(Result<Option<update_check::Release>, String>),
+}
+
+/// Whether a newer launcher is out (Settings shows it, the rail marks it).
+#[derive(Default)]
+enum LauncherUpdate {
+    #[default]
+    Checking,
+    Latest,
+    Available(update_check::Release),
+    Failed,
+}
+
+/// A value measured on a worker thread because measuring can block (disks, the
+/// registry): the pages read the last result, and ask again once it is old.
+struct Probe<K, V> {
+    /// What was measured for which key, and when.
+    last: Option<(K, V, std::time::Instant)>,
+    /// The key a page asked about since the last `due`.
+    wanted: Option<K>,
+    pending: bool,
+}
+
+impl<K, V> Default for Probe<K, V> {
+    fn default() -> Self {
+        Probe {
+            last: None,
+            wanted: None,
+            pending: false,
+        }
+    }
+}
+
+impl<K: PartialEq + Clone, V: Clone> Probe<K, V> {
+    /// The last result for `key` (`None`: not measured yet).
+    fn get(&mut self, key: K) -> Option<V> {
+        let v = self
+            .last
+            .as_ref()
+            .filter(|(k, ..)| *k == key)
+            .map(|(_, v, _)| v.clone());
+        self.wanted = Some(key);
+        v
+    }
+
+    /// The key to measure now: asked about, not measuring, and not measured within `every`.
+    fn due(&mut self, every: std::time::Duration) -> Option<K> {
+        let key = self.wanted.take()?;
+        let fresh = self
+            .last
+            .as_ref()
+            .is_some_and(|(k, _, at)| *k == key && at.elapsed() < every);
+        if self.pending || fresh {
+            return None;
+        }
+        self.pending = true;
+        Some(key)
+    }
+
+    fn done(&mut self, key: K, v: V) {
+        self.pending = false;
+        self.last = Some((key, v, std::time::Instant::now()));
+    }
 }
 
 /// The Play page's feed (SERVER INFO and Community News) and its images.
@@ -156,7 +244,23 @@ impl Feed {
     }
 }
 
+/// What a job does: its progress wording, whether it can be cancelled, and which
+/// failures count as a failed update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobKind {
+    Install,
+    Update,
+    Verify,
+    Patch,
+    Revive,
+    QuestInstall,
+    QuestUpdate,
+    /// Converting a custom background.
+    Background,
+}
+
 struct Job {
+    kind: JobKind,
     /// What runs, for the status bar ("Installing Echo VR (PC, latest)").
     title: String,
     /// The latest progress line.
@@ -168,18 +272,50 @@ struct Job {
 /// Snapshot mode: extra states to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapVariant {
-    /// A version that is not installed is selected.
-    NotInstalled,
-    /// That version is being installed.
+    /// Nothing installed yet.
+    Fresh,
+    /// ...and the recommended version is being installed (downloading).
     Installing,
+    /// ...and extracted (no percentage).
+    Extracting,
+    /// A success message in the status bar.
+    Notice,
+    /// An error with a help link.
+    DialogError,
+    /// An install error with a path.
+    DialogInstallError,
+    /// Removing a version (a red button).
+    DialogConfirm,
+    /// A version's Manage menu, open.
+    MenuOpen,
     /// The first-run setup card.
     Setup,
-    /// Its second step (how you play).
-    SetupHeadset,
-    /// The Quest side of Play, with Echo VR installed on the headset.
+    /// Settings: "Delete cache" asks.
+    DeleteCache,
+    /// Settings: "Upload logs" says what the logs contain.
+    UploadLogs,
+    /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
-    /// A new player's version that still needs the licence patch.
-    NeedsPatch,
+    /// The Quest side, a headset without Echo VR.
+    QuestFresh,
+    /// PLAY was clicked; the game isn't up yet.
+    Launching,
+    /// Echo VR runs, started elsewhere (RUNNING).
+    Running,
+    /// Echo VR runs, started by the launcher (STOP).
+    RunningOurs,
+    /// The Play page's version picker, open.
+    VersionMenu,
+    /// A placeholder version chosen on the Install page.
+    Placeholder,
+}
+
+/// Snapshots: the game as the monitor would see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapGame {
+    Launching,
+    Ours,
+    Elsewhere,
 }
 
 #[derive(Default)]
@@ -193,14 +329,19 @@ pub struct Dashboard {
     worker: Worker<Msg>,
     monitor: Option<Monitor>,
     child: Option<std::process::Child>,
-    /// Play page: PC or Quest.
-    play_platform: Platform,
-    /// Versions page: PC or Quest.
-    versions_platform: Platform,
+    /// PC or Quest, on the Play and the Install page alike.
+    platform: Platform,
     quest_conn: QuestConn,
     quest_info: Option<QuestInfo>,
     quest_busy: bool,
+    /// The Install page's list of installed versions.
+    library_scroll: f32,
+    /// The version the Install page's hero shows (a row of its version list).
+    install_pick: Option<String>,
+    /// The Install page's version list.
     versions_scroll: f32,
+    /// Snapshots: the game's state instead of the monitor's.
+    snap_game: Option<SnapGame>,
     library_field: String,
     pending_remove: Option<String>,
     pending_repair: Option<String>,
@@ -222,13 +363,28 @@ pub struct Dashboard {
     overlay: Option<setup::Overlay>,
     /// A job waiting for the administrator-rights answer.
     consent: Option<std::sync::mpsc::SyncSender<bool>>,
-    /// Where Revive is installed (checked at most every 5 s).
-    revive_cache: Option<(Option<String>, std::time::Instant)>,
-    /// Free space in the library: (library, bytes, when measured).
-    free_cache: Option<(String, Option<u64>, std::time::Instant)>,
+    /// Where Revive is installed.
+    revive: Probe<(), Option<String>>,
+    /// Free space in the library.
+    free: Probe<String, Option<u64>>,
+    /// What "Delete cache" would free.
+    cache: Probe<(), u64>,
+    launcher_update: LauncherUpdate,
     started: bool,
     deleting_cache: bool,
     feed: Feed,
+    /// Something that went well, shown in the status bar for a few seconds.
+    notice: Option<(String, std::time::Instant)>,
+    /// What to do once the first-run setup is answered.
+    after_setup: Option<setup::Resume>,
+    /// Pages drawn at least once, seen or not (`prewarm`).
+    warmed: std::collections::HashSet<Page>,
+    video: super::video::BackgroundVideo,
+    /// The custom background (Settings), and its still once loaded.
+    custom_bg: Option<background::Custom>,
+    custom_still: Option<egui::TextureHandle>,
+    /// A video chosen in Settings, waiting for the answer about downloading ffmpeg.
+    background_pending: Option<PathBuf>,
 }
 
 impl Dashboard {
@@ -256,8 +412,10 @@ impl Dashboard {
         }
         self.library_field = self.state.library.clone();
         if !self.state.setup_done && !self.demo {
-            self.overlay = Some(setup::Overlay::Setup { step: 0 });
+            self.overlay = Some(setup::welcome());
         }
+        self.check_launcher_update(ctx);
+        self.load_custom_background();
         if self.demo {
             self.catalog = Some(demo_catalog());
             return;
@@ -267,34 +425,81 @@ impl Dashboard {
         self.refresh_catalog(ctx);
     }
 
-    /// Free bytes where new versions are installed (measured at most every 10 s).
+    /// Free bytes where new versions are installed (measured on a worker, at most every
+    /// 10 s: it can take seconds on Windows with a sleeping drive).
     fn free_bytes(&mut self) -> Option<u64> {
         if self.demo {
             return Some(120_000_000_000);
         }
-        let lib = self.state.library.clone();
-        match &self.free_cache {
-            Some((l, b, at)) if *l == lib && at.elapsed().as_secs() < 10 => *b,
-            _ => {
-                let b = crate::core::platform::free_space(std::path::Path::new(&lib));
-                self.free_cache = Some((lib, b, std::time::Instant::now()));
-                b
-            }
-        }
+        self.free.get(self.state.library.clone()).flatten()
     }
 
-    /// Where Revive is installed, if it is.
-    fn revive_dir(&mut self) -> Option<String> {
+    /// Revive (for SteamVR) is known not to be installed.
+    fn revive_missing(&mut self) -> bool {
+        self.demo || self.revive.get(()).is_some_and(|dir| dir.is_none())
+    }
+
+    /// What "Delete cache" would free (`None`: not measured yet).
+    fn cache_bytes(&mut self) -> Option<u64> {
         if self.demo {
-            return None;
+            return Some(1_240_000_000);
         }
-        match &self.revive_cache {
-            Some((dir, at)) if at.elapsed().as_secs() < 5 => dir.clone(),
-            _ => {
-                let dir = crate::core::revive::find_revive_dir();
-                self.revive_cache = Some((dir.clone(), std::time::Instant::now()));
-                dir
-            }
+        self.cache.get(())
+    }
+
+    /// The version folders a cancelled install may have left its zip in.
+    fn cache_roots(&self) -> Vec<String> {
+        let lib = &self.state.library;
+        let mut roots: Vec<String> = self
+            .state
+            .versions
+            .iter()
+            .filter(|v| !v.external)
+            .map(|v| v.root.clone())
+            .collect();
+        if let Some(c) = &self.catalog {
+            roots.extend(
+                c.pc()
+                    .map(|e| crate::core::launcher::versions::root_for(lib, &e.id)),
+            );
+        }
+        roots
+    }
+
+    /// Looks for a newer launcher release in the background.
+    fn check_launcher_update(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            self.launcher_update = LauncherUpdate::Latest;
+            return;
+        }
+        self.launcher_update = LauncherUpdate::Checking;
+        self.worker.spawn(ctx, |tx| {
+            let r = update_check::newer().map_err(|e| format!("{e:#}"));
+            tx.send(Msg::LauncherUpdate(r));
+        });
+    }
+
+    /// Starts the measurements the pages asked for that are due.
+    fn probe(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        if let Some(lib) = self.free.due(std::time::Duration::from_secs(10)) {
+            self.worker.spawn(ctx, move |tx| {
+                let b = crate::core::platform::free_space(std::path::Path::new(&lib));
+                tx.send(Msg::FreeSpace(lib, b));
+            });
+        }
+        if self.cache.due(std::time::Duration::from_secs(30)).is_some() {
+            let roots = self.cache_roots();
+            self.worker.spawn(ctx, move |tx| {
+                tx.send(Msg::CacheSize(crate::core::cache::size(&roots)));
+            });
+        }
+        if self.revive.due(std::time::Duration::from_secs(5)).is_some() {
+            self.worker.spawn(ctx, |tx| {
+                tx.send(Msg::Revive(crate::core::revive::find_revive_dir()));
+            });
         }
     }
 
@@ -307,16 +512,18 @@ impl Dashboard {
     }
 
     /// Snapshot mode: puts the dashboard into `snap_variant`'s state.
-    fn apply_snap_variant(&mut self) {
+    fn apply_snap_variant(&mut self, ctx: &egui::Context) {
         if self.applied_variant == Some(self.snap_variant) {
             return;
         }
         self.applied_variant = Some(self.snap_variant);
         self.jobs.clear();
         self.overlay = None;
+        self.notice = None;
+        self.dialogs = DialogHost::default();
         self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
-        self.play_platform = Platform::Pc;
+        self.platform = Platform::Pc;
         // A connected headset with Echo VR on it, as in the design concept.
         self.quest_conn.status = Some(Status::Ready);
         self.quest_info = Some(QuestInfo {
@@ -328,29 +535,80 @@ impl Dashboard {
             }),
         });
         self.update_note.clear();
+        self.snap_game = None;
+        self.install_pick = None;
+        self.state.versions = demo_state().versions;
+        if matches!(
+            self.snap_variant,
+            Some(SnapVariant::Fresh | SnapVariant::Installing | SnapVariant::Extracting)
+        ) {
+            self.state.versions.clear();
+        }
         match self.snap_variant {
-            Some(SnapVariant::NotInstalled) => self.state.selected = Some("pc-34.4".into()),
-            Some(SnapVariant::Installing) => {
-                self.state.selected = Some("pc-34.4".into());
+            Some(SnapVariant::Fresh) => self.state.selected = None,
+            Some(v @ (SnapVariant::Installing | SnapVariant::Extracting)) => {
+                self.state.selected = None;
+                let (label, fraction) = if v == SnapVariant::Installing {
+                    ("Downloading... 42.0%", Some(0.42))
+                } else {
+                    ("Extracting...", None)
+                };
                 self.jobs.insert(
-                    "pc-34.4".into(),
+                    "pc-latest".into(),
                     Job {
-                        title: "Installing Echo VR 34.4 (PC)".into(),
-                        label: "Downloading... 42.0%".into(),
-                        fraction: Some(0.42),
+                        kind: JobKind::Install,
+                        title: "Installing Echo VR (PC, latest)".into(),
+                        label: label.into(),
+                        fraction,
                         cancel: Arc::new(AtomicBool::new(false)),
                     },
                 );
             }
+            Some(SnapVariant::Notice) => {
+                self.notify("Echo VR 34.4 (PC) is installed. Have fun!");
+            }
+            Some(SnapVariant::DialogError) => self.dialogs.error(
+                "Allow your PC on the Quest",
+                crate::core::error::QUEST_UNAUTHORIZED,
+                crate::core::error::HelpLink::UsbDebugging,
+            ),
+            Some(SnapVariant::DialogInstallError) => self.dialogs.error(
+                "Install Failed",
+                "Couldn't create the folder C:/EchoVR/versions/pc-34.4: Access is denied. (os error 5)\n\nPick another library in Settings, or check the folder's permissions.",
+                Default::default(),
+            ),
+            Some(SnapVariant::DialogConfirm) => self.dialogs.confirm_danger(
+                "snap",
+                "Remove",
+                "Delete Echo VR (PC, latest)?\n\nThis removes C:/EchoVR/versions/pc-latest from disk.",
+                "Delete",
+            ),
+            Some(SnapVariant::MenuOpen) => {
+                let id = crate::ui::widgets::menu_id("menu-pc-latest");
+                ctx.data_mut(|d| d.insert_temp(id, true));
+            }
+            Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
+            Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
             Some(SnapVariant::Setup) => {
                 self.state.owner = None;
-                self.overlay = Some(setup::Overlay::Setup { step: 0 });
+                self.overlay = Some(setup::welcome());
             }
-            Some(SnapVariant::SetupHeadset) => {
-                self.overlay = Some(setup::Overlay::Setup { step: 1 });
+            Some(SnapVariant::QuestSide) => self.platform = Platform::Quest,
+            Some(SnapVariant::Launching) => self.snap_game = Some(SnapGame::Launching),
+            Some(SnapVariant::Running) => self.snap_game = Some(SnapGame::Elsewhere),
+            Some(SnapVariant::RunningOurs) => self.snap_game = Some(SnapGame::Ours),
+            Some(SnapVariant::VersionMenu) => {
+                let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
+                ctx.data_mut(|d| d.insert_temp(id, true));
             }
-            Some(SnapVariant::NeedsPatch) => self.state.owner = Some(false),
-            Some(SnapVariant::QuestSide) => self.play_platform = Platform::Quest,
+            Some(SnapVariant::Placeholder) => self.install_pick = Some("soon-beta".into()),
+            Some(SnapVariant::QuestFresh) => {
+                self.platform = Platform::Quest;
+                if let Some(i) = &mut self.quest_info {
+                    i.installed = false;
+                    i.marker = None;
+                }
+            }
             // The concept's orange "!" on CHECK FOR UPDATES.
             None => {
                 self.update_note
@@ -420,7 +678,16 @@ impl Dashboard {
     }
 
     fn game(&self) -> GameState {
-        self.monitor.as_ref().map(Monitor::get).unwrap_or_default()
+        match self.snap_game {
+            Some(SnapGame::Ours | SnapGame::Elsewhere) => GameState::Running,
+            Some(SnapGame::Launching) => GameState::NotRunning,
+            None => self.monitor.as_ref().map(Monitor::get).unwrap_or_default(),
+        }
+    }
+
+    /// The launcher started the game that runs (or is starting).
+    fn ours(&self) -> bool {
+        self.child.is_some() || matches!(self.snap_game, Some(SnapGame::Launching | SnapGame::Ours))
     }
 
     fn check_quest(&mut self, ctx: &egui::Context, interactive: bool) {
@@ -454,14 +721,19 @@ impl Dashboard {
                             }
                             Step::Percent(p) => {
                                 j.fraction = Some(p as f32 / 100.0);
-                                j.label = format!("Downloading... {p:.1}%");
+                                let verb = match j.kind {
+                                    JobKind::Verify => "Verifying",
+                                    JobKind::Background => "Converting",
+                                    _ => "Downloading",
+                                };
+                                j.label = format!("{verb}... {p:.1}%");
                             }
                         }
                     }
                 }
                 Msg::JobDone(id, r) => {
-                    self.jobs.remove(&id);
-                    self.job_done(&id, r);
+                    let kind = self.jobs.remove(&id).map(|j| j.kind);
+                    self.job_done(&id, kind, r);
                 }
                 Msg::QuestInfo(r) => {
                     self.quest_busy = false;
@@ -490,14 +762,19 @@ impl Dashboard {
                 }
                 Msg::CacheDeleted(failed) => {
                     self.deleting_cache = false;
-                    let mut msg = String::from("The cached files have been deleted.");
-                    if !failed.is_empty() {
-                        msg.push_str("\n\nThese could not be deleted (in use or no permission):");
+                    self.cache = Probe::default();
+                    if failed.is_empty() {
+                        self.notify("The cached files are deleted");
+                    } else {
+                        let mut msg = String::from(
+                            "The other cached files are deleted. These could not be deleted (in use or no permission):\n",
+                        );
                         for f in failed.iter().take(6) {
                             msg.push_str(&format!("\n{}", f.display()));
                         }
+                        self.dialogs
+                            .error("Some files are still there", &msg, Default::default());
                     }
-                    self.dialogs.info("Deleting done", &msg);
                 }
                 Msg::FeedStatus(s) => {
                     self.feed.status_loading = false;
@@ -515,6 +792,19 @@ impl Dashboard {
                         self.feed.images_pending.clear();
                     }
                 }
+                Msg::FreeSpace(lib, b) => self.free.done(lib, b),
+                Msg::CacheSize(b) => self.cache.done((), b),
+                Msg::LauncherUpdate(r) => {
+                    self.launcher_update = match r {
+                        Ok(Some(release)) => LauncherUpdate::Available(release),
+                        Ok(None) => LauncherUpdate::Latest,
+                        Err(e) => {
+                            tracing::info!("launcher update check failed: {e}");
+                            LauncherUpdate::Failed
+                        }
+                    }
+                }
+                Msg::Revive(dir) => self.revive.done((), dir),
                 Msg::FeedImage(name, img) => {
                     if let Some(img) = img {
                         let size = [img.width() as usize, img.height() as usize];
@@ -567,7 +857,12 @@ impl Dashboard {
         }
     }
 
-    fn job_done(&mut self, id: &str, r: JobResult) {
+    /// Shows `text` in the status bar for a few seconds.
+    fn notify(&mut self, text: &str) {
+        self.notice = Some((text.to_string(), std::time::Instant::now()));
+    }
+
+    fn job_done(&mut self, id: &str, kind: Option<JobKind>, r: JobResult) {
         if id == setup::QUEST_JOB {
             // Read the headset again once the job is over.
             self.quest_info = None;
@@ -580,18 +875,16 @@ impl Dashboard {
                 }
                 self.state.upsert(v);
                 self.save();
-                self.dialogs.info(
-                    "Installed",
-                    &format!("{name} is installed and ready to play."),
-                );
+                self.notify(&format!("{name} is installed. Have fun!"));
             }
             JobResult::Updated => {
                 self.update_note.insert(id.to_string(), "Up to date".into());
+                self.notify("Echo VR is up to date");
             }
             JobResult::Verified(bad) if bad.is_empty() => {
                 self.update_note
                     .insert(id.to_string(), "All files intact".into());
-                self.dialogs.info("Verify", "All game files are intact.");
+                self.notify("All game files are intact");
             }
             JobResult::Verified(bad) => {
                 let mut msg = format!("{} file(s) are missing or modified:\n", bad.len());
@@ -609,10 +902,7 @@ impl Dashboard {
                     v.patched = true;
                 }
                 self.save();
-                self.dialogs.info(
-                    "Licence patch applied",
-                    "Your personal licence patch is in place. Have fun!",
-                );
+                self.notify("Your licence patch is in place. Have fun!");
             }
             JobResult::OAuthFailed(e) => {
                 use crate::core::oauth::OAuthError;
@@ -628,20 +918,18 @@ impl Dashboard {
                     (_, None) => {}
                 }
             }
-            JobResult::ReviveReady => {
-                self.revive_cache = None;
-                self.dialogs.info(
-                    "SteamVR is ready",
-                    "Revive is installed. PLAY now starts Echo VR through SteamVR.",
-                );
+            JobResult::BackgroundSet => {
+                self.load_custom_background();
+                self.notify("Your background is set");
             }
-            JobResult::QuestInstalled => self.dialogs.info(
-                "Installed",
-                "Echo VR is installed on your Quest and up to date.",
-            ),
-            JobResult::QuestUpdated => self
-                .dialogs
-                .info("Up to date", "Your Quest has the latest update."),
+            JobResult::ReviveReady => {
+                self.revive = Probe::default();
+                self.notify("SteamVR is ready: PLAY starts Echo VR through it");
+            }
+            JobResult::QuestInstalled => {
+                self.notify("Echo VR is installed on your Quest and up to date")
+            }
+            JobResult::QuestUpdated => self.notify("Your Quest has the latest update"),
             JobResult::QuestNeedsReinstall(detail) => self.dialogs.options(
                 setup::QUEST_REINSTALL_KEY,
                 "Echo VR version mismatch",
@@ -651,16 +939,20 @@ impl Dashboard {
             ),
             JobResult::Failed(None) => {}
             JobResult::Failed(Some(e)) => {
-                self.update_note
-                    .insert(id.to_string(), "Last update failed".into());
+                if kind == Some(JobKind::Update) {
+                    self.update_note
+                        .insert(id.to_string(), "Last update failed".into());
+                }
                 self.dialogs.error_ui(&e);
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_job(
         &mut self,
         ctx: &egui::Context,
+        kind: JobKind,
         id: &str,
         title: &str,
         label: &str,
@@ -670,6 +962,7 @@ impl Dashboard {
         self.jobs.insert(
             id.to_string(),
             Job {
+                kind,
                 title: title.to_string(),
                 label: label.to_string(),
                 fraction: None,
@@ -697,13 +990,17 @@ impl Dashboard {
     /// Draws the launcher.
     pub fn show(&mut self, kit: &mut Kit) {
         let ctx = kit.ctx();
+        let page = self.page;
         if !self.started {
             self.start(&ctx);
+        }
+        if kit.assets.track_window(&ctx) {
+            self.warmed.clear();
         }
         self.poll(&ctx);
         self.poll_feed(&ctx);
         if self.demo {
-            self.apply_snap_variant();
+            self.apply_snap_variant(&ctx);
         }
         // Track how long the game has been running.
         match (self.game().is_running(), self.game_since) {
@@ -712,17 +1009,150 @@ impl Dashboard {
             _ => {}
         }
 
-        kit.image("main_background.jpg", 0.0, 0.0, W, H);
+        self.background(kit, &ctx);
 
         // The dashboard stays visible but inert under an overlay card.
         let blocked = kit.blocked;
         if self.overlay.is_some() {
             kit.blocked = true;
         }
-        match self.page {
-            Page::Play => play::show(self, kit, &ctx),
-            Page::Versions => versions::show(self, kit, &ctx),
-            Page::Settings => settings::show(self, kit, &ctx),
+        versions::handle_answers(self, &ctx);
+        self.page_body(kit, &ctx, self.page);
+        self.warmed.insert(self.page);
+
+        self.top_bar(kit, &ctx);
+        self.rail(kit);
+        kit.blocked = blocked;
+        setup::draw_overlay(self, kit, &ctx);
+        self.prewarm(kit, &ctx);
+        self.probe(&ctx);
+        if self.any_job() || self.quest_busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        // A click switched pages after the old one was drawn: draw the new one now, not
+        // on the next mouse move.
+        if self.page != page {
+            ctx.request_repaint();
+        }
+    }
+
+    /// The designer's video, or its first frame (animation off, snapshots), covering the
+    /// window. It holds while the window isn't focused and while Echo VR runs.
+    fn background(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+        let window = kit.window();
+        // A custom picture has no video.
+        let has_video = self.custom_bg.as_ref().is_none_or(|c| c.video.is_some());
+        if self.state.animated_background && !self.demo && has_video {
+            let focused = ctx.input(|i| i.viewport().focused) != Some(false);
+            let play = focused && !self.game().is_running();
+            let speed = self.state.background_speed as f32 / 100.0;
+            if let Some(tex) = self.video.frame(ctx, play, speed) {
+                kit.texture_cover(tex, window, 0.0);
+                return;
+            }
+        } else {
+            self.video.stop();
+        }
+        if let Some(custom) = &self.custom_bg {
+            if self.custom_still.is_none() {
+                self.custom_still = load_still(ctx, &custom.still);
+            }
+            if let Some(tex) = &self.custom_still {
+                kit.texture_cover(tex, window, 0.0);
+                return;
+            }
+        }
+        let s = (window.width() / W).max(window.height() / H);
+        let (w, h) = ((W * s).round() as u32, (H * s).round() as u32);
+        let tex = kit.assets.tex(ctx, "main_background.jpg", w, h);
+        kit.texture_cover(&tex, window, 0.0);
+    }
+
+    /// Picks up the custom background (Settings), or the built-in one without it.
+    fn load_custom_background(&mut self) {
+        self.custom_bg = if self.demo {
+            None
+        } else {
+            background::current()
+        };
+        self.custom_still = None;
+        let video = self
+            .custom_bg
+            .as_ref()
+            .and_then(|c| c.video.as_ref())
+            .and_then(|p| std::fs::read(p).ok())
+            .map(Arc::<[u8]>::from);
+        self.video.set_source(video);
+    }
+
+    /// Converts `input` into the background, as a job. A video needs ffmpeg: without one,
+    /// this asks before downloading it (`download`: the answer was yes) or says where to
+    /// get it.
+    fn set_background(&mut self, ctx: &egui::Context, input: PathBuf, download: bool) {
+        let picture = background::is_picture(&input);
+        let found = if picture { None } else { ffmpeg::find() };
+        if !picture && found.is_none() && !download {
+            if ffmpeg::can_download() {
+                self.background_pending = Some(input);
+                self.dialogs.confirm(
+                    settings::FFMPEG_KEY,
+                    "Download the video converter?",
+                    &format!(
+                        "Converting a video needs ffmpeg: {} MB, downloaded once from github.com/GyanD/codexffmpeg.\n\nPictures (PNG, JPEG) work without it.",
+                        ffmpeg::DOWNLOAD_MB
+                    ),
+                    crate::ui::dialogs::Icon::Question,
+                );
+            } else {
+                self.dialogs.error(
+                    "ffmpeg is needed",
+                    "Converting a video needs ffmpeg. Install it (for example with Homebrew: brew install ffmpeg) and try again.\n\nPictures (PNG, JPEG) work without it.",
+                    Default::default(),
+                );
+            }
+            return;
+        }
+        self.start_job(
+            ctx,
+            JobKind::Background,
+            settings::BACKGROUND_JOB,
+            "Setting the background",
+            "Starting...",
+            move |cancel, on| {
+                let ffmpeg = match found {
+                    Some(f) => Some(f),
+                    None if !picture => {
+                        let got = ffmpeg::download(cancel, &mut |p| {
+                            if let crate::core::download::Progress::Percent(v) = p {
+                                on(Step::Status(format!("Downloading ffmpeg... {v:.0}%")));
+                            }
+                        });
+                        match got {
+                            Ok(f) => Some(f),
+                            Err(e) => return versions::job_err(e, "Converter Download Failed"),
+                        }
+                    }
+                    None => None,
+                };
+                match background::convert(&input, ffmpeg.as_deref(), cancel, on) {
+                    Ok(()) => JobResult::BackgroundSet,
+                    Err(e) => versions::job_err(e, "Couldn't Set The Background"),
+                }
+            },
+        );
+    }
+
+    /// A page under the status bar.
+    fn page_body(&mut self, kit: &mut Kit, ctx: &egui::Context, page: Page) {
+        // Every page but Play and Install starts with its header strip.
+        if !matches!(page, Page::Play | Page::Install | Page::Settings) {
+            let h = HEADER.wider(kit.dx());
+            kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), page.title());
+        }
+        match page {
+            Page::Play => play::show(self, kit, ctx),
+            Page::Install => install::show(self, kit, ctx),
+            Page::Settings => settings::show(self, kit, ctx),
             Page::Mods => empty_state(
                 kit,
                 Icon::Mods,
@@ -742,27 +1172,40 @@ impl Dashboard {
                 &format!("The {} module is coming to the launcher soon.", p.title()),
             ),
         }
+    }
 
-        self.top_bar(kit, &ctx);
-        self.rail(kit);
-        kit.blocked = blocked;
-        setup::draw_overlay(self, kit, &ctx);
-        if self.any_job() || self.quest_busy {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    /// From the second frame on, draws one page that hasn't been shown yet per frame,
+    /// unseen and inert, so its images are scaled in the background before it is first
+    /// opened.
+    fn prewarm(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+        if kit.assets.sync.get() || ctx.cumulative_frame_nr() == 0 {
+            return;
         }
+        let Some(page) = Page::ALL.into_iter().find(|p| !self.warmed.contains(p)) else {
+            return;
+        };
+        self.warmed.insert(page);
+        let rect = kit.ui.max_rect();
+        let mut ui = kit
+            .ui
+            .new_child(egui::UiBuilder::new().max_rect(rect).invisible());
+        let mut ghost = Kit::new(&mut ui, kit.assets, true);
+        ghost.ghost = true;
+        kit.assets.ghost.set(true);
+        self.page_body(&mut ghost, ctx, page);
+        kit.assets.ghost.set(false);
+        ctx.request_repaint();
     }
 
     /// The design's rail: pages, a divider, the community modules, and Settings at the
     /// bottom. Positions are the icons' centres in design pixels.
     fn rail(&mut self, kit: &mut Kit) {
-        kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H);
+        kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H + kit.ey);
+        // Settings stays at the bottom.
+        let settings_y = 1035.0 + kit.dy();
         let items = [
             (Page::Play, RailIcon::Image("icon_play.png", 24.0), 232.5),
-            (
-                Page::Versions,
-                RailIcon::Vector(Icon::Download, 30.0),
-                335.0,
-            ),
+            (Page::Install, RailIcon::Vector(Icon::Download, 30.0), 335.0),
             (Page::Mods, RailIcon::Vector(Icon::Mods, 30.0), 437.0),
             (Page::Servers, RailIcon::Vector(Icon::Globe, 33.0), 538.0),
             (Page::Spark, RailIcon::Image("icon_spark.png", 29.0), 692.0),
@@ -776,7 +1219,11 @@ impl Dashboard {
                 RailIcon::Image("icon_community.png", 38.0),
                 814.0,
             ),
-            (Page::Settings, RailIcon::Vector(Icon::Gear, 34.0), 1035.0),
+            (
+                Page::Settings,
+                RailIcon::Vector(Icon::Gear, 34.0),
+                settings_y,
+            ),
         ];
         for (page, icon, cy) in items {
             if kit.rail_item(
@@ -794,27 +1241,67 @@ impl Dashboard {
             dz(1.5),
             egui::Color32::from_rgb(142, 144, 143),
         );
+        // A newer launcher is out: a dot on Settings.
+        if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
+            let c = kit.drect(Dr::new(63.0, settings_y - 21.0, 0.0, 0.0)).min;
+            kit.ui
+                .painter()
+                .circle_filled(c, dz(6.0), design::QUEST_WARN);
+        }
     }
 
-    /// The status bar: the Quest chip (click to check the connection) and what the game
-    /// or the running job is doing. On Play it spans the main column only.
-    fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
-        let bar = if self.page == Page::Play {
-            Dr::new(138.0, 15.0, 1144.0, 43.0)
-        } else {
-            Dr::new(138.0, 15.0, 1734.0, 43.0)
-        };
-        kit.ui
-            .painter()
-            .rect_filled(kit.drect(bar), dz(6.0), design::BAR);
-
-        let (qtext, qcolor) = match (self.quest_conn.checking, self.quest_conn.status) {
+    /// The Quest chip's text and colour.
+    fn quest_chip(&self) -> (&'static str, egui::Color32) {
+        match (self.quest_conn.checking, self.quest_conn.status) {
             (true, _) => ("Quest: checking...", design::QUEST_OFF),
             (_, Some(Status::Ready)) => ("Quest: connected", design::QUEST_ON),
             (_, Some(Status::Unauthorized)) => ("Quest: allow this PC", design::QUEST_WARN),
             (_, Some(Status::Ambiguous)) => ("Quest: pick a device", design::QUEST_WARN),
             (_, Some(Status::None)) => ("Quest: not connected", design::QUEST_OFF),
             (_, None) => ("Quest: not checked", design::QUEST_OFF),
+        }
+    }
+
+    /// The PCVR side's state, for the status bar's chip.
+    fn pc_chip(&mut self) -> (&'static str, egui::Color32) {
+        if self.jobs.values().any(|j| j.kind == JobKind::Install) {
+            return ("PCVR: installing", design::BLUE);
+        }
+        match self.target() {
+            Target::Installed(v) => {
+                let needs_revive = self.state.profile.runtime == Runtime::Revive
+                    && (cfg!(windows) || self.demo)
+                    && self.revive_missing();
+                if setup::needs_patch(self, &v) {
+                    ("PCVR: needs the patch", design::QUEST_WARN)
+                } else if needs_revive {
+                    ("PCVR: set up SteamVR", design::QUEST_WARN)
+                } else {
+                    ("PCVR: ready", design::QUEST_ON)
+                }
+            }
+            Target::Missing(_) => ("PCVR: files missing", design::RED),
+            Target::Available(_) | Target::None => ("PCVR: not installed", design::QUEST_OFF),
+        }
+    }
+
+    /// The status bar: a chip for the side in use (PCVR: the install, click to install;
+    /// Quest: the connection, click to check it) and what the game or the running job is
+    /// doing. On Play and Install it spans the main column only.
+    fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+        let bar = if matches!(self.page, Page::Play | Page::Install | Page::Settings) {
+            Dr::new(138.0, 15.0, 1144.0, 43.0)
+        } else {
+            Dr::new(138.0, 15.0, 1734.0, 43.0)
+        }
+        .wider(kit.dx());
+        kit.ui
+            .painter()
+            .rect_filled(kit.drect(bar), dz(6.0), design::BAR);
+
+        let (qtext, qcolor) = match self.platform {
+            Platform::Pc => self.pc_chip(),
+            Platform::Quest => self.quest_chip(),
         };
         let g = kit.spaced_galley(
             &qtext.to_uppercase(),
@@ -829,22 +1316,48 @@ impl Dashboard {
         kit.ui
             .painter()
             .galley(r.center() - g.size() / 2.0, g, design::TEXT);
-        if kit
-            .hot(
-                "quest-chip",
-                r,
-                !self.quest_conn.checking,
-                "Check the USB connection to your Quest",
-            )
-            .0
-            .clicked
-        {
-            self.check_quest(ctx, true);
+        match self.platform {
+            Platform::Pc => {
+                let to_install = !matches!(self.target(), Target::Installed(_));
+                let tip = if to_install {
+                    "Open the Install page"
+                } else {
+                    "Echo VR on this PC"
+                };
+                if kit.hot("pc-chip", r, to_install, tip).0.clicked {
+                    self.page = Page::Install;
+                }
+            }
+            Platform::Quest => {
+                if kit
+                    .hot(
+                        "quest-chip",
+                        r,
+                        !self.quest_conn.checking,
+                        "Check the USB connection to your Quest",
+                    )
+                    .0
+                    .clicked
+                {
+                    self.check_quest(ctx, true);
+                }
+            }
         }
 
         let game = self.game();
         let busy = self.any_job() || self.quest_busy || self.quest_conn.checking;
-        let status = if let Some(j) = self.jobs.values().next() {
+        const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(8);
+        let notice = self
+            .notice
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < NOTICE_FOR)
+            .map(|(text, at)| {
+                ctx.request_repaint_after(NOTICE_FOR.saturating_sub(at.elapsed()));
+                text.clone()
+            });
+        let status = if let Some(text) = &notice {
+            text.clone()
+        } else if let Some(j) = self.jobs.values().next() {
             match j.fraction {
                 Some(f) => format!("{}   ·   {:.0}%", j.title, f * 100.0),
                 None => format!("{}   ·   {}", j.title, j.label),
@@ -860,7 +1373,7 @@ impl Dashboard {
         } else {
             game.label()
         };
-        let color = if game.is_running() {
+        let color = if notice.is_some() || game.is_running() {
             design::QUEST_ON
         } else if busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -868,69 +1381,67 @@ impl Dashboard {
         } else {
             design::GREY
         };
-        let g = kit.spaced_galley(
+        let x = dz(chip.right() + 12.0);
+        let g = kit.spaced_fit(
             &status.to_uppercase(),
             design::din(13.8),
             color,
             dz(0.5),
             false,
+            dz(bar.right() - 12.0) - x,
         );
-        let x = dz(chip.right() + 12.0);
         let y = dz(bar.y + bar.h / 2.0) - g.size().y / 2.0;
         let max_w = dz(bar.right() - 12.0) - x;
         kit.clipped(x, 0.0, max_w, dz(bar.bottom()), |kit| {
             kit.put(x, y, g);
         });
-
-        if self.page != Page::Play {
-            kit.banner(X0, TITLE_Y, TITLE_W, 40.0, self.page.title(), 16.0);
-        }
     }
 }
 
-/// A centered card for pages that are not built yet.
+/// A centred card for pages that are not built yet.
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
-    let (w, h) = (520.0, 224.0);
-    let x = X0 + (CW - w) / 2.0;
-    let y = 200.0;
-    kit.image("card_bg.png", x, y, w, h);
-    kit.gradient_frame(
-        kit.rect(x, y, w, h),
-        dz(6.0),
-        dz(3.0),
-        design::RIM_TOP,
-        design::RIM_BOTTOM,
-    );
-    let top = kit.rect(x + w / 2.0 - 20.0, y + 32.0, 40.0, 40.0).min;
-    style::icon_at(kit.ui.painter(), icon, top, 40.0, style::ACCENT);
-    kit.text_center(
-        x,
-        y + 88.0,
-        w,
-        28.0,
-        title,
-        style::display(18.0),
-        style::TEXT,
-        None,
-    );
-    kit.text_center(
-        x + 40.0,
-        y + 122.0,
-        w - 80.0,
-        40.0,
-        text,
-        style::body(14.0),
-        style::TEXT_DIM,
-        Some(w - 80.0),
-    );
-    let pw = kit.pill_width("Coming soon", false);
-    kit.pill(
-        x + (w - pw) / 2.0,
-        y + 176.0,
-        "Coming soon",
-        style::ACCENT_2,
+    let (w, h) = (dz(780.0), dz(336.0));
+    let x = X0 + (CW + kit.ex - w) / 2.0;
+    let y = dz(300.0) + kit.ey / 2.0;
+    kit.panel(x, y, w, h);
+    let s = dz(60.0);
+    let top = kit.rect(x + (w - s) / 2.0, y + dz(40.0), s, s).min;
+    style::icon_at(kit.ui.painter(), icon, top, s, design::TEXT);
+    let g = kit.spaced_galley(
+        &title.to_uppercase(),
+        design::conthrax(27.0),
+        design::TEXT,
+        dz(4.0),
         false,
     );
+    let tx = x + (w - g.size().x) / 2.0;
+    kit.put(tx, y + dz(122.0), g);
+    let pad = dz(60.0);
+    let paras = kit.caps_block(text, 17.0, design::BODY, w - 2.0 * pad);
+    let mut ty = y + dz(180.0);
+    for g in paras {
+        let gx = x + (w - g.size().x) / 2.0;
+        ty += kit.put(gx, ty, g).height();
+    }
+    let cw = kit.chip_width("Coming soon");
+    kit.chip(
+        x + (w - cw) / 2.0,
+        y + h - dz(62.0),
+        "Coming soon",
+        design::BLUE,
+    );
+}
+
+/// A custom background's still, as a texture (`None` when it can't be read).
+fn load_still(ctx: &egui::Context, path: &std::path::Path) -> Option<egui::TextureHandle> {
+    let img = image::open(path)
+        .inspect_err(|e| tracing::warn!("custom background {}: {e}", path.display()))
+        .ok()?
+        .to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    Some(ctx.load_texture("custom-background", color, options))
 }
 
 /// Two made-up versions for UI snapshots.
@@ -969,6 +1480,7 @@ fn demo_catalog() -> Catalog {
         url: "ready-at-dawn-echo-arena.zip".into(),
         size: Some(4_270_000_000),
         notes: "The last official build.".into(),
+        summary: "The last official build".into(),
         ..Default::default()
     });
     c

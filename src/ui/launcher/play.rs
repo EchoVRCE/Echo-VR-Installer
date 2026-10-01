@@ -1,13 +1,14 @@
 //! Play page, as the design concept has it: the ECHO VR logo over an info line, PLAY,
 //! CHECK FOR UPDATES and the PCVR|QUEST switch, Community News (a banner and two cards)
-//! and SERVER INFO on the right. PLAY does what the selected version needs (install,
-//! patch, set up SteamVR, play, stop); on the Quest side it connects, installs or starts
-//! Echo VR on the headset.
+//! and SERVER INFO on the right. PLAY does what the selected version needs (patch, set up
+//! SteamVR, play, stop); on the Quest side it connects or starts Echo VR on the headset.
+//! With nothing installed it is grey and opens the Install page. While a job runs on the
+//! installed game, PLAY fills up with its progress and CHECK FOR UPDATES becomes CANCEL.
 
-use egui::text::{LayoutJob, TextFormat};
 use egui::Color32;
 
-use super::{server_info, setup, versions, Dashboard, Msg};
+use super::hero::{self, Face, InfoLine, JobView, PathClick, Row, Side};
+use super::{server_info, setup, versions, Dashboard, Msg, Page};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
@@ -19,87 +20,90 @@ use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::markdown::{self, Look};
-use crate::ui::style::{self, Variant};
+use crate::ui::style::{self, Icon};
+use crate::ui::widgets::MenuItem;
+use egui::pos2;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
 
-// Geometry in design pixels. The image rects put each button's shape where the concept
-// has it: play_button.png's shape sits at (61, 61) in its 821×380 glow, update_button.png
-// is just its shape, and the hardware switch's body starts 74 px under its labels.
-const LOGO: Dr = Dr::new(119.9, 74.4, 747.7, 126.5);
-/// Vertical centre of the info line, and the size of paths on it (Myriad).
-const INFO_Y: f32 = 217.0;
-const PATH_SIZE: f32 = 16.6;
-const PLAY_S: f32 = 0.2597;
-const PLAY_IMG: Dr = Dr::new(123.2, 227.2, 821.0 * PLAY_S, 380.0 * PLAY_S);
-const PLAY_SHAPE: [(f32, f32); 4] = [
-    (139.0, 243.0),
-    (269.4, 243.0),
-    (332.0, 309.8),
-    (139.0, 309.8),
-];
-/// Where PLAY reacts: its box, cut where CHECK FOR UPDATES' slant begins.
-const PLAY_AREA: Dr = Dr::new(139.0, 243.0, 186.0, 67.0);
-/// The flat part of PLAY a label has to fit in, and the width of the image's "PLAY".
-const PLAY_LABEL: Dr = Dr::new(149.0, 243.0, 150.0, 67.0);
-const PLAY_WORD_W: f32 = 102.0;
-const UPDATE_IMG: Dr = Dr::new(320.1, 243.0, 342.9, 66.0);
-const UPDATE_SHAPE: [(f32, f32); 4] = [
-    (320.1, 243.0),
-    (663.0, 243.0),
-    (663.0, 309.0),
-    (383.2, 309.0),
-];
-const UPDATE_AREA: Dr = Dr::new(325.0, 243.0, 338.0, 66.0);
-const SWITCH_IMG: Dr = Dr::new(697.0, 248.4, 147.0, 60.1);
-const SWITCH_PC: Dr = Dr::new(697.0, 265.0, 73.5, 43.0);
-const SWITCH_QUEST: Dr = Dr::new(770.5, 265.0, 73.5, 43.0);
-/// A running job's progress, in place of PLAY and CHECK FOR UPDATES.
-const JOB_ROW: Dr = Dr::new(139.0, 243.0, 524.0, 67.0);
+/// The info line's right limit (design pixels).
+const INFO_RIGHT: f32 = 1282.0;
 const NEWS: Dr = Dr::new(138.0, 350.0, 1144.0, 421.0);
 /// news_header.png is the top 75 of CommunityNewsTab's 697 px.
 const NEWS_HEADER_H: f32 = 421.0 * 75.0 / 697.0;
 /// The news link's right end and baseline, at the banner's bottom right.
 const NEWS_LINK: (f32, f32) = (1226.0, 727.0);
+/// The design banner's lettering (news_fallback_text.png): its left edge, width and
+/// height, at the scale of its background in a 1280×720 window.
+const NEWS_LETTERING: (f32, f32, f32) = (NEWS.x + 48.0, 439.0, 275.0);
 const CARDS: [Dr; 2] = [
     Dr::new(137.0, 800.0, 555.0, 248.0),
     Dr::new(728.0, 800.0, 555.0, 248.0),
 ];
+/// The version picker right of the PCVR|QUEST switch: its body (as tall as the switch's)
+/// and its caption, level with the switch's.
+const PICKER: Dr = Dr::new(878.0, 265.0, 260.0, 43.0);
+const PICKER_CAPTION_Y: f32 = 248.4;
+pub(super) const VERSION_MENU: &str = "version-picker";
+const PICKER_RADIUS: f32 = 8.0;
+/// The menu reaches from the picker to the column's right edge.
+const PICKER_MENU_W: f32 = INFO_RIGHT - PICKER.x;
+/// The switch's PCVR / QUEST captions: grey DMCAPS, 8 px tall capitals.
+const PICKER_CAPTION_SIZE: f32 = 11.5;
+const CAPTION: Color32 = Color32::from_gray(118);
+const CAPTION_ASCENT: f32 = 0.2;
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // Look for a headset quietly once, so the Quest chip has something to say.
-    if !d.quest_auto_checked && !d.demo {
+    if !d.quest_auto_checked && !d.demo && !kit.ghost {
         d.quest_auto_checked = true;
         if d.quest_conn.status.is_none() && !d.quest_conn.checking {
             d.check_quest(ctx, false);
         }
     }
-    if d.dialogs.take(LAUNCH_ANYWAY).is_some_and(|a| a.is_yes()) {
+    if !kit.ghost && d.dialogs.take(LAUNCH_ANYWAY).is_some_and(|a| a.is_yes()) {
         start(d, ctx);
     }
-    kit.image_d("logo_echovr.png", LOGO);
-    let a = match d.play_platform {
+    kit.image_d("logo_echovr.png", hero::LOGO);
+    let mut a = match d.platform {
         Platform::Pc => pc_action(d),
         Platform::Quest => quest_action(d),
     };
-    info_line(kit, &a);
-    buttons(d, kit, ctx, a);
-    switch(d, kit);
+    if a.job.is_none() {
+        explain_disabled(d, &mut a);
+    }
+    // Starting: look again soon in case the game's process ends before it shows up.
+    if d.ours() && !d.game().is_running() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    hero::info_line(d, kit, "info-path", &a.line);
+    // PLAY keeps the concept's size; longer labels are set smaller.
+    match a.job.take() {
+        Some(job) => {
+            if hero::job_row(kit, "play", 0.0, &job) {
+                d.cancel_job(&job.id);
+            }
+        }
+        None => buttons(d, kit, ctx, a),
+    }
+    hero::switch(kit, "side", 0.0, &mut d.platform);
+    if d.platform == Platform::Pc {
+        version_picker(d, kit);
+    }
     news(d, kit);
-    server_info::show(d, kit);
+    server_info::at_right(kit, |k| server_info::show(d, k));
 }
 
 /// What PLAY does.
 enum Main {
     Play,
     Stop,
-    Install(VersionEntry),
-    Reinstall(VersionEntry),
     Patch(String),
     SetUpRevive,
     QuestConnect,
-    QuestInstall,
     QuestPlay,
+    /// Nothing to play yet: open the Install page.
+    ToInstall,
     Nothing,
 }
 
@@ -112,17 +116,19 @@ enum Update {
 
 /// Everything the top of the page shows for the current side.
 struct Action {
-    /// The info line: the state first, then details.
-    info: Vec<String>,
-    info_color: Color32,
+    line: InfoLine,
+    /// PLAY's label; "PLAY" is the image's own lettering.
     label: &'static str,
+    /// Nothing installed: PLAY in greys.
+    grey: bool,
     main: Main,
     enabled: bool,
     tip: String,
-    /// A job running for this target: its id, progress label and fraction.
-    job: Option<(String, String, Option<f32>)>,
+    /// A job on what PLAY would start: shown in the buttons.
+    job: Option<JobView>,
     update: Update,
     update_enabled: bool,
+    update_tip: String,
     /// The last update failed: the button shows its orange "!".
     update_alert: bool,
 }
@@ -130,27 +136,39 @@ struct Action {
 impl Action {
     fn new() -> Action {
         Action {
-            info: Vec::new(),
-            info_color: design::GREY,
+            line: InfoLine::new(INFO_RIGHT),
             label: "PLAY",
+            grey: false,
             main: Main::Nothing,
             enabled: false,
             tip: String::new(),
             job: None,
             update: Update::Nothing,
             update_enabled: false,
+            update_tip: "Download any changed game files".into(),
             update_alert: false,
         }
     }
 
-    /// A problem the player has to fix, in red at the end of the info line.
-    fn problem(&mut self, text: impl Into<String>) {
-        self.info.push(text.into());
-        self.info_color = design::DANGER;
+    /// Nothing to play: a grey PLAY that opens the Install page, and one word on the info
+    /// line (`state`, or the install's progress while one runs).
+    fn not_installed(&mut self, state: &str, job: Option<&JobView>) {
+        self.grey = true;
+        (self.main, self.enabled) = (Main::ToInstall, true);
+        self.tip = "Echo VR isn't installed yet. Click to install it".into();
+        self.update_tip = "Install Echo VR first".into();
+        self.line.parts = match job.filter(|j| j.installs()) {
+            Some(j) => vec![
+                "Installing".into(),
+                j.fraction
+                    .map_or_else(|| j.step(), |f| format!("{:.0}%", f * 100.0)),
+            ],
+            None => vec![state.into()],
+        };
     }
 }
 
-fn gb(bytes: u64) -> String {
+pub(super) fn gb(bytes: u64) -> String {
     let g = bytes as f64 / 1e9;
     if g >= 10.0 || (g - g.round()).abs() < 0.05 {
         format!("{g:.0}GB")
@@ -159,8 +177,30 @@ fn gb(bytes: u64) -> String {
     }
 }
 
-fn versions_root(d: &Dashboard, id: &str) -> String {
-    crate::core::launcher::versions::root_for(&d.state.library, id)
+/// Why PLAY and CHECK FOR UPDATES can't be used right now, in their tooltips.
+fn explain_disabled(d: &Dashboard, a: &mut Action) {
+    let busy = d
+        .jobs
+        .values()
+        .next()
+        .map(|j| format!("Busy: {}. Wait until it's done.", j.title));
+    if !a.enabled && !matches!(a.main, Main::Nothing) {
+        if let Some(b) = &busy {
+            a.tip = b.clone();
+        }
+    }
+    if !a.update_enabled {
+        a.update_tip = match (&busy, &a.update) {
+            (Some(b), _) => b.clone(),
+            (None, Update::Nothing) if d.platform == Platform::Pc => "Install Echo VR first".into(),
+            (None, Update::Quest) if d.quest_conn.status != Some(Status::Ready) => {
+                "Connect your Quest first".into()
+            }
+            (None, Update::Quest) => "Install Echo VR on your Quest first".into(),
+            (None, _) if d.game().is_running() => "Close Echo VR first".into(),
+            (None, _) => a.update_tip.clone(),
+        };
+    }
 }
 
 // ---- PC ----
@@ -172,121 +212,83 @@ fn pc_action(d: &mut Dashboard) -> Action {
         Target::Available(e) => Some(e.id.clone()),
         Target::None => None,
     };
-    let job_id = id.filter(|id| d.jobs.contains_key(id)).or_else(|| {
-        d.jobs
-            .contains_key(setup::REVIVE_JOB)
-            .then(|| setup::REVIVE_JOB.into())
-    });
+    let job = id
+        .and_then(|id| hero::job_view(d, &id))
+        .or_else(|| hero::job_view(d, setup::REVIVE_JOB));
     let mut a = Action::new();
-    a.job = job_id.and_then(|id| {
-        let j = d.jobs.get(&id)?;
-        Some((id, j.label.clone(), j.fraction))
-    });
     let needs_revive = d.state.profile.runtime == Runtime::Revive
         && (cfg!(windows) || d.demo)
-        && d.revive_dir().is_none();
+        && d.revive_missing();
     let running = d.game().is_running();
-    let ours = d.child.is_some();
-    let size_of = |d: &Dashboard, cid: Option<&String>| {
-        let c = d.catalog.as_ref()?;
-        c.pc().find(|e| Some(&e.id) == cid)?.size.map(gb)
-    };
+    let ours = d.ours();
     match target {
         Target::Installed(v) => {
-            let size = size_of(d, v.catalog_id.as_ref());
+            a.job = job;
+            let size = v.catalog_id.as_ref().and_then(|cid| {
+                let c = d.catalog.as_ref()?;
+                c.pc().find(|e| &e.id == cid)?.size.map(gb)
+            });
             let state = if running {
                 "Running"
-            } else if d.state.owner == Some(false) && !v.patched {
+            } else if ours {
+                "Starting"
+            } else if setup::needs_patch(d, &v) {
                 "Needs the licence patch"
             } else if needs_revive {
                 "SteamVR is not set up"
             } else {
                 "Installed"
             };
-            a.info.push(state.into());
-            a.info.push(v.name.clone());
-            a.info.extend(size);
-            a.info.push(v.root.clone());
+            a.line.parts.push(state.into());
+            a.line.parts.push(v.name.clone());
+            a.line.parts.extend(size);
+            a.line.path = Some(v.root.clone());
+            a.line.path_click = PathClick::Open;
+            if let Some(job) = &a.job {
+                a.line.parts[0] = job_state(job);
+                a.line.parts.push(job.step());
+            }
             if running && ours {
-                (a.label, a.main, a.enabled) = ("STOP", Main::Stop, true);
+                (a.label, a.main, a.enabled, a.grey) = ("STOP", Main::Stop, true, true);
                 a.tip = "Close Echo VR".into();
             } else if running {
                 a.label = "RUNNING";
                 a.tip = "Echo VR was started outside the launcher.".into();
-            } else if d.state.owner == Some(false) && !v.patched {
+            } else if ours {
+                // Clicked: the grey PLAY until the game shows up (or its process ends).
+                a.tip = "Starting Echo VR…".into();
+            } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
                 a.enabled = !d.any_job();
                 a.tip = "New players need a personal licence patch: authorize with Discord to get yours.".into();
             } else if needs_revive {
-                (a.label, a.main) = ("SET UP STEAMVR", Main::SetUpRevive);
+                (a.label, a.main) = ("SET UP", Main::SetUpRevive);
                 a.enabled = !d.any_job();
-                a.tip = "Installs Revive, which runs Echo VR on SteamVR (asks for administrator rights)".into();
+                a.tip = "Set up SteamVR: installs Revive, which runs Echo VR on SteamVR (asks for administrator rights)".into();
             } else {
                 (a.main, a.enabled) = (Main::Play, true);
                 a.tip = "Start Echo VR".into();
             }
-            a.update_enabled = !running && !d.any_job();
+            a.update_enabled = !running && !ours && !d.any_job();
+            if ours && !running {
+                a.update_tip = "Echo VR is starting".into();
+            }
             a.update_alert = d
                 .update_note
                 .get(&v.id)
                 .is_some_and(|n| n.contains("failed"));
             a.update = Update::Pc(v);
         }
-        Target::Missing(v) => {
-            a.info.push("Game files missing".into());
-            a.info.push(v.name.clone());
-            a.info_color = design::DANGER;
-            let entry = v.catalog_id.as_ref().and_then(|cid| {
-                d.catalog
-                    .as_ref()
-                    .and_then(|c| c.pc().find(|e| &e.id == cid).cloned())
-            });
-            match entry {
-                Some(e) if !v.external => {
-                    a.info.push(v.root.clone());
-                    a.label = "REINSTALL";
-                    a.tip = format!(
-                        "Download this version again into its folder ({})",
-                        e.size.map(gb).unwrap_or_default()
-                    );
-                    a.main = Main::Reinstall(e);
-                    a.enabled = !d.any_job();
-                }
-                _ => a.problem(format!(
-                    "{} is gone: add its new location on the Versions page",
-                    v.root
-                )),
+        Target::Missing(_) => {
+            a.not_installed("Game files missing", job.as_ref());
+            if !job.as_ref().is_some_and(JobView::installs) {
+                a.line.color = design::DANGER;
+                a.tip =
+                    "The game files are gone. Click to install Echo VR again or add its new folder"
+                        .into();
             }
         }
-        Target::Available(e) => {
-            let installing = a.job.is_some();
-            a.info.push(
-                if installing {
-                    "Installing"
-                } else {
-                    "Not installed"
-                }
-                .into(),
-            );
-            a.info.push(e.name.clone());
-            a.info.extend(e.size.map(gb));
-            a.info.push(versions_root(d, &e.id));
-            let free = d.free_bytes();
-            let short = matches!((e.size, free), (Some(need), Some(free)) if need > free);
-            if let (true, Some(free)) = (short, free) {
-                a.problem(format!(
-                    "Not enough space: {} free. Pick another library in Settings",
-                    gb(free)
-                ));
-            }
-            a.label = "INSTALL";
-            a.tip = "Download and install this version into your library".into();
-            a.enabled = !short && !d.any_job();
-            a.main = Main::Install(e);
-        }
-        Target::None => {
-            a.info.push("Loading the version list".into());
-        }
+        Target::Available(_) | Target::None => a.not_installed("Not installed", job.as_ref()),
     }
     a
 }
@@ -298,13 +300,39 @@ fn quest_action(d: &mut Dashboard) -> Action {
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
     let known = ready && d.quest_info.is_some();
     let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
+    let job = hero::job_view(d, setup::QUEST_JOB);
     let mut a = Action::new();
-    a.job = d
-        .jobs
-        .get(setup::QUEST_JOB)
-        .map(|j| (setup::QUEST_JOB.to_string(), j.label.clone(), j.fraction));
+    a.line.parts = quest_info(d);
+    if job.as_ref().is_some_and(JobView::installs) || (known && !installed) {
+        a.not_installed("Not installed on this Quest", job.as_ref());
+        a.tip = "Echo VR isn't on your Quest yet. Click to install it".into();
+        a.line
+            .parts
+            .extend(d.quest_info.as_ref().and_then(|i| i.device.clone()));
+    } else if installed {
+        a.job = job;
+        if let Some(job) = &a.job {
+            a.line.parts[0] = job_state(job);
+            a.line.parts.push(job.step());
+        }
+        (a.main, a.enabled) = (Main::QuestPlay, !d.quest_busy);
+        a.tip = "Start Echo VR on the headset".into();
+    } else {
+        a.label = "CONNECT";
+        a.main = Main::QuestConnect;
+        a.enabled = !d.quest_conn.checking && !d.quest_busy;
+        a.tip = "Look for your Quest over USB".into();
+    }
+    a.update = Update::Quest;
+    a.update_enabled = installed && !busy;
+    a.update_tip = "Copy the latest game files to your Quest".into();
+    a
+}
+
+/// What the headset's connection and install are, for an info line.
+pub(super) fn quest_info(d: &Dashboard) -> Vec<String> {
     let device = d.quest_info.as_ref().and_then(|i| i.device.clone());
-    a.info = match (d.quest_conn.checking, d.quest_conn.status) {
+    match (d.quest_conn.checking, d.quest_conn.status) {
         (true, _) => vec!["Looking for your headset over USB".into()],
         (_, Some(Status::Ready)) => {
             let mut parts = match &d.quest_info {
@@ -328,96 +356,43 @@ fn quest_action(d: &mut Dashboard) -> Action {
             "Plug it in by USB with developer mode on".into(),
         ],
         (_, None) => vec!["Plug in your Quest by USB".into()],
-    };
-    if installed {
-        (a.main, a.enabled) = (Main::QuestPlay, !d.quest_busy);
-        a.tip = "Start Echo VR on the headset".into();
-    } else if known {
-        (a.label, a.main, a.enabled) = ("INSTALL", Main::QuestInstall, !busy);
-        a.tip = "Download Echo VR and install it on your Quest".into();
-    } else {
-        a.label = "CONNECT";
-        a.main = Main::QuestConnect;
-        a.enabled = !d.quest_conn.checking && !d.quest_busy;
-        a.tip = "Look for your Quest over USB".into();
-    }
-    a.update = Update::Quest;
-    a.update_enabled = installed && !busy;
-    a
-}
-
-// ---- drawing ----
-
-/// Part of the info line in DMCAPS, or in Myriad for folder paths: DMCAPS has no
-/// lowercase, and the design sets paths as they are. Myriad's "-" and "_" vanish at small
-/// sizes (around 11 px), so those two come from Liberation Sans.
-fn info_part(job: &mut LayoutJob, text: &str, color: Color32) {
-    let format = |font| TextFormat {
-        font_id: font,
-        color,
-        extra_letter_spacing: dz(0.5),
-        valign: egui::Align::Center,
-        ..Default::default()
-    };
-    if !(text.contains('/') || text.contains('\\')) {
-        job.append(&text.to_uppercase(), 0.0, format(design::din(15.2)));
-        return;
-    }
-    let thin = |c: char| c == '-' || c == '_';
-    let mut rest = text;
-    while !rest.is_empty() {
-        let is_thin = rest.starts_with(thin);
-        let end = rest
-            .find(|c: char| thin(c) != is_thin)
-            .unwrap_or(rest.len());
-        let font = if is_thin {
-            crate::ui::theme::arial(dz(PATH_SIZE))
-        } else {
-            design::myriad(PATH_SIZE)
-        };
-        job.append(&rest[..end], 0.0, format(font));
-        rest = &rest[end..];
     }
 }
 
-fn info_line(kit: &mut Kit, a: &Action) {
-    let mut job = LayoutJob::default();
-    for (i, part) in a.info.iter().enumerate() {
-        if i > 0 {
-            info_part(&mut job, "  ·  ", a.info_color);
-        }
-        info_part(&mut job, part, a.info_color);
+/// What a running job is doing, as the info line's first word.
+pub(super) fn job_state(job: &JobView) -> String {
+    use super::JobKind;
+    match job.kind {
+        JobKind::Install | JobKind::QuestInstall => "Installing".into(),
+        JobKind::Update => "Updating".into(),
+        JobKind::Verify => "Verifying".into(),
+        JobKind::Patch => "Patching".into(),
+        JobKind::Background => "Converting".into(),
+        JobKind::Revive | JobKind::QuestUpdate => job.title.clone(),
     }
-    let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
-    let (x, y) = (dz(144.0), dz(INFO_Y) - g.size().y / 2.0);
-    kit.clipped(x, y - 2.0, dz(1282.0) - x, g.size().y + 4.0, |kit| {
-        kit.put(x, y, g);
-    });
 }
 
-/// PLAY and CHECK FOR UPDATES, or a running job's progress in their place.
+// ---- the buttons ----
+
+/// PLAY and CHECK FOR UPDATES.
 fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
-    if let Some((id, label, fraction)) = &a.job {
-        job_row(d, kit, id, label, *fraction);
-        return;
-    }
-    let dim = |on: bool| {
-        if on {
-            Color32::WHITE
-        } else {
-            Color32::from_gray(140)
-        }
+    let face = match a.label {
+        "RUNNING" => Face::Running,
+        label => Face::Label(label),
     };
-
-    let (resp, t, pressed) = kit.hot_shape("play-main", PLAY_AREA, &PLAY_SHAPE, a.enabled, &a.tip);
-    if a.label == "PLAY" {
-        kit.image_tinted("play_button.png", PLAY_IMG, dim(a.enabled));
-    } else {
-        kit.image_tinted("play_button_blank.png", PLAY_IMG, dim(a.enabled));
-        play_label(kit, a.label, a.enabled);
-    }
-    kit.shape_veil(&PLAY_SHAPE, t, pressed);
-    if resp.clicked {
+    let row = Row {
+        face,
+        grey: a.grey,
+        enabled: a.enabled,
+        tip: &a.tip,
+        side: Side::Updates {
+            alert: a.update_alert,
+        },
+        side_enabled: a.update_enabled,
+        side_tip: &a.update_tip,
+    };
+    let (main, update) = hero::row(kit, "play", 0.0, &row);
+    if main {
         match a.main {
             Main::Play => try_start(d, ctx),
             Main::Stop => {
@@ -425,32 +400,25 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
                     let _ = c.kill();
                 }
             }
-            Main::Install(e) | Main::Reinstall(e) => versions::install(d, ctx, e),
             Main::Patch(id) => {
                 setup::patch(d, ctx, &id, crate::core::launcher::patch::Source::Discord)
             }
             Main::SetUpRevive => setup::revive(d, ctx),
             Main::QuestConnect => d.check_quest(ctx, true),
-            Main::QuestInstall => setup::ask_quest_install(d),
             Main::QuestPlay => quest_launch(d, ctx),
+            Main::ToInstall => {
+                // The Install page opens on the version picked here.
+                d.install_pick = match d.target() {
+                    Target::Available(e) => Some(e.id),
+                    Target::Missing(v) => v.catalog_id,
+                    _ => None,
+                };
+                d.page = Page::Install;
+            }
             Main::Nothing => {}
         }
     }
-
-    let tip = match a.update {
-        Update::Quest => "Copy the latest game files to your Quest",
-        _ => "Download any changed game files",
-    };
-    let (resp, t, pressed) =
-        kit.hot_shape("update", UPDATE_AREA, &UPDATE_SHAPE, a.update_enabled, tip);
-    let img = if a.update_alert {
-        "update_button_alert.png"
-    } else {
-        "update_button.png"
-    };
-    kit.image_tinted(img, UPDATE_IMG, dim(a.update_enabled));
-    kit.shape_veil(&UPDATE_SHAPE, t, pressed);
-    if resp.clicked {
+    if update {
         match a.update {
             Update::Pc(v) => versions::update(d, ctx, v),
             Update::Quest => setup::quest_update(d, ctx),
@@ -459,125 +427,214 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
     }
 }
 
-/// A label on the blank PLAY button, as big as the image's own "PLAY" where it fits.
-fn play_label(kit: &Kit, label: &str, enabled: bool) {
-    let probe = design::conthrax(40.0);
-    let size = 40.0 * dz(PLAY_WORD_W) / kit.text_width("PLAY", probe.clone());
-    let fit = dz(PLAY_LABEL.w) / kit.text_width(label, probe);
-    let font = design::conthrax(size.min(40.0 * fit));
-    let r = kit.drect(PLAY_LABEL);
-    let (fg, shadow) = if enabled {
-        (
-            Color32::from_rgb(214, 250, 206),
-            Color32::from_rgb(12, 120, 12),
-        )
-    } else {
-        (Color32::from_gray(200), Color32::from_gray(90))
+// ---- the version picker ----
+
+/// VERSION, right of the switch: the version PLAY starts, and a menu to switch to
+/// another. Installed versions come first, then the catalogue's others: picking one of
+/// those greys PLAY, which then opens the Install page on it.
+fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
+    let installed = d.state.versions.clone();
+    let available: Vec<VersionEntry> = d
+        .catalog
+        .as_ref()
+        .map(|c| {
+            c.pc()
+                .filter(|e| d.state.installed_from(&e.id).is_none())
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if installed.is_empty() && available.is_empty() {
+        return;
+    }
+    let (current_id, current_name) = match d.target() {
+        Target::Installed(v) | Target::Missing(v) => (Some(v.id), v.name),
+        Target::Available(e) => (Some(e.id), e.name),
+        Target::None => (None, "Choose a version".to_string()),
     };
-    let p = kit.ui.painter();
-    p.text(
-        r.center() + egui::vec2(0.0, 1.0),
-        egui::Align2::CENTER_CENTER,
-        label,
-        font.clone(),
-        shadow,
+    let running = d.game().is_running() || d.ours();
+    let busy = d
+        .jobs
+        .values()
+        .next()
+        .map(|j| format!("Busy: {}. Wait until it's done.", j.title));
+    let (enabled, tip) = match (running, busy) {
+        (true, _) => (false, "Close Echo VR to switch versions".to_string()),
+        (false, Some(b)) => (false, b),
+        (false, None) => (true, "The version PLAY starts: click to switch".to_string()),
+    };
+
+    let caption = kit.spaced_galley(
+        "VERSION",
+        design::din(PICKER_CAPTION_SIZE),
+        CAPTION,
+        dz(0.9),
+        false,
     );
-    p.text(r.center(), egui::Align2::CENTER_CENTER, label, font, fg);
-}
+    let (cx, cy) = (dz(PICKER.x), dz(PICKER_CAPTION_Y) - caption_top(kit));
+    kit.put(cx, cy, caption);
 
-/// A running job in place of the buttons: its progress and a small Cancel.
-fn job_row(d: &mut Dashboard, kit: &mut Kit, id: &str, label: &str, f: Option<f32>) {
-    let r = kit.drect(JOB_ROW);
-    let (x, y, w) = (dz(JOB_ROW.x), dz(JOB_ROW.y), dz(JOB_ROW.w));
-    let mid = y + r.height() / 2.0;
-    kit.progress(x, mid - 17.0, w - 132.0, f, label);
-    if kit
-        .flat_button(
-            "job-cancel",
-            Variant::Ghost,
-            None,
-            "Cancel",
-            x + w - 120.0,
-            mid - style::SMALL / 2.0,
-            120.0,
-            style::SMALL,
-            true,
-            "Stop this job",
-        )
-        .clicked
-    {
-        d.cancel_job(id);
-    }
-}
-
-/// The PCVR | QUEST switch: the image shows the side in use, each half picks its side.
-fn switch(d: &mut Dashboard, kit: &mut Kit) {
-    let img = match d.play_platform {
-        Platform::Pc => "hardware_pc.png",
-        Platform::Quest => "hardware_quest.png",
+    let r = kit.drect(PICKER);
+    let (resp, t, pressed) = kit.hot(VERSION_MENU, r, enabled, &tip);
+    let open = enabled && kit.menu_open(VERSION_MENU);
+    let fill = if pressed {
+        Color32::from_gray(12)
+    } else {
+        style::mix(design::DARK, Color32::from_gray(40), t)
     };
-    kit.image_d(img, SWITCH_IMG);
-    let sides = [
-        (Platform::Pc, SWITCH_PC, "Echo VR on this PC"),
-        (
-            Platform::Quest,
-            SWITCH_QUEST,
-            "Echo VR on your Quest, over USB",
-        ),
-    ];
-    for (i, (p, area, tip)) in sides.into_iter().enumerate() {
-        let r = kit.drect(area);
-        let (resp, t, _) = kit.hot(&format!("side-{i}"), r, d.play_platform != p, tip);
-        if t > 0.01 {
-            kit.ui.painter().rect_filled(
-                r.shrink(1.0),
-                dz(8.0),
-                Color32::from_white_alpha((28.0 * t) as u8),
-            );
-        }
-        if resp.clicked {
-            d.play_platform = p;
-        }
+    let radius = dz(PICKER_RADIUS);
+    kit.ui.painter().rect_filled(r, radius, fill);
+    if open {
+        kit.ui.painter().rect_stroke(
+            r,
+            radius,
+            egui::Stroke::new(dz(2.0), design::BLUE),
+            egui::StrokeKind::Inside,
+        );
     }
+    let fg = if enabled {
+        design::TEXT
+    } else {
+        Color32::from_gray(150)
+    };
+    let chevron = dz(15.0);
+    let pad = dz(18.0);
+    let g = kit.spaced_fit(
+        &current_name.to_uppercase(),
+        design::din(17.0),
+        fg,
+        dz(1.2),
+        false,
+        r.width() - 2.0 * pad - chevron - dz(10.0),
+    );
+    let gy = r.center().y - g.size().y / 2.0;
+    kit.ui.painter().galley(pos2(r.min.x + pad, gy), g, fg);
+    style::icon_at(
+        kit.ui.painter(),
+        Icon::ChevronDown,
+        pos2(r.max.x - pad - chevron, r.center().y - chevron / 2.0),
+        chevron,
+        fg,
+    );
+    if resp.clicked {
+        kit.toggle_menu(VERSION_MENU);
+        return;
+    }
+    if !enabled {
+        return;
+    }
+
+    let checked = |id: &str| current_id.as_deref() == Some(id);
+    let mut items: Vec<MenuItem> = installed
+        .iter()
+        .map(|v| {
+            let present = d.demo || paths::has_echo_install(&v.root);
+            let (detail, detail_color) = if !present {
+                ("Files missing".to_string(), design::DANGER)
+            } else if v.external {
+                ("Existing folder".to_string(), design::GREY)
+            } else {
+                let size = v.catalog_id.as_ref().and_then(|cid| {
+                    let c = d.catalog.as_ref()?;
+                    c.pc().find(|e| &e.id == cid)?.size.map(gb)
+                });
+                (size.unwrap_or_default(), design::GREY)
+            };
+            MenuItem::Pick {
+                label: v.name.clone(),
+                detail,
+                detail_color,
+                checked: checked(&v.id),
+                tip: v.root.clone(),
+            }
+        })
+        .collect();
+    items.extend(available.iter().map(|e| MenuItem::Pick {
+        label: e.name.clone(),
+        detail: match e.size {
+            Some(s) => format!("Not installed  ·  {}", gb(s)),
+            None => "Not installed".into(),
+        },
+        detail_color: design::GREY,
+        checked: checked(&e.id),
+        tip: "Not installed yet: PLAY takes you to the Install page".into(),
+    }));
+    items.push(MenuItem::Divider);
+    items.push(MenuItem::row(
+        "Install another version…",
+        "Open the Install page",
+    ));
+    let w = r.width().max(dz(PICKER_MENU_W));
+    let anchor = egui::Rect::from_min_size(r.min, egui::vec2(w, r.height()));
+    match kit.menu_at(VERSION_MENU, anchor, &items) {
+        Some(i) if i < installed.len() + available.len() => {
+            let id = match installed.get(i) {
+                Some(v) => v.id.clone(),
+                None => available[i - installed.len()].id.clone(),
+            };
+            d.state.selected = Some(id);
+            d.save();
+        }
+        Some(_) => d.page = Page::Install,
+        None => {}
+    }
+}
+
+/// How far below its galley's top a DMCAPS capital starts, at the caption's size.
+fn caption_top(kit: &Kit) -> f32 {
+    let g = kit.spaced_galley("V", design::din(PICKER_CAPTION_SIZE), CAPTION, 0.0, false);
+    // DMCAPS' ascent sits above its capitals; measured once from the switch's labels.
+    g.size().y * CAPTION_ASCENT
 }
 
 // ---- Community News ----
 
 fn news(d: &mut Dashboard, kit: &mut Kit) {
-    kit.image_d(
+    let dx = kit.dx();
+    // A wider window: the header strip stretches (its title stays), the design's banner
+    // background fills the wider card, and a downloaded banner keeps its size, centred.
+    kit.image_wider(
         "news_header.png",
         Dr::new(NEWS.x, NEWS.y, NEWS.w, NEWS_HEADER_H),
+        dx,
+        (420.0, 8.0),
+        Color32::WHITE,
     );
-    let banner = Dr::new(
+    let area = Dr::new(
         NEWS.x,
         NEWS.y + NEWS_HEADER_H,
-        NEWS.w,
+        NEWS.w + dx,
         NEWS.h - NEWS_HEADER_H,
     );
+    let banner = Dr::new(area.x + dx / 2.0, area.y, NEWS.w, area.h);
     let news = d.feed.news.clone();
     let main = news.as_ref().and_then(|n| n.slots.main.clone());
     let tex = main
         .as_ref()
         .and_then(|m| d.feed.texture(m.image.as_deref()))
         .cloned();
-    match (&news, tex) {
-        // Nothing loaded (yet), and snapshots: the design's banner.
-        (None, _) => kit.image_d("news_fallback.jpg", banner),
-        (Some(_), None) if d.demo && !d.feed_live => kit.image_d("news_fallback.jpg", banner),
-        (Some(_), Some(tex)) => {
-            let r = kit.drect(banner);
-            kit.texture_cover(&tex, r, dz(4.0));
-            kit.gradient_frame(
-                r,
-                dz(4.0),
-                dz(2.0),
-                Color32::from_rgb(120, 60, 200),
-                design::RIM_BOTTOM,
-            );
+    // Nothing loaded (yet), and snapshots: the design's banner, with its HOW TO PLAY.
+    let fallback = news.is_none() || (tex.is_none() && d.demo && !d.feed_live);
+    match tex {
+        // The background covers the card (cropped top and bottom when it's wider); the
+        // lettering stays at its left.
+        _ if fallback => {
+            kit.image_cover("news_fallback_bg.jpg", area, dz(4.0));
+            let (x, w, h) = NEWS_LETTERING;
+            let y = area.y + (area.h - h) / 2.0;
+            kit.image_d("news_fallback_text.png", Dr::new(x, y, w, h));
+            banner_rim(kit, area);
+        }
+        Some(tex) => {
+            if dx > 0.0 {
+                kit.image_d("card_bg.png", area);
+            }
+            kit.texture_cover(&tex, kit.drect(banner), dz(4.0));
+            banner_rim(kit, area);
         }
         // A message without a picture (or still downloading it): its title on the panel.
-        (Some(_), None) => {
-            kit.image_d("card_bg.png", banner);
+        None => {
+            kit.image_d("card_bg.png", area);
             if let Some(m) = &main {
                 let g = kit.spaced_galley(
                     &m.title.to_uppercase(),
@@ -599,7 +656,7 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
         }
     }
     let link = match (&news, &main) {
-        (None, _) => Some((
+        _ if fallback => Some((
             "How to play".to_string(),
             crate::core::oauth::INVITE_URL.to_string(),
         )),
@@ -609,29 +666,43 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
         _ => None,
     };
     if let Some((label, url)) = link {
-        let g = kit.spaced_galley(
+        let (right, base) = NEWS_LINK;
+        let g = kit.spaced_fit(
             &label.to_uppercase(),
             design::conthrax(21.0),
             design::TEXT,
             dz(5.5),
             true,
+            dz(700.0),
         );
-        let (right, base) = NEWS_LINK;
-        let r = kit.put(dz(right) - g.size().x, dz(base) - g.size().y, g);
+        let r = kit.put(dz(right + dx) - g.size().x, dz(base) - g.size().y, g);
         if kit.click_area("news-link", r, &url) {
             crate::core::platform::open_url(&url);
         }
     }
 
-    let (main_card, community_card) = cards(d, news.as_ref().map(|n| n.slots.clone()), main);
-    card(kit, 0, CARDS[0], &main_card, false);
-    card(kit, 1, CARDS[1], &community_card, true);
+    let (main_card, community_card) = cards(news.as_ref().map(|n| n.slots.clone()), main);
+    // Side by side, sharing the extra width; taller in a taller window.
+    let (half, dy) = (dx / 2.0, kit.dy());
+    card(kit, 0, CARDS[0].wider(half).taller(dy), &main_card, false);
+    let second = CARDS[1].moved(half).wider(half).taller(dy);
+    card(kit, 1, second, &community_card, true);
+}
+
+/// The rim around a picture banner: violet at the top to pink at the bottom.
+fn banner_rim(kit: &Kit, area: Dr) {
+    kit.gradient_frame(
+        kit.drect(area),
+        dz(4.0),
+        dz(2.0),
+        Color32::from_rgb(120, 60, 200),
+        design::RIM_BOTTOM,
+    );
 }
 
 /// The two cards' contents: the `main` message, and the `community` one (or a pointer to
 /// the Discord when it isn't set).
 fn cards(
-    d: &Dashboard,
     slots: Option<crate::core::launcher::feed::Slots>,
     main: Option<NewsItem>,
 ) -> (NewsItem, NewsItem) {
@@ -640,15 +711,16 @@ fn cards(
         body: body.into(),
         ..Default::default()
     };
-    let main = match (main, &slots) {
-        (Some(m), _) => m,
-        (None, Some(_)) => text("Community news", "Nothing new right now."),
-        (None, None) if d.feed.news_failed => text(
-            "Community news",
-            "The news couldn't be loaded. Check your internet connection.",
-        ),
-        (None, None) => text("Community news", "Loading the latest news..."),
-    };
+    let main = main.unwrap_or_else(|| {
+        text(
+            "Welcome",
+            "Your launcher for Echo VR, on PC and on your Quest.\n\n\
+             - Install, update and play from one place\n\
+             - Switch between PCVR and Quest next to PLAY\n\
+             - Server status and this week's best on the right\n\n\
+             Community news appears here when there is some.",
+        )
+    });
     let community = slots.and_then(|s| s.community).unwrap_or_else(|| NewsItem {
         title: "Community".into(),
         body:
@@ -683,30 +755,8 @@ fn card_look() -> Look {
 
 /// A news card: the title in Conthrax, the text in DIN caps, and its link (when asked).
 fn card(kit: &mut Kit, i: usize, r: Dr, item: &NewsItem, with_link: bool) {
-    kit.image_d("card_bg.png", r);
-    kit.gradient_frame(
-        kit.drect(r),
-        dz(6.0),
-        dz(2.0),
-        design::RIM_TOP,
-        design::RIM_BOTTOM,
-    );
-    let inner = r.shrink(22.0);
-    let title = kit.spaced_galley(
-        &item.title.to_uppercase(),
-        design::conthrax(24.0),
-        design::TEXT,
-        dz(1.8),
-        false,
-    );
-    let (x, w) = (dz(inner.x), dz(inner.w));
-    let mut y = dz(r.y + 20.0);
-    kit.clipped(x, y, w, title.size().y, |kit| {
-        kit.put(x, y, title.clone());
-    });
-    y = dz(r.y + 72.0);
+    let (x, y, w, bottom) = hero::card_frame(kit, r, &item.title);
     let look = card_look();
-    let bottom = dz(inner.bottom());
     let body_h = kit.clipped(x, y, w, bottom - y, |kit| {
         markdown::draw(kit, x, y, w, &item.body, &look)
     });
@@ -757,7 +807,10 @@ fn start(d: &mut Dashboard, ctx: &egui::Context) {
     if !exe.is_file() {
         d.dialogs.error(
             "Echo VR not found",
-            &format!("echovr.exe is missing in {}.\nRepair or reinstall this version on the Versions page.", v.root),
+            &format!(
+                "echovr.exe is missing in {}.\nRepair or reinstall it on the Install page.",
+                v.root
+            ),
             Default::default(),
         );
         return;

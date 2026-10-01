@@ -8,8 +8,15 @@ use std::path::{Path, PathBuf};
 pub const ARENA_DIR: &str = "ready-at-dawn-echo-arena";
 const ARENA_MARKER: &str = "ready-at-dawn-echo-arena/bin/win10/echovr.exe";
 
-/// Per-user cache root. Never the shared temp dir (world-writable on Linux).
+/// Per-user cache root. Never the shared temp dir (world-writable on Linux), and a folder
+/// of its own: on Windows the system cache folder is the data folder, where
+/// `launcher.json` and the logs live.
 pub fn cache_dir() -> PathBuf {
+    legacy_cache_dir().join("cache")
+}
+
+/// Where older versions kept the cache (on Windows: the data folder itself).
+pub fn legacy_cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("EchoVR_Installer")

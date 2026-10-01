@@ -1,14 +1,19 @@
-//! Modal dialogs as real child windows: errors (with help links), message/confirm/option
-//! boxes and the device picker, in the launcher's style.
+//! Modal dialogs, drawn in the launcher window as cards over the dimmed page: errors (with
+//! help links and a copy button), message/confirm/option boxes and the device picker.
 //!
 //! Screens queue a dialog under a string key and later `take` the answer. While any dialog
-//! is open, the owning window stops reacting (`is_open`), like a Swing modal.
+//! is open, the page underneath stops reacting (`is_open`). Enter picks the first button,
+//! Escape closes.
 
-use egui::{vec2, Pos2, Rect, ViewportBuilder, ViewportCommand, ViewportId};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use super::assets::{self, Assets};
+use egui::Galley;
+
+use super::design::{self, dz};
 use super::kit::Kit;
-use super::style;
+use super::style::{self, Icon as Glyph};
+use super::widgets::{Tone, BTN_H};
 use crate::core::adb::devices::Device;
 use crate::core::error::{HelpLink, UiError};
 
@@ -23,7 +28,7 @@ pub enum Icon {
 pub enum Answer {
     /// Index of the pressed button (0 = Yes / first option), or the picked device.
     Button(usize),
-    /// Closed with the window's X.
+    /// Closed with Escape (or Cancel in the device picker).
     Closed,
 }
 
@@ -35,25 +40,36 @@ impl Answer {
 
 enum Kind {
     Error(HelpLink),
-    Message(Icon, Vec<String>),
+    /// The icon, the buttons, and whether the first one deletes something.
+    Message(Icon, Vec<String>, bool),
     Picker(Vec<Device>),
 }
 
 struct Dialog {
-    id: u64,
     key: &'static str,
     title: String,
     message: String,
     kind: Kind,
-    focused: bool,
+    scroll: f32,
+    copied: Option<Instant>,
 }
 
 #[derive(Default)]
 pub struct DialogHost {
     stack: Vec<Dialog>,
     answers: Vec<(&'static str, Answer)>,
-    next_id: u64,
 }
+
+/// Card width, padding and the body's text size (design pixels).
+const W: f32 = 560.0;
+const PAD: f32 = 26.0;
+const BODY: f32 = 17.0;
+const ICON: f32 = 34.0;
+
+pub(crate) const DEV_MODE_URL: &str =
+    "https://learn.adafruit.com/sideloading-on-oculus-quest/enable-developer-mode";
+pub(crate) const USB_DEBUGGING_URL: &str =
+    "https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/";
 
 impl DialogHost {
     pub fn is_open(&self) -> bool {
@@ -61,14 +77,13 @@ impl DialogHost {
     }
 
     fn push(&mut self, key: &'static str, title: &str, message: &str, kind: Kind) {
-        self.next_id += 1;
         self.stack.push(Dialog {
-            id: self.next_id,
             key,
             title: title.into(),
             message: message.into(),
             kind,
-            focused: false,
+            scroll: 0.0,
+            copied: None,
         });
     }
 
@@ -82,7 +97,12 @@ impl DialogHost {
     }
 
     pub fn message(&mut self, key: &'static str, title: &str, message: &str, icon: Icon) {
-        self.push(key, title, message, Kind::Message(icon, vec!["OK".into()]));
+        self.push(
+            key,
+            title,
+            message,
+            Kind::Message(icon, vec!["OK".into()], false),
+        );
     }
 
     pub fn info(&mut self, title: &str, message: &str) {
@@ -91,11 +111,16 @@ impl DialogHost {
 
     /// Yes/No; `Answer::Button(0)` is Yes.
     pub fn confirm(&mut self, key: &'static str, title: &str, message: &str, icon: Icon) {
+        self.options(key, title, message, icon, &["Yes", "No"]);
+    }
+
+    /// A question whose first answer deletes something (a red button).
+    pub fn confirm_danger(&mut self, key: &'static str, title: &str, message: &str, yes: &str) {
         self.push(
             key,
             title,
             message,
-            Kind::Message(icon, vec!["Yes".into(), "No".into()]),
+            Kind::Message(Icon::Warning, vec![yes.into(), "Cancel".into()], true),
         );
     }
 
@@ -111,13 +136,18 @@ impl DialogHost {
             key,
             title,
             message,
-            Kind::Message(icon, buttons.iter().map(|b| b.to_string()).collect()),
+            Kind::Message(icon, buttons.iter().map(|b| b.to_string()).collect(), false),
         );
     }
 
     /// "Which one is your Quest?" -- `Answer::Button(i)` is `devices[i]`.
     pub fn device_picker(&mut self, key: &'static str, devices: Vec<Device>) {
-        self.push(key, "Which one is your Quest?", "", Kind::Picker(devices));
+        self.push(
+            key,
+            "Which one is your Quest?",
+            "More than one device is plugged in.",
+            Kind::Picker(devices),
+        );
     }
 
     pub fn take(&mut self, key: &'static str) -> Option<Answer> {
@@ -125,51 +155,22 @@ impl DialogHost {
         Some(self.answers.remove(i).1)
     }
 
-    /// Draws the top-most dialog as a child window of the current viewport.
-    pub fn show(&mut self, ctx: &egui::Context, assets: &Assets, parent: Option<Rect>) {
+    /// Draws the top-most dialog over the window.
+    pub fn show(&mut self, kit: &mut Kit) {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let size = match &top.kind {
-            Kind::Picker(devices) => picker_size(devices),
-            _ => modern_size(ctx, top),
-        };
-        let mut builder = ViewportBuilder::default()
-            .with_title(top.title.clone())
-            .with_inner_size(size)
-            .with_resizable(false)
-            .with_minimize_button(false)
-            .with_maximize_button(false)
-            .with_icon(std::sync::Arc::new(assets::icon()));
-        if let Some(p) = parent {
-            builder = builder.with_position(Pos2::new(
-                p.center().x - size.x / 2.0,
-                p.center().y - size.y / 2.0,
-            ));
-        }
-        let vid = ViewportId::from_hash_of(("dialog", top.id));
-        let answer = ctx.show_viewport_immediate(vid, builder, |ui, _class| {
-            if !top.focused {
-                top.focused = true;
-                ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
-            }
-            if ui.input(|i| i.viewport().close_requested()) {
-                return Some(Answer::Closed);
-            }
-            let mut kit = Kit::new(ui, assets, ("dialog", top.id), false);
-            let answer = match &top.kind {
-                Kind::Error(link) => {
-                    let buttons = ["Close".to_string()];
-                    draw_modern(&mut kit, size, &top.message, Icon::Warning, &buttons, *link)
-                }
-                Kind::Message(icon, buttons) => {
-                    draw_modern(&mut kit, size, &top.message, *icon, buttons, HelpLink::None)
-                }
-                Kind::Picker(devices) => draw_picker(&mut kit, size, devices),
-            };
-            let enter = matches!(top.kind, Kind::Message(..) | Kind::Error(_))
-                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            answer.or(enter.then_some(Answer::Button(0)))
+        let answer = kit.modal("dialog", false, |k| draw(k, top));
+        let keys = kit.ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        let answer = answer.or(match (&top.kind, keys) {
+            (_, (_, true)) => Some(Answer::Closed),
+            (Kind::Error(_) | Kind::Message(..), (true, _)) => Some(Answer::Button(0)),
+            _ => None,
         });
         if let Some(a) = answer {
             let d = self.stack.pop().expect("top exists");
@@ -180,168 +181,178 @@ impl DialogHost {
     }
 }
 
-fn message_lines(msg: &str) -> String {
-    msg.trim_end().to_string()
+/// The body text, one galley per paragraph.
+fn body(k: &Kit, text: &str, w: f32) -> Vec<Arc<Galley>> {
+    k.caps_block(text, BODY, design::BODY, w)
 }
 
-fn picker_size(devices: &[Device]) -> egui::Vec2 {
-    vec2(460.0, 96.0 + devices.len().min(5) as f32 * 50.0 + 24.0)
-}
-
-const MODERN_W: f32 = 460.0;
-
-fn modern_size(ctx: &egui::Context, d: &Dialog) -> egui::Vec2 {
-    let text_h = ctx
-        .fonts_mut(|f| {
-            f.layout(
-                message_lines(&d.message),
-                style::body(14.0),
-                style::TEXT,
-                MODERN_W - 104.0,
-            )
-            .size()
-            .y
-        })
-        .max(40.0);
-    let link_h = match &d.kind {
-        Kind::Error(l) if *l != HelpLink::None => 30.0,
-        _ => 0.0,
+fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
+    let (w, pad) = (dz(W), dz(PAD));
+    let text_w = w - 2.0 * pad;
+    let paras = body(k, &d.message, text_w);
+    let gap = dz(12.0);
+    let text_h: f32 =
+        paras.iter().map(|g| g.size().y).sum::<f32>() + gap * paras.len().saturating_sub(1) as f32;
+    let link = match &d.kind {
+        Kind::Error(HelpLink::DeveloperMode) => {
+            Some(("How to enable Developer Mode on your Quest", DEV_MODE_URL))
+        }
+        Kind::Error(HelpLink::UsbDebugging) => Some((
+            "How to allow USB debugging on your Quest",
+            USB_DEBUGGING_URL,
+        )),
+        _ => None,
     };
-    vec2(
-        MODERN_W,
-        (24.0 + text_h + link_h + 24.0 + 40.0 + 24.0).ceil(),
-    )
-}
-
-/// The launcher's dark dialog: icon, wrapped text, optional help link, flat buttons.
-fn draw_modern(
-    kit: &mut Kit,
-    size: egui::Vec2,
-    message: &str,
-    icon: Icon,
-    buttons: &[String],
-    link: HelpLink,
-) -> Option<Answer> {
-    kit.fill(0.0, 0.0, size.x, size.y, style::SURFACE_SOLID);
-    let (si, color) = match icon {
-        Icon::Info => (style::Icon::Info, style::ACCENT),
-        Icon::Question => (style::Icon::Info, style::ACCENT),
-        Icon::Warning => (style::Icon::Warning, style::WARN),
+    let devices = match &d.kind {
+        Kind::Picker(devs) => devs.len().min(5),
+        _ => 0,
     };
-    let ib = kit.rect(24.0, 24.0, 40.0, 40.0);
-    kit.ui
-        .painter()
-        .rect_filled(ib, style::R_CONTROL, style::with_alpha(color, 36));
-    style::icon_at(kit.ui.painter(), si, ib.min + vec2(9.0, 9.0), 22.0, color);
-    let mut job = egui::text::LayoutJob::simple(
-        message_lines(message),
-        style::body(14.0),
-        style::TEXT,
-        size.x - 104.0,
+    // The title wraps under itself when it is long.
+    let title_w = w - 2.0 * pad - dz(ICON) - dz(16.0);
+    let tg = {
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &d.title.to_uppercase(),
+            0.0,
+            egui::TextFormat {
+                font_id: design::conthrax(21.0),
+                color: design::TEXT,
+                extra_letter_spacing: dz(2.5),
+                ..Default::default()
+            },
+        );
+        job.wrap.max_width = title_w;
+        job.wrap.max_rows = 2;
+        k.ui.ctx().fonts_mut(|f| f.layout_job(job))
+    };
+    let head = tg.size().y.max(dz(ICON)) + dz(20.0);
+    let list_h = devices as f32 * (BTN_H + 8.0);
+    let link_h = if link.is_some() { dz(40.0) } else { 0.0 };
+    let max_text = (super::launcher::H + k.ey) * 0.6 - head - list_h;
+    let shown_h = text_h.min(max_text);
+    let h = pad + head + shown_h + link_h + list_h + dz(26.0) + BTN_H + pad;
+    let x = ((super::launcher::W + k.ex - w) / 2.0).round();
+    let y = ((super::launcher::H + k.ey - h) / 2.0).round();
+    k.solid_panel(x, y, w, h);
+
+    // Header: the icon on a tinted square and the title.
+    let (glyph, color) = match &d.kind {
+        Kind::Error(_) | Kind::Message(Icon::Warning, ..) => (Glyph::Warning, design::QUEST_WARN),
+        Kind::Picker(_) => (Glyph::Headset, design::BLUE),
+        Kind::Message(..) => (Glyph::Info, design::BLUE),
+    };
+    let ib = k.rect(x + pad, y + pad, dz(ICON), dz(ICON));
+    k.ui.painter().rect_filled(ib, dz(4.0), color);
+    let is = dz(ICON) * 0.62;
+    style::icon_at(
+        k.ui.painter(),
+        glyph,
+        ib.center() - egui::vec2(is, is) / 2.0,
+        is,
+        design::TEXT,
     );
-    job.halign = egui::Align::LEFT;
-    let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
-    let text_h = g.size().y.max(40.0);
-    kit.ui.painter().galley(
-        kit.rect(80.0, 24.0 + (40.0 - g.size().y).max(0.0) / 2.0, 0.0, 0.0)
-            .min,
-        g,
-        style::TEXT,
+    let title_x = x + pad + dz(ICON) + dz(16.0);
+    let ty = y + pad + (dz(ICON) - tg.size().y).max(0.0) / 2.0;
+    k.put(title_x, ty, tg);
+
+    // The message, scrolling when it is long.
+    let ty = y + pad + head;
+    k.scroll_area(
+        "dialog-text",
+        x + pad,
+        ty,
+        text_w + pad / 2.0,
+        shown_h,
+        text_h,
+        &mut d.scroll,
     );
-    let mut y = 24.0 + text_h + 24.0;
-    let dev_mode = "https://learn.adafruit.com/sideloading-on-oculus-quest/enable-developer-mode";
-    let link_text = match link {
-        HelpLink::DeveloperMode => Some("How to enable Developer Mode on your Quest"),
-        HelpLink::UsbDebugging => Some("How to allow USB debugging on your Quest"),
-        HelpLink::None => None,
-    };
-    if let Some(t) = link_text {
-        if kit
-            .flat_button(
-                "dlg-link",
-                style::Variant::Ghost,
-                Some(style::Icon::Info),
-                t,
-                72.0,
-                y - 14.0,
-                size.x - 96.0,
-                30.0,
-                true,
-                dev_mode,
-            )
+    let scroll = d.scroll;
+    k.clipped(x + pad, ty, text_w, shown_h, |k| {
+        let mut gy = ty - scroll;
+        for g in paras {
+            gy += k.put(x + pad, gy, g).height() + gap;
+        }
+    });
+
+    let mut by = ty + shown_h;
+    if let Some((label, url)) = link {
+        if k.link("dialog-help", x + pad, by + dz(16.0), label, 16.0, url)
             .clicked
         {
-            crate::core::platform::open_url(dev_mode);
+            crate::core::platform::open_url(url);
         }
-        y += 30.0;
+        by += link_h;
     }
-    let bw = 112.0;
-    let mut x =
-        size.x - 24.0 - bw * buttons.len() as f32 - 8.0 * (buttons.len().saturating_sub(1)) as f32;
-    let mut answer = None;
-    for (i, b) in buttons.iter().enumerate() {
-        let variant = if i == 0 {
-            style::Variant::Primary
-        } else {
-            style::Variant::Secondary
-        };
-        if kit
-            .flat_button(
-                &format!("dlg-{i}"),
-                variant,
-                None,
-                b,
-                x,
-                y,
-                bw,
-                40.0,
-                true,
-                "",
-            )
-            .clicked
-        {
-            answer = Some(Answer::Button(i));
-        }
-        x += bw + 8.0;
-    }
-    answer
-}
-
-/// "Which one is your Quest?": one button per authorized device.
-fn draw_picker(kit: &mut Kit, size: egui::Vec2, devices: &[Device]) -> Option<Answer> {
-    kit.fill(0.0, 0.0, size.x, size.y, style::SURFACE_SOLID);
-    kit.text(
-        24.0,
-        24.0,
-        "More than one device is plugged in.",
-        style::body(14.0),
-        style::TEXT,
-    );
-    kit.text(
-        24.0,
-        46.0,
-        "Which one is your Quest?",
-        style::bold(14.0),
-        style::TEXT,
-    );
-    for (i, d) in devices.iter().take(5).enumerate() {
-        if kit
-            .flat_button(
-                &format!("dev{i}"),
-                style::Variant::Secondary,
-                Some(style::Icon::Headset),
-                &d.label(),
-                24.0,
-                96.0 + i as f32 * 50.0,
-                size.x - 48.0,
-                style::MID,
+    if let Kind::Picker(devs) = &d.kind {
+        let mut dy = by + dz(10.0);
+        for (i, dev) in devs.iter().take(5).enumerate() {
+            let key = format!("dialog-device-{i}");
+            if k.button(
+                &key,
+                x + pad,
+                dy,
+                text_w,
+                BTN_H,
+                Tone::Dark,
+                Some(Glyph::Headset),
+                &dev.label(),
                 true,
                 "",
             )
             .clicked
-        {
-            return Some(Answer::Button(i));
+            {
+                return Some(Answer::Button(i));
+            }
+            dy += BTN_H + 8.0;
         }
+        by = dy - 8.0;
     }
-    None
+
+    // Buttons, right-aligned; errors can copy their text.
+    let by = by + dz(26.0);
+    let right = x + w - pad;
+    match &d.kind {
+        Kind::Error(_) => {
+            let copied = d
+                .copied
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+            let label = if copied { "Copied" } else { "Copy" };
+            let cw = k.button_width("Copied", Some(Glyph::Copy), BTN_H);
+            let tip = "Copy this message, to paste it when you ask for help";
+            if k.button(
+                "dialog-copy",
+                x + pad,
+                by,
+                cw,
+                BTN_H,
+                Tone::Dark,
+                Some(Glyph::Copy),
+                label,
+                true,
+                tip,
+            )
+            .clicked
+            {
+                let text = format!("{}\n\n{}", d.title, d.message.trim_end());
+                if let Ok(mut c) = arboard::Clipboard::new() {
+                    let _ = c.set_text(text);
+                    d.copied = Some(Instant::now());
+                }
+            }
+            if copied {
+                k.ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
+            k.button_row("dialog-btn", right, by, &["Close"], Tone::Blue)
+                .map(Answer::Button)
+        }
+        Kind::Message(_, buttons, danger) => {
+            let labels: Vec<&str> = buttons.iter().map(String::as_str).collect();
+            let tone = if *danger { Tone::Danger } else { Tone::Go };
+            k.button_row("dialog-btn", right, by, &labels, tone)
+                .map(Answer::Button)
+        }
+        Kind::Picker(_) => k
+            .button_row("dialog-btn", right, by, &["Cancel"], Tone::Dark)
+            .map(|_| Answer::Closed),
+    }
 }

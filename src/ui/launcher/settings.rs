@@ -1,46 +1,408 @@
-//! Settings page: library folder, maintenance, play setup, and About (with the Clippy
-//! easter egg).
+//! Settings page, laid out like Play and Install: the game (how you play) and, under it,
+//! launch options and storage as cards; the launcher itself (looks, updates, support and
+//! About with the Clippy easter egg) in the right-hand panel.
 
-use super::{setup, Dashboard, Msg, CREDITS, X0};
-use crate::core::launcher::versions;
+use super::install::{myriad, text_link};
+use super::{hero, server_info, setup, Dashboard, LauncherUpdate, Msg, CREDITS};
+use crate::core::launcher::store::Runtime;
 use crate::core::{paths, platform};
+use crate::ui::design::{self, dz, Dr};
+use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
+use crate::ui::markdown;
 use crate::ui::parts;
-use crate::ui::style::{self, Icon, Variant};
+use crate::ui::style::Icon;
+use crate::ui::widgets::{Tone, BTN_H};
 
-const W: f32 = 760.0;
+// Geometry in design pixels: the cards where Play and Install have theirs.
+const GAME: Dr = Dr::new(137.0, 80.0, 1146.0, 346.0);
+const LOWER: [Dr; 2] = [
+    Dr::new(137.0, 456.0, 555.0, 590.0),
+    Dr::new(728.0, 456.0, 555.0, 590.0),
+];
+const TILE_H: f32 = 170.0;
+/// The right-hand panel's content width, as YOUR LIBRARY's.
+const PANEL_W: f32 = 492.0;
+
+const CACHE_KEY: &str = "settings-delete-cache";
+/// Asks before downloading ffmpeg for a background video.
+pub(super) const FFMPEG_KEY: &str = "settings-download-ffmpeg";
+pub(super) const BACKGROUND_JOB: &str = "background";
+const UPLOAD_KEY: &str = "settings-upload-logs";
+const UPLOAD_TEXT: &str = "This sends the launcher's log files to the developer, marshmallow-mia, to help with a problem. Only the developer can see them.\n\n\
+They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
+To have them deleted, message marshmallow-mia on Discord or email echovr@mia-hentschel.de.";
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    let x = X0;
+    if !kit.ghost {
+        answers(d, ctx);
+    }
+    game(d, kit);
+    // Side by side, sharing the extra width; taller in a taller window.
+    let (half, dy) = (kit.dx() / 2.0, kit.dy());
+    launch_options(d, kit, LOWER[0].wider(half).taller(dy));
+    storage(d, kit, LOWER[1].moved(half).wider(half).taller(dy));
+    server_info::at_right(kit, |k| launcher(d, k, ctx));
+}
 
-    // Library.
-    let y = 112.0;
-    kit.titled_card(x, y, W, 128.0, "Library");
+/// The answers to this page's dialogs.
+fn answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(a) = d.dialogs.take(FFMPEG_KEY) {
+        if let Some(input) = d.background_pending.take().filter(|_| a.is_yes()) {
+            d.set_background(ctx, input, true);
+        }
+    }
+    if d.dialogs.take(CACHE_KEY).is_some_and(|a| a.is_yes()) {
+        d.deleting_cache = true;
+        let roots = d.cache_roots();
+        d.worker.spawn(ctx, move |tx| {
+            tx.send(Msg::CacheDeleted(crate::core::cache::delete_all(&roots)))
+        });
+    }
+    if d.dialogs
+        .take(UPLOAD_KEY)
+        .is_some_and(|a| a == crate::ui::dialogs::Answer::Button(0))
+    {
+        // Where the logs will be uploaded once there is somewhere to send them.
+        d.notify("Log upload isn't available yet");
+    }
+}
+
+/// A checkbox with a grey note under its label; returns whether it flipped and the height
+/// it took.
+#[allow(clippy::too_many_arguments)]
+fn option(
+    kit: &mut Kit,
+    key: &str,
+    on: &mut bool,
+    label: &str,
+    note: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    enabled: bool,
+    tip: &str,
+) -> (bool, f32) {
+    let flipped = kit.check(key, on, label, x, y, enabled, tip);
+    let indent = dz(39.0);
+    let h = kit.caps_text(
+        x + indent,
+        y + dz(38.0),
+        w - indent,
+        note,
+        14.0,
+        design::GREY,
+        0.0,
+    );
+    (flipped, dz(38.0) + h + dz(26.0))
+}
+
+/// BACKGROUND: the launcher's own, or a video or picture of your own (converted to the
+/// launcher's format; `core::launcher::background`). Returns its height.
+fn background_row(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    ctx: &egui::Context,
+    x: f32,
+    y: f32,
+    w: f32,
+) -> f32 {
+    kit.caption(x, y, "Background");
+    let mut ty = y + dz(28.0);
+    let job = hero::job_view(d, BACKGROUND_JOB);
+    let text = match (&job, &d.custom_bg) {
+        (Some(j), _) => j.label.clone(),
+        (None, Some(c)) if c.video.is_some() => format!("Your video: {}", c.name),
+        (None, Some(c)) => format!("Your picture: {}", c.name),
+        (None, None) => "The launcher's own".into(),
+    };
+    let g = myriad(kit, &text, design::myriad(20.0), design::BODY, w, true);
+    ty += kit.put(x, ty, g).height() + dz(12.0);
+    let half = (w - dz(14.0)) / 2.0;
+    if let Some(j) = &job {
+        let label = if j.cancelling {
+            "Stopping…"
+        } else {
+            "Cancel"
+        };
+        if kit
+            .button(
+                "bg-cancel",
+                x,
+                ty,
+                half,
+                BTN_H,
+                Tone::Dark,
+                Some(Icon::Close),
+                label,
+                !j.cancelling,
+                "Stop converting",
+            )
+            .clicked
+        {
+            d.cancel_job(BACKGROUND_JOB);
+        }
+    } else if kit
+        .button(
+            "bg-choose",
+            x,
+            ty,
+            half,
+            BTN_H,
+            Tone::Panel,
+            Some(Icon::Folder),
+            "Choose file",
+            !d.any_job(),
+            "A video (MP4, MOV, WebM, MKV, GIF) or a picture (PNG, JPEG)",
+        )
+        .clicked
+    {
+        if let Some(input) = pick_background() {
+            d.set_background(ctx, input, false);
+        }
+    }
+    let custom = d.custom_bg.is_some() && job.is_none();
+    if kit
+        .button(
+            "bg-default",
+            x + half + dz(14.0),
+            ty,
+            half,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Default",
+            custom,
+            "Back to the launcher's own background",
+        )
+        .clicked
+    {
+        match crate::core::launcher::background::reset() {
+            Ok(()) => {
+                d.load_custom_background();
+                d.notify("The launcher's own background is back");
+            }
+            Err(e) => d.dialogs.error(
+                "Couldn't reset the background",
+                &format!("{e:#}"),
+                Default::default(),
+            ),
+        }
+    }
+    ty += BTN_H + dz(12.0);
+    let note = format!(
+        "Videos are cut to {} seconds and cropped to fill the window.",
+        crate::core::launcher::background::MAX_SECONDS
+    );
+    ty += kit.caps_text(x, ty, w, &note, 14.0, design::GREY, 0.0);
+    ty - y
+}
+
+/// A video or picture for the background.
+fn pick_background() -> Option<std::path::PathBuf> {
+    use crate::core::launcher::background::{PICTURE_EXTENSIONS, VIDEO_EXTENSIONS};
+    let all: Vec<&str> = VIDEO_EXTENSIONS
+        .iter()
+        .chain(PICTURE_EXTENSIONS.iter())
+        .copied()
+        .collect();
+    rfd::FileDialog::new()
+        .add_filter("Videos and pictures", &all)
+        .add_filter("Videos", &VIDEO_EXTENSIONS)
+        .add_filter("Pictures", &PICTURE_EXTENSIONS)
+        .pick_file()
+}
+
+/// The background video's speeds, in percent.
+const SPEEDS: [u32; 5] = [50, 100, 150, 200, 300];
+
+/// The background video's speed: one button per step, the current one blue. Returns
+/// its height.
+fn speed_row(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
+    let indent = dz(39.0);
+    kit.caption(x + indent, y, "Speed");
+    let by = y + dz(26.0);
+    let h = dz(40.0);
+    let gap = dz(8.0);
+    let n = SPEEDS.len() as f32;
+    let bw = (w - indent - (n - 1.0) * gap) / n;
+    let on = d.state.animated_background;
+    let current = d.state.background_speed;
+    for (i, speed) in SPEEDS.into_iter().enumerate() {
+        let selected = current == speed;
+        let label = format!("{speed}%");
+        let tone = if selected { Tone::Blue } else { Tone::Dark };
+        let tip = if on {
+            "How fast the background video plays"
+        } else {
+            "Turn on the animated background first"
+        };
+        let bx = x + indent + i as f32 * (bw + gap);
+        if kit
+            .button(
+                &format!("bg-speed-{i}"),
+                bx,
+                by,
+                bw,
+                h,
+                tone,
+                None,
+                &label,
+                on,
+                tip,
+            )
+            .clicked
+            && !selected
+        {
+            d.state.background_speed = speed;
+            d.save();
+        }
+    }
+    dz(26.0) + h
+}
+
+// ---- the cards ----
+
+/// GAME: how you play, as the welcome asks it (a tile each), and the SteamVR artwork.
+fn game(d: &mut Dashboard, kit: &mut Kit) {
+    let (x, y, w, _) = hero::card_frame(kit, GAME.wider(kit.dx()), "Game");
+    kit.caption(x, y, "How you play");
+    let top = y + dz(30.0);
+    let gap = dz(16.0);
+    let n = Runtime::ALL.len() as f32;
+    let tw = (w - (n - 1.0) * gap) / n;
+    for (i, rt) in Runtime::ALL.into_iter().enumerate() {
+        let tx = x + i as f32 * (tw + gap);
+        let on = d.state.profile.runtime == rt;
+        if kit
+            .tile(
+                &format!("settings-runtime-{i}"),
+                tx,
+                top,
+                tw,
+                dz(TILE_H),
+                setup::runtime_label(rt),
+                setup::runtime_note(rt),
+                on,
+            )
+            .clicked
+            && !on
+        {
+            d.state.profile.runtime = rt;
+            d.save();
+        }
+    }
+    if d.state.profile.runtime == Runtime::Revive {
+        let ay = top + dz(TILE_H) + dz(24.0);
+        if kit.check(
+            "artwork",
+            &mut d.state.revive_artwork,
+            "SteamVR: add game artwork",
+            x,
+            ay,
+            true,
+            "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
+        ) {
+            d.save();
+        }
+    }
+}
+
+/// LAUNCH OPTIONS: what Echo VR is started with (desktop shortcuts too).
+fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
+    let (x, mut y, w, _) = hero::card_frame(kit, r, "Launch options");
+    let (flipped, h) = option(
+        kit,
+        "opt-windowed",
+        &mut d.state.profile.windowed,
+        "Windowed",
+        "Echo VR's window on the desktop isn't full screen.",
+        x,
+        y,
+        w,
+        true,
+        "Starts Echo VR with -windowed",
+    );
+    let mut changed = flipped;
+    y += h;
+    let flat = d.state.profile.runtime == Runtime::Flat;
+    let tip = if flat {
+        "Starts Echo VR with -spectatorstream"
+    } else {
+        "Choose Flat under How you play"
+    };
+    let (flipped, h) = option(
+        kit,
+        "opt-spectator",
+        &mut d.state.profile.spectator,
+        "Spectator stream",
+        "Flat only: join matches as a spectator, for streams and casting.",
+        x,
+        y,
+        w,
+        flat,
+        tip,
+    );
+    changed |= flipped;
+    y += h;
+    kit.caption(x, y, "Extra arguments");
+    y += dz(30.0);
+    changed |= kit.field(
+        "opt-args",
+        &mut d.state.profile.extra_args,
+        x,
+        y,
+        w,
+        BTN_H,
+        "e.g. -mp -http",
+        false,
+        "Passed to echovr.exe after the options above",
+    );
+    y += BTN_H + dz(12.0);
+    kit.caps_text(
+        x,
+        y,
+        w,
+        "Added to every start as typed; quotes group words. Desktop shortcuts get them too.",
+        14.0,
+        design::GREY,
+        0.0,
+    );
+    if changed {
+        d.save();
+    }
+}
+
+/// STORAGE: where versions go, and the cache.
+fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
+    let (x, mut y, w, _) = hero::card_frame(kit, r, "Storage");
+    kit.caption(x, y, "Library folder");
+    y += dz(30.0);
     let tip = format!("Where new versions are installed:\n{}", d.library_field);
-    if kit.input_with(
+    let bw = kit.button_width("Browse", Some(Icon::Folder), BTN_H);
+    if kit.field(
         "library",
         &mut d.library_field,
-        x + 20.0,
-        y + 47.0,
-        W - 172.0,
-        style::MID,
+        x,
+        y,
+        w - bw - dz(14.0),
+        BTN_H,
         "",
         false,
         &tip,
-        style::body(14.0),
     ) {
         set_library(d);
     }
     if kit
-        .flat_button(
+        .button(
             "lib-browse",
-            Variant::Secondary,
+            x + w - bw,
+            y,
+            bw,
+            BTN_H,
+            Tone::Dark,
             Some(Icon::Folder),
             "Browse",
-            x + W - 140.0,
-            y + 47.0,
-            120.0,
-            style::MID,
             !d.any_job(),
             "Pick the library folder",
         )
@@ -51,177 +413,169 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             set_library(d);
         }
     }
-    kit.text(
-        x + 20.0,
-        y + 98.0,
-        "New versions get their own folder here. Existing installs stay where they are.",
-        style::body(12.0),
-        style::TEXT_MUTED,
+    y += BTN_H + dz(12.0);
+    let free = d
+        .free_bytes()
+        .map(|b| format!("{} free there. ", super::play::gb(b)))
+        .unwrap_or_default();
+    let hint = format!(
+        "{free}New versions get their own folder here; existing installs stay where they are."
     );
+    y += kit.caps_text(x, y, w, &hint, 14.0, design::GREY, 0.0) + dz(34.0);
 
-    // Maintenance.
-    let y = 256.0;
-    kit.titled_card(x, y, W, 112.0, "Maintenance");
-    let bw = (W - 40.0 - 24.0) / 3.0;
+    kit.caption(x, y, "Cache");
+    y += dz(30.0);
+    let size = d.cache_bytes();
+    let size_text = size.map_or_else(|| "…".to_string(), super::play::gb);
+    let g = kit.spaced_galley(&size_text, design::din(24.0), design::TEXT, dz(0.5), false);
+    y += kit.put(x, y, g).height() + dz(8.0);
+    y += kit.caps_text(
+        x,
+        y,
+        w,
+        "Downloaded installers, patches and the video converter, temporary files, and game zips left by cancelled installs.",
+        14.0,
+        design::GREY,
+        0.0,
+    ) + dz(20.0);
+    let half = (w - dz(14.0)) / 2.0;
+    let empty = size == Some(0);
+    let can = !d.deleting_cache && !d.any_job() && !empty;
+    let tip = if empty {
+        "Nothing to delete"
+    } else {
+        "Delete the cached files (asks first)"
+    };
     if kit
-        .flat_button(
+        .button(
             "del-cache",
-            Variant::Secondary,
+            x,
+            y,
+            half,
+            BTN_H,
+            Tone::Dark,
             Some(Icon::Refresh),
             "Delete cache",
-            x + 20.0,
-            y + 50.0,
-            bw,
-            style::MID,
-            !d.deleting_cache && !d.any_job(),
-            "Clear cached downloads, and game zips left by cancelled installs",
+            can,
+            tip,
         )
         .clicked
     {
-        d.deleting_cache = true;
-        // The launcher's own version folders, where a cancelled install leaves its zip.
-        let lib = &d.state.library;
-        let mut roots: Vec<String> = d
-            .state
-            .versions
-            .iter()
-            .filter(|v| !v.external)
-            .map(|v| v.root.clone())
-            .collect();
-        if let Some(c) = &d.catalog {
-            roots.extend(c.pc().map(|e| versions::root_for(lib, &e.id)));
-        }
-        d.worker.spawn(ctx, move |tx| {
-            tx.send(Msg::CacheDeleted(crate::core::cache::delete_all(&roots)))
-        });
+        ask_delete_cache(d);
     }
     if kit
-        .flat_button(
-            "logs",
-            Variant::Secondary,
-            Some(Icon::Folder),
-            "Open logs",
-            x + 32.0 + bw,
-            y + 50.0,
-            bw,
-            style::MID,
-            true,
-            "The launcher's log files",
-        )
-        .clicked
-    {
-        open_dir(d, &paths::log_dir());
-    }
-    if kit
-        .flat_button(
+        .button(
             "data",
-            Variant::Secondary,
+            x + half + dz(14.0),
+            y,
+            half,
+            BTN_H,
+            Tone::Dark,
             Some(Icon::Folder),
-            "Open data folder",
-            x + 44.0 + 2.0 * bw,
-            y + 50.0,
-            bw,
-            style::MID,
+            "Data folder",
             true,
-            "launcher.json and logs",
+            "Open the folder with the settings (launcher.json) and logs",
         )
         .clicked
     {
         open_dir(d, &paths::data_dir());
     }
+}
 
-    // Play setup: what the first-run setup asked, and launching.
-    let y = 384.0;
-    kit.titled_card(x, y, W, 132.0, "Play setup");
+// ---- the right-hand panel ----
+
+/// LAUNCHER: how it looks and behaves, updates, support, and About at the bottom.
+fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    server_info::frame(kit, "Launcher");
+    let look = server_info::look();
+    let (x, w) = (dz(server_info::X), dz(PANEL_W));
+    let mut y = dz(server_info::BODY_Y);
+
+    let (flipped, h) = option(
+        kit,
+        "animated-background",
+        &mut d.state.animated_background,
+        "Animated background",
+        "The background video. It pauses while the launcher isn't in front.",
+        x,
+        y,
+        w,
+        true,
+        "",
+    );
+    if flipped {
+        d.save();
+    }
+    y += h - dz(10.0);
+    y += speed_row(d, kit, x, y, w) + dz(26.0);
+    y += background_row(d, kit, ctx, x, y, w) + dz(26.0);
+    let (flipped, h) = option(
+        kit,
+        "minimize",
+        &mut d.state.minimize_on_launch,
+        "Minimize when Echo VR starts",
+        "Keeps the launcher out of the way while you play.",
+        x,
+        y,
+        w,
+        true,
+        "",
+    );
+    if flipped {
+        d.save();
+    }
+    y += h + dz(6.0);
+
+    // Support.
+    y += markdown::draw(kit, x, y, w, "__**Support**__", &look) + dz(10.0);
     if kit
-        .flat_button(
-            "welcome-again",
-            Variant::Secondary,
-            None,
-            "Show welcome again",
-            x + W - 20.0 - 200.0,
-            y + 10.0,
-            200.0,
-            style::SMALL,
+        .button(
+            "upload-logs",
+            x,
+            y,
+            w,
+            BTN_H,
+            Tone::Panel,
+            Some(Icon::Info),
+            "Upload logs",
             true,
-            "Answer the two welcome questions again",
+            "Asks first, and says what the logs contain",
         )
         .clicked
     {
-        d.overlay = Some(setup::Overlay::Setup { step: 0 });
-    }
-    kit.caps(x + 20.0, y + 56.0, "Echo VR licence", style::TEXT_MUTED);
-    for (i, (own, label, tip)) in [
-        (true, "I own it", "You own Echo VR on your Meta account"),
-        (
-            false,
-            "New player",
-            "No licence yet: PLAY asks for the licence patch first",
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let on = d.state.owner == Some(own);
-        let bx = x + 200.0 + i as f32 * 152.0;
-        if kit
-            .choice(
-                &format!("settings-owner-{i}"),
-                label,
-                bx,
-                y + 50.0,
-                140.0,
-                style::SMALL,
-                on,
-                tip,
-            )
-            .clicked
-        {
-            d.state.owner = Some(own);
-            d.state.setup_done = true;
-            d.save();
-        }
-    }
-    kit.text(
-        x + 516.0,
-        y + 55.0,
-        match d.state.owner {
-            Some(false) => "PLAY asks for the licence patch first.",
-            Some(true) => "Your own licence; the patch is optional.",
-            None => "Not set yet.",
-        },
-        style::body(12.0),
-        style::TEXT_MUTED,
-    );
-    if kit.toggle(
-        "minimize",
-        &mut d.state.minimize_on_launch,
-        "Minimize the launcher when Echo VR starts",
-        x + 20.0,
-        y + 90.0,
-        true,
-        "Keeps the launcher out of the way while you play",
-    ) {
-        d.save();
-    }
-    if kit.toggle(
-        "artwork",
-        &mut d.state.revive_artwork,
-        "SteamVR: add game artwork",
-        x + 440.0,
-        y + 90.0,
-        true,
-        "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
-    ) {
-        d.save();
+        ask_upload(d);
     }
 
-    // About -- Clippy rises from behind the card's top edge.
-    let y = 532.0;
-    d.clippy.draw(kit, x + W - 200.0, y, 180.0);
-    kit.titled_card(x, y, W, 116.0, "About");
-    kit.image("icon.png", x + 20.0, y + 48.0, 48.0, 48.0);
-    let logo = kit.rect(x + 20.0, y + 48.0, 48.0, 48.0);
+    about(d, kit, ctx, x, w);
+    let footer = myriad(
+        kit,
+        "Not affiliated with Meta or Ready at Dawn",
+        design::myriad(18.0),
+        design::HEADING,
+        w,
+        true,
+    );
+    kit.put(x, dz(server_info::footer_y(kit)), footer);
+}
+
+/// ABOUT, above the panel's footer: the icon (double-click it for Clippy), the name and
+/// version, and the credits and links.
+fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) {
+    let links_y = dz(server_info::footer_y(kit) - 62.0);
+    let s = dz(60.0);
+    let top = links_y - dz(28.0) - s;
+    let line = top - dz(24.0);
+    kit.ui.painter().hline(
+        kit.rect(x, line, w, 0.0).x_range(),
+        kit.rect(x, line, w, 0.0).min.y,
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+    );
+    // Clippy rises from behind that line.
+    kit.clipped(x, 0.0, w, line, |k| {
+        d.clippy.draw(k, x + w - dz(300.0), line, dz(270.0))
+    });
+    kit.image("icon.png", x, top, s, s);
+    let logo = kit.rect(x, top, s, s);
     if !kit.blocked {
         let r = kit
             .ui
@@ -230,37 +584,88 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.clippy.trigger(ctx);
         }
     }
-    kit.text(
-        x + 84.0,
-        y + 50.0,
-        "Echo VR Launcher",
-        style::display(18.0),
-        style::TEXT,
-    );
-    kit.text(
-        x + 84.0,
-        y + 78.0,
-        crate::version::VERSION_TITLE,
-        style::body(13.0),
-        style::TEXT_DIM,
-    );
-    if kit
-        .flat_button(
-            "credits",
-            Variant::Secondary,
-            None,
-            "Credits",
-            x + W - 150.0,
-            y + 60.0,
-            130.0,
-            style::SMALL,
+    kit.title(x + s + dz(20.0), top + dz(4.0), "Echo VR Launcher", 22.0);
+    let version = env!("CARGO_PKG_VERSION");
+    let status = match &d.launcher_update {
+        LauncherUpdate::Checking => format!("Version {version} · checking for updates"),
+        LauncherUpdate::Latest => format!("Version {version} · the latest"),
+        LauncherUpdate::Available(r) => format!("Version {version} · {} is out", r.version),
+        LauncherUpdate::Failed => format!("Version {version} · couldn't check for updates"),
+    };
+    let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
+    kit.put(x + s + dz(20.0), top + dz(40.0), g);
+
+    let update = match &d.launcher_update {
+        LauncherUpdate::Available(_) => {
+            Some(("about-update", "Download update", "Open the release page"))
+        }
+        LauncherUpdate::Checking => None,
+        _ => Some((
+            "about-update",
+            "Check for updates",
+            "Look for a newer launcher",
+        )),
+    };
+    let links = [
+        Some(("about-credits", "Credits", "Who made this possible")),
+        Some(("about-discord", "Discord", "The Echo VR community")),
+        Some((
+            "about-source",
+            "Source code",
+            "The launcher on GitHub (GPL-3.0)",
+        )),
+        update,
+    ];
+    let mut lx = x;
+    for (key, label, tip) in links.into_iter().flatten() {
+        let clicked = text_link(kit, key, lx, links_y, label, 20.0, true, tip);
+        let lw = myriad(
+            kit,
+            label,
+            design::myriad(20.0),
+            design::LINK,
+            f32::INFINITY,
             true,
-            "Who made this possible",
         )
-        .clicked
-    {
-        d.dialogs.info("Credits", CREDITS);
+        .size()
+        .x;
+        lx += lw + dz(28.0);
+        if clicked {
+            match (key, &d.launcher_update) {
+                ("about-credits", _) => d.dialogs.info("Credits", CREDITS),
+                ("about-discord", _) => platform::open_url(crate::core::oauth::INVITE_URL),
+                ("about-source", _) => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
+                (_, LauncherUpdate::Available(r)) => platform::open_url(&r.url),
+                _ => d.check_launcher_update(ctx),
+            }
+        }
     }
+}
+
+/// Asks before deleting the cache, saying how much goes.
+pub(super) fn ask_delete_cache(d: &mut Dashboard) {
+    let amount = d
+        .cache_bytes()
+        .map_or_else(|| "the cached files".into(), super::play::gb);
+    d.dialogs.confirm_danger(
+        CACHE_KEY,
+        "Delete cached files?",
+        &format!(
+            "This deletes {amount}: downloaded installers and patches, temporary files, and game zips left by cancelled installs.\n\nYour installed versions, settings and logs stay."
+        ),
+        "Delete",
+    );
+}
+
+/// What uploading the logs shares, and with whom; asks before it happens.
+pub(super) fn ask_upload(d: &mut Dashboard) {
+    d.dialogs.options(
+        UPLOAD_KEY,
+        "Upload your logs?",
+        UPLOAD_TEXT,
+        DlgIcon::Info,
+        &["Upload", "Cancel"],
+    );
 }
 
 fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {
@@ -274,7 +679,7 @@ fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {
     }
 }
 
-fn set_library(d: &mut Dashboard) {
+pub(super) fn set_library(d: &mut Dashboard) {
     let lib = paths::normalize(&d.library_field);
     if lib.is_empty() {
         d.library_field = d.state.library.clone();

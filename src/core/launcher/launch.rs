@@ -47,6 +47,20 @@ pub fn split_args(s: &str) -> Vec<String> {
     out
 }
 
+/// Arguments back into one command line (for shortcuts): those with spaces in quotes.
+pub fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.is_empty() || a.chars().any(char::is_whitespace) {
+                format!("\"{a}\"")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A lobby id as the game expects it: a UUID (any `.node` suffix dropped).
 // Unused while the Play page has no lobby field (it comes back with the next design pass).
 #[allow(dead_code)]
@@ -147,6 +161,13 @@ mod tests {
     use super::*;
 
     const LOBBY: &str = "0f5c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b";
+
+    #[test]
+    fn joins_what_split_splits() {
+        let args = split_args(r#"-a "b c" -d"#);
+        assert_eq!(join_args(&args), r#"-a "b c" -d"#);
+        assert_eq!(split_args(&join_args(&args)), args);
+    }
 
     #[test]
     fn splits_like_a_command_line() {

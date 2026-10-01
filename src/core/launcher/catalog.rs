@@ -6,8 +6,13 @@
 //!     { "id": "pc-34.4.631547.1", "name": "Echo VR 34.4 (PC)", "channel": "stable",
 //!       "platform": "pc", "url": "ready-at-dawn-echo-arena.zip", "size": 4270000000,
 //!       "sha256": null, "update_manifest": "https://files.echovr.de/updates/update.manifest",
-//!       "notes": "The last official build, with community patches." } ] }
+//!       "notes": "The last official build, with community patches.",
+//!       "hosted": "live", "summary": "Where everyone plays" } ] }
 //! ```
+//!
+//! `hosted` marks the builds the community's main servers run: `live` (the current one)
+//! or `event`. The Install page lists them first, tagged, above the rest. `summary` is
+//! one short line for that list. Both are optional.
 //!
 //! `url` is either relative -- served by the fastest download mirror -- or an absolute
 //! https URL on a trusted host. Everything is validated before it is used for downloads
@@ -29,6 +34,17 @@ pub enum Platform {
     Quest,
 }
 
+/// Which builds the main servers run (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hosted {
+    Live,
+    Event,
+    /// A value this version of the launcher doesn't know: shown as not hosted.
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct VersionEntry {
@@ -44,6 +60,8 @@ pub struct VersionEntry {
     pub sha256: Option<String>,
     pub update_manifest: Option<String>,
     pub notes: String,
+    pub hosted: Option<Hosted>,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -77,6 +95,11 @@ pub fn is_safe_url(url: &str) -> bool {
 }
 
 impl VersionEntry {
+    /// Run by the main servers (live or an event).
+    pub fn is_hosted(&self) -> bool {
+        matches!(self.hosted, Some(Hosted::Live | Hosted::Event))
+    }
+
     /// Whether `url` is served by the mirrors (relative) rather than absolute.
     pub fn uses_mirror(&self) -> bool {
         !self.url.contains("://")
@@ -140,6 +163,8 @@ impl Catalog {
                     url: "ready-at-dawn-echo-arena.zip".into(),
                     update_manifest: Some(pc_update::PC_MANIFEST_URL.into()),
                     notes: "The current PC client with community updates.".into(),
+                    hosted: Some(Hosted::Live),
+                    summary: "Played on the community servers".into(),
                     ..Default::default()
                 },
                 VersionEntry {
@@ -187,6 +212,31 @@ mod tests {
         assert!(c.versions[0].uses_mirror());
         assert!(!c.versions[1].uses_mirror());
         assert_eq!(c.pc().count(), 2);
+    }
+
+    #[test]
+    fn reads_hosted_and_summary() {
+        let c = Catalog::parse(
+            r#"{"versions":[
+              {"id":"a","url":"a.zip","hosted":"live","summary":"Where everyone plays"},
+              {"id":"b","url":"b.zip","hosted":"event"},
+              {"id":"c","url":"c.zip","hosted":"weekend"},
+              {"id":"d","url":"d.zip"}]}"#,
+        )
+        .unwrap();
+        let hosted: Vec<_> = c.versions.iter().map(|v| v.hosted).collect();
+        assert_eq!(
+            hosted,
+            [
+                Some(Hosted::Live),
+                Some(Hosted::Event),
+                Some(Hosted::Unknown),
+                None
+            ]
+        );
+        assert_eq!(c.versions[0].summary, "Where everyone plays");
+        let shown: Vec<_> = c.versions.iter().map(VersionEntry::is_hosted).collect();
+        assert_eq!(shown, [true, true, false, false]);
     }
 
     #[test]

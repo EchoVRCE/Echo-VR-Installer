@@ -1,16 +1,11 @@
-//! Absolute-positioned drawing helpers from the installer (images, boxes, text, the
-//! ✓/✗ mark and the Metal checkbox). Coordinates are logical pixels from the current
-//! origin. The launcher's own widgets are in `style.rs`.
+//! Absolute positioning: a `Kit` draws into a `Ui` at logical pixels from its origin
+//! (images, the ✓/✗ mark, clipping and wheel scrolling). The controls are in
+//! `widgets.rs`, the design's parts in `design.rs`.
 
-use std::sync::Arc;
-
-use egui::{
-    pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Galley, Id, Pos2, Rect, Sense, Shape,
-    Stroke, StrokeKind, TextureHandle, Ui,
-};
+use egui::{pos2, vec2, Color32, Pos2, Rect, Shape, Stroke, TextureHandle, Ui};
 
 use super::assets::Assets;
-use super::theme::{self, rgba};
+use super::launcher::{H, W};
 
 pub struct Kit<'a> {
     pub ui: &'a mut Ui,
@@ -18,26 +13,27 @@ pub struct Kit<'a> {
     pub origin: Pos2,
     /// A modal dialog/window is open on top: draw, but don't react.
     pub blocked: bool,
-    /// Tip of the widget hovered this frame (the TipBox shows it).
-    pub tip: Option<String>,
-    id: Id,
+    /// Drawing a page nobody sees, only to warm its images (`Dashboard::prewarm`): no
+    /// side effects.
+    pub ghost: bool,
+    /// The window's room beyond the design's `W`×`H` (logical pixels; one of them is 0,
+    /// as the launcher is scaled to fit).
+    pub ex: f32,
+    pub ey: f32,
 }
 
 impl<'a> Kit<'a> {
-    pub fn new(
-        ui: &'a mut Ui,
-        assets: &'a Assets,
-        id: impl std::hash::Hash + std::fmt::Debug,
-        blocked: bool,
-    ) -> Self {
+    pub fn new(ui: &'a mut Ui, assets: &'a Assets, blocked: bool) -> Self {
         let origin = ui.max_rect().min;
+        let window = ui.ctx().viewport_rect().size();
         Kit {
             ui,
             assets,
             origin,
             blocked,
-            tip: None,
-            id: Id::new(id),
+            ghost: false,
+            ex: (window.x - W).max(0.0),
+            ey: (window.y - H).max(0.0),
         }
     }
 
@@ -71,22 +67,17 @@ impl<'a> Kit<'a> {
         self.ui.ctx().clone()
     }
 
+    /// The whole window.
+    pub fn window(&self) -> Rect {
+        self.rect(0.0, 0.0, W + self.ex, H + self.ey)
+    }
+
     pub fn rect(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect::from_min_size(self.origin + vec2(x, y), vec2(w, h))
     }
 
     fn painter(&self) -> &egui::Painter {
         self.ui.painter()
-    }
-
-    fn wid(&self, key: &str) -> Id {
-        self.id.with(key)
-    }
-
-    pub fn set_tip(&mut self, tip: &str) {
-        if !tip.is_empty() {
-            self.tip = Some(tip.to_string());
-        }
     }
 
     // ---- painting ----
@@ -104,83 +95,6 @@ impl<'a> Kit<'a> {
             rect,
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             tint,
-        );
-    }
-
-    /// Swing's `fillRoundRect(.., arc, arc)` + 1px `drawRoundRect` border.
-    pub fn round_box(
-        &self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        arc: f32,
-        fill: Color32,
-        border: Option<Color32>,
-    ) {
-        let r = self.rect(x, y, w, h);
-        let radius = CornerRadius::from(arc / 2.0);
-        self.painter().rect_filled(r, radius, fill);
-        if let Some(b) = border {
-            self.painter()
-                .rect_stroke(r, radius, Stroke::new(1.0, b), StrokeKind::Inside);
-        }
-    }
-
-    pub fn fill(&self, x: f32, y: f32, w: f32, h: f32, color: Color32) {
-        self.painter()
-            .rect_filled(self.rect(x, y, w, h), 0.0, color);
-    }
-
-    /// Lays out `text`, centered per line, wrapping at `wrap` (or never).
-    pub fn galley(
-        &self,
-        text: &str,
-        font: FontId,
-        color: Color32,
-        wrap: Option<f32>,
-    ) -> Arc<Galley> {
-        let mut job = egui::text::LayoutJob::simple(
-            text.to_string(),
-            font,
-            color,
-            wrap.unwrap_or(f32::INFINITY),
-        );
-        job.halign = Align::Center;
-        self.ui.ctx().fonts_mut(|f| f.layout_job(job))
-    }
-
-    pub fn text_size(&self, text: &str, font: FontId) -> egui::Vec2 {
-        self.galley(text, font, Color32::WHITE, None).size()
-    }
-
-    /// Text centered (horizontally and vertically) in a rect, like a centered JLabel.
-    pub fn text_center(
-        &self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        text: &str,
-        font: FontId,
-        color: Color32,
-        wrap: Option<f32>,
-    ) {
-        let g = self.galley(text, font, color, wrap);
-        let r = self.rect(x, y, w, h);
-        let top = r.center().y - g.size().y / 2.0;
-        self.painter().galley(pos2(r.center().x, top), g, color);
-    }
-
-    /// Left-aligned text, vertically centered in a row of height `h`.
-    pub fn text_left(&self, x: f32, y: f32, h: f32, text: &str, font: FontId, color: Color32) {
-        let r = self.rect(x, y, 0.0, h);
-        self.painter().text(
-            pos2(r.min.x, r.center().y),
-            Align2::LEFT_CENTER,
-            text,
-            font,
-            color,
         );
     }
 
@@ -206,89 +120,5 @@ impl<'a> Kit<'a> {
                 self.painter().circle_filled(b, stroke.width / 2.0, color);
             }
         }
-    }
-
-    // ---- interaction ----
-
-    /// A Metal-look `JCheckBox` with a Conthrax label, text drawn right of the box. When
-    /// `centered`, box+label are centered in the rect (`setHorizontalAlignment(CENTER)`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn checkbox(
-        &mut self,
-        key: &str,
-        checked: &mut bool,
-        label: &str,
-        size: f32,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        centered: bool,
-        enabled: bool,
-        tip: &str,
-    ) -> bool {
-        let font = theme::conthrax(size);
-        let tw = self.text_size(label, font.clone()).x;
-        let box_s = 13.0;
-        let gap = 4.0;
-        let content_w = box_s + gap + tw;
-        let bx = if centered {
-            x + ((w - content_w) / 2.0).floor()
-        } else {
-            x + 2.0
-        };
-        let by = y + ((h - box_s) / 2.0).floor();
-        let mut changed = false;
-        let mut hovered = false;
-        if !self.blocked {
-            let resp = self.ui.interact(
-                self.rect(bx, y, content_w, h),
-                self.wid(key),
-                if enabled {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                },
-            );
-            hovered = resp.hovered();
-            if hovered {
-                self.set_tip(tip);
-            }
-            if enabled && resp.clicked() {
-                *checked = !*checked;
-                changed = true;
-            }
-        }
-        // Metal: white-to-grey box with a dark border, black check.
-        let r = self.rect(bx, by, box_s, box_s);
-        let fill = if !enabled {
-            Color32::from_gray(200)
-        } else if hovered {
-            Color32::from_rgb(235, 240, 248)
-        } else {
-            Color32::from_rgb(221, 232, 243)
-        };
-        self.ui.painter().rect_filled(r, 0.0, fill);
-        self.ui.painter().rect_stroke(
-            r,
-            0.0,
-            Stroke::new(1.0, rgba(122, 138, 153, 255)),
-            StrokeKind::Inside,
-        );
-        if *checked {
-            let c = if enabled {
-                Color32::from_rgb(51, 51, 51)
-            } else {
-                Color32::from_gray(120)
-            };
-            self.mark(true, c, box_s, bx, by);
-        }
-        let color = if enabled {
-            theme::WHITE
-        } else {
-            Color32::from_gray(170)
-        };
-        self.text_left(bx + box_s + gap, y, h, label, font, color);
-        changed
     }
 }

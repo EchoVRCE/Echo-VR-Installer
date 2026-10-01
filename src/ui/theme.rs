@@ -1,4 +1,4 @@
-//! Fonts and colours, copied from the Java Swing code.
+//! Fonts, and egui's own look (tooltips, text cursor, selection) in the design's colours.
 
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId};
 
@@ -91,38 +91,34 @@ pub fn install_fonts(ctx: &egui::Context) {
 }
 
 pub fn install_style(ctx: &egui::Context) {
+    use super::design::{self, dz};
+    // The zoom follows the window (`ui::fit_zoom`).
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     ctx.all_styles_mut(|style| {
         style.interaction.selectable_labels = false;
         style.visuals = egui::Visuals::dark();
-        style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, Color32::WHITE);
-        style.visuals.selection.bg_fill = Color32::from_rgb(70, 110, 180);
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+        let v = &mut style.visuals;
+        v.text_cursor.stroke = egui::Stroke::new(1.5, Color32::WHITE);
+        v.selection.bg_fill = design::BLUE.gamma_multiply(0.7);
+        v.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+        // Tooltips: the popup violet with the card rim's top colour.
+        v.window_fill = design::POPUP;
+        v.panel_fill = design::POPUP;
+        v.window_stroke = egui::Stroke::new(1.0, design::RIM_TOP);
+        v.window_corner_radius = egui::CornerRadius::same(dz(6.0) as u8);
+        v.menu_corner_radius = egui::CornerRadius::same(dz(6.0) as u8);
+        v.popup_shadow = egui::Shadow {
+            offset: [0, 4],
+            blur: 10,
+            spread: 0,
+            color: Color32::from_black_alpha(110),
+        };
+        v.override_text_color = Some(design::TEXT);
         style.spacing.item_spacing = egui::vec2(0.0, 0.0);
+        style.spacing.tooltip_width = 360.0;
+        style.spacing.menu_margin = egui::Margin::symmetric(10, 7);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, myriad(14.0));
     });
 }
-
-/// `new Color(r, g, b, a)` -- Java colours are unmultiplied.
-pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied_const(r, g, b, a)
-}
-
-pub const WHITE: Color32 = Color32::WHITE;
-pub const BLACK: Color32 = Color32::BLACK;
-
-pub const BOX_BORDER: Color32 = rgba(50, 50, 50, 150);
-
-pub const STATUS_DONE: Color32 = Color32::from_rgb(40, 130, 40);
-
-pub const CHIP_CURRENT_BG: Color32 = Color32::from_rgb(0, 180, 0);
-pub const CHIP_UPCOMING_BG: Color32 = Color32::from_rgb(40, 40, 40);
-
-pub const BUTTON_TEXT: Color32 = Color32::from_rgb(230, 230, 230);
-pub const BUTTON_TEXT_HOVER: Color32 = Color32::from_rgb(250, 250, 250);
-
-pub const FIELD_BG_INVALID: Color32 = rgba(150, 45, 45, 210);
-pub const PLACEHOLDER: Color32 = Color32::from_rgb(170, 170, 170);
-
-pub const PROGRESS_BG: Color32 = rgba(255, 255, 255, 200);
-
-pub const MARK_OK: Color32 = Color32::from_rgb(80, 255, 0);
-pub const MARK_BAD: Color32 = Color32::from_rgb(255, 80, 80);

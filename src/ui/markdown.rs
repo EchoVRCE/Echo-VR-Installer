@@ -8,6 +8,7 @@ use std::sync::Arc;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{pos2, vec2, Color32, FontId, Galley, Pos2, Rect, Stroke, StrokeKind};
 
+use super::design;
 use super::kit::Kit;
 use crate::core::launcher::feed;
 
@@ -57,7 +58,16 @@ struct Line {
 
 /// Draws `text` at logical (x, y), wrapped at `w`; returns the height used.
 pub fn draw(kit: &Kit, x: f32, y: f32, w: f32, text: &str, look: &Look) -> f32 {
-    let (lines, h) = layout(kit, w, text, look);
+    paint(kit, x, y, look, layout(kit, w, text, look, false))
+}
+
+/// Like [`draw`], but each line stays on one row, cut with "…" when too long (names).
+pub fn draw_line(kit: &Kit, x: f32, y: f32, w: f32, text: &str, look: &Look) -> f32 {
+    paint(kit, x, y, look, layout(kit, w, text, look, true))
+}
+
+fn paint(kit: &Kit, x: f32, y: f32, look: &Look, laid: (Vec<Line>, f32)) -> f32 {
+    let (lines, h) = laid;
     let p = kit.ui.painter();
     for l in lines {
         let at = kit.origin + vec2(x + l.x, y + l.y);
@@ -106,7 +116,7 @@ fn chip_rims(p: &egui::Painter, at: Pos2, galley: &Galley, look: &Look) {
     }
 }
 
-fn layout(kit: &Kit, w: f32, text: &str, look: &Look) -> (Vec<Line>, f32) {
+fn layout(kit: &Kit, w: f32, text: &str, look: &Look, single: bool) -> (Vec<Line>, f32) {
     let mut out = Vec::new();
     let mut y = 0.0;
     for raw in text.lines() {
@@ -149,6 +159,11 @@ fn layout(kit: &Kit, w: f32, text: &str, look: &Look) -> (Vec<Line>, f32) {
         }
         let mut job = LayoutJob::default();
         job.wrap.max_width = (w - indent).max(10.0);
+        if single {
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            job.wrap.overflow_character = Some('…');
+        }
         inline(&mut job, body, &font, color, bold, look);
         let galley = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
         let h = galley.size().y;
@@ -237,7 +252,7 @@ fn inline(job: &mut LayoutJob, s: &str, font: &FontId, color: Color32, bold: boo
     };
     let flush = |job: &mut LayoutJob, lit: &mut String, m: Marks| {
         if !lit.is_empty() {
-            job.append(&up(lit), 0.0, fmt(font, color, m, look));
+            design::append_text(job, &up(lit), fmt(font, color, m, look));
             lit.clear();
         }
     };
@@ -314,6 +329,21 @@ fn inline(job: &mut LayoutJob, s: &str, font: &FontId, color: Color32, bold: boo
     }
 }
 
+/// `text` with markdown's special characters escaped, for names and other plain text.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(
+            c,
+            '\\' | '*' | '_' | '~' | '`' | '[' | ']' | '<' | '>' | '#' | '|'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// `[label](url)` at the start of `s`: the label and the length consumed.
 fn masked_link(s: &str) -> Option<(&str, usize)> {
     let r = s.strip_prefix('[')?;
@@ -347,6 +377,11 @@ fn timestamp(s: &str) -> Option<(i64, char, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escaping_keeps_names_literal() {
+        assert_eq!(escape("__x*y_1"), "\\_\\_x\\*y\\_1");
+    }
 
     #[test]
     fn links_and_timestamps() {
