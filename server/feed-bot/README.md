@@ -9,7 +9,12 @@ What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/
   distinct players per hour, 24 h and 30 days, counted with keyed-hash pseudonyms kept 30
   days in `state/` (the key is `state/history.key`; never copy it off the server). No
   Discord, no dependencies. `python3 status_feed.py --forget <player ID>` stops counting
-  a player who asks. Log: `/root/log/launcher_status.log`.
+  a player who asks; `--hide-top <player ID>` hides a name in the top 3. Log: `/root/log/launcher_status.log`.
+  With an EchoVRCE login in `state/echovrce.creds` (`echovrce.py`; `python3 echovrce.py
+  --check` tests it) it adds the matchmaking queue, the week's Arena top 3, and merges the
+  official daily/weekly Arena player lists into the counts. The login file can hold a
+  refresh token, a password with user ID, Discord ID or username, or a copied
+  `authorization: Bearer …` header (which lasts only until that session expires).
 - **`news.json`** (Community News): `feed_bot.py` as `echo-launcher-feed.service`, a
   read-only Discord bot. It receives no message events and only fetches the picked
   messages by ID, every 5 min. Log: `/root/log/launcher_feed.log`.

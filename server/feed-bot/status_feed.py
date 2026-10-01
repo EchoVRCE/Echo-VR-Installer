@@ -7,10 +7,17 @@ numbers only to servers.json next to the other feed files: servers and how busy 
 were seen in the last hour, 24 hours and 30 days, the matches per mode, and where the
 servers are (for the map).
 
-The API lists every player in every match. None of that is published. To count different
-players over time, each player's ID is replaced by a keyed hash (HMAC with a secret key
-that never leaves this server), stored with the time it was last seen and dropped after
-30 days. See PRIVACY.md.
+With an EchoVRCE login (state/echovrce.creds, see echovrce.py) it adds what only the
+logged-in API has: the matchmaking queue, the week's Arena top 3, and the official Arena
+player lists of the day and week, which fill in the player counts (Combat and the social
+lobby have no such lists, so those are counted here). Without a working login these extras
+are simply left out.
+
+The API lists every player in every match. None of that is published (except the top 3's
+names). To count different players over time, each player's ID is replaced by a keyed hash
+(HMAC with a secret key that never leaves this server), stored with the time it was last
+seen and dropped after 30 days; the official lists are turned into the same pseudonyms and
+only kept in memory. See PRIVACY.md.
 
 Standard library only.
 
@@ -18,6 +25,7 @@ Standard library only.
   python status_feed.py --once           fetch and write once, then exit
   python status_feed.py --forget <ID>    stop counting a player (on request); works while
                                          the service runs
+  python status_feed.py --hide-top <ID>  show a player as "Hidden player" in the top 3
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import echovrce
+
 HERE = Path(__file__).resolve().parent
 API = os.environ.get("STATUS_API", "https://g.echovrce.com/status/matches")
 OUT = Path(os.environ.get("FEED_OUT", "/var/www/EchoClientHosting/launcher/feed")) / "servers.json"
@@ -52,6 +62,14 @@ STALE_S = 300
 # Servers in this group take public matches; the others are private (hosted for a guild).
 PUBLIC_GROUP = "147afc9d-2819-4197-926d-5b3f92790edc"
 MODES = {"social_2.0": "lobby", "echo_arena": "arena", "echo_combat": "combat"}
+# The official lists and the top 3 are refreshed this often (paging ~15 requests).
+OFFICIAL_EVERY_S = 600
+# Official data older than this is dropped rather than shown.
+OFFICIAL_MAX_AGE_S = 1800
+TOP_BOARD = {"game_mode": "echo_arena", "stat_name": "ArenaWins", "reset_schedule": "weekly"}
+# EchoTools' leaderboard encoding (wiki: Leaderboard Score To Float64).
+SCORE_OFFSET = 1_000_000_000_000_000
+SCORE_SCALE = 1_000_000_000
 REGIONS = {
     "NA": {"US", "CA", "MX"},
     "EU": {
@@ -170,19 +188,145 @@ class History:
         self.seen = {k: v for k, v in self.seen.items() if v >= cutoff}
         self.since = max(self.since, cutoff)
 
-    def counts(self, t: float) -> dict[str, int]:
-        return {name: sum(1 for v in self.seen.values() if v >= t - span) for name, span in WINDOWS.items()}
+    def within(self, t: float, span: float) -> set[str]:
+        return {k for k, v in self.seen.items() if v >= t - span}
+
+    def counts(self, t: float, extra: dict[str, set[str] | None] | None = None) -> dict[str, int]:
+        """Different players per window; `extra` adds pseudonyms from official lists."""
+        extra = extra or {}
+        skip = self.forgotten()
+        return {
+            name: len((self.within(t, span) | (extra.get(name) or set())) - skip)
+            for name, span in WINDOWS.items()
+        }
 
     def save(self) -> None:
         body = json.dumps({"since": self.since, "seen": self.seen}, separators=(",", ":"))
         write_atomic(self.file, body.encode(), mode=0o600)
 
 
+# ---- official data (logged in) ----
+
+
+def decode_score(score: int, subscore: int = 0) -> float:
+    if score >= SCORE_OFFSET:
+        return (score - SCORE_OFFSET) + subscore / SCORE_SCALE
+    return -((SCORE_OFFSET - 1 - score) + (1 - subscore / (SCORE_SCALE - 1)))
+
+
+def seconds(ts: Any) -> float | None:
+    if isinstance(ts, dict) and "seconds" in ts:
+        return float(ts["seconds"]) + float(ts.get("nanos", 0)) / 1e9
+    return None
+
+
+def queue_numbers(state: dict[str, Any]) -> dict[str, Any]:
+    """Players searching per mode, and the typical wait of the latest matches made."""
+    searching = {"arena": 0, "combat": 0, "lobby": 0, "other": 0}
+    for ticket in state.get("index") or []:
+        mode = MODES.get((ticket.get("StringProperties") or {}).get("game_mode", ""), "other")
+        searching[mode] += int(ticket.get("Count") or 1)
+    waits = sorted(
+        c - s
+        for comp in (state.get("stats") or {}).get("completions") or []
+        if (s := seconds(comp.get("create_time"))) is not None and (c := seconds(comp.get("complete_time"))) is not None and c >= s
+    )
+    median = waits[len(waits) // 2] if waits else None
+    return {"searching": searching, "total": sum(searching.values()), "wait_s": round(median) if median is not None else None}
+
+
+def record_name(r: dict[str, Any]) -> str:
+    meta = r.get("metadata") or {}
+    for v in (meta.get("display_name"), meta.get("displayName"), r.get("display_name"), r.get("username")):
+        if isinstance(v, dict):
+            v = v.get("value")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return "?"
+
+
+def hidden_from_top(history: History) -> set[str]:
+    try:
+        return set((history.dir / "hide_top.txt").read_text().split())
+    except FileNotFoundError:
+        return set()
+
+
+def hide_from_top(history: History, user_id: str) -> None:
+    f = history.dir / "hide_top.txt"
+    with f.open("a") as out:
+        out.write(history.pseudonym(user_id) + "\n")
+    os.chmod(f, 0o600)
+
+
+class Official:
+    """The logged-in extras, kept fresh and dropped when they get too old."""
+
+    def __init__(self, history: History) -> None:
+        self.history = history
+        self.session: echovrce.Session | None = None
+        self.boards_at = 0.0
+        self.daily: set[str] | None = None
+        self.weekly: set[str] | None = None
+        self.top: list[dict[str, Any]] | None = None
+        self.queue: dict[str, Any] | None = None
+        self.failing = False
+
+    def _players(self, s: echovrce.Session, schedule: str) -> set[str]:
+        """Everyone on the Arena board of the day or week, as pseudonyms."""
+        out: set[str] = set()
+        cursor = None
+        for _ in range(80):
+            q = {"group_id": PUBLIC_GROUP, "game_mode": "echo_arena", "stat_name": "ArenaWins",
+                 "reset_schedule": schedule, "limit": 100}
+            if cursor:
+                q["cursor"] = cursor
+            page = s.rpc("leaderboard/records", q)
+            out.update(self.history.pseudonym(r["owner_id"]) for r in page.get("records") or [] if r.get("owner_id"))
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        return out
+
+    def _top(self, s: echovrce.Session) -> list[dict[str, Any]]:
+        page = s.rpc("leaderboard/records", {"group_id": PUBLIC_GROUP, **TOP_BOARD, "limit": 3})
+        hidden = hidden_from_top(self.history)
+        return [
+            {"rank": int(r.get("rank") or i + 1),
+             "name": "Hidden player" if self.history.pseudonym(r.get("owner_id") or "") in hidden else record_name(r),
+             "wins": round(decode_score(int(r.get("score") or 0), int(r.get("subscore") or 0)))}
+            for i, r in enumerate(page.get("records") or [])
+        ]
+
+    def update(self, t: float) -> None:
+        if self.session is None:
+            if not echovrce.CREDS.exists():
+                return
+            self.session = echovrce.Session()
+        s = self.session
+        try:
+            self.queue = queue_numbers(s.rpc("matchmaker/state", {}))
+            if t - self.boards_at >= OFFICIAL_EVERY_S:
+                self.daily, self.weekly, self.top = self._players(s, "daily"), self._players(s, "weekly"), self._top(s)
+                self.boards_at = t
+            if self.failing:
+                log.info("EchoVRCE data available again")
+            self.failing = False
+        except (echovrce.AuthError, OSError, ValueError, KeyError) as e:
+            if not self.failing:
+                log.warning("EchoVRCE data unavailable: %s", e)
+            self.failing = True
+            self.queue = None
+            if t - self.boards_at > OFFICIAL_MAX_AGE_S:
+                self.daily = self.weekly = self.top = None
+
+
 # ---- aggregation ----
 
 
-def aggregate(data: dict[str, Any], history: History, t: float) -> dict[str, Any]:
-    """The published numbers. Takes nothing about players beyond counting them."""
+def aggregate(data: dict[str, Any], history: History, t: float, official: Official | None = None) -> dict[str, Any]:
+    """The published numbers. Takes nothing about players beyond counting them (and the
+    top 3's names)."""
     servers = data.get("gameservers") or []
     matches = data.get("labels") or []
 
@@ -263,9 +407,17 @@ def aggregate(data: dict[str, Any], history: History, t: float) -> dict[str, Any
         },
         "players": {
             "online": int(data.get("player_count") or 0),
-            **history.counts(t),
+            **history.counts(
+                t,
+                {"last_24h": official.daily, "last_30d": official.weekly} if official else None,
+            ),
             "since": now_iso(history.since),
+            # Official Arena lists (None without a working EchoVRCE login).
+            "arena_today": len(official.daily) if official and official.daily is not None else None,
+            "arena_week": len(official.weekly) if official and official.weekly is not None else None,
         },
+        "queue": official.queue if official else None,
+        "top": {"board": "arena_wins_week", "entries": official.top} if official and official.top else None,
         "modes": modes,
         "locations": sorted(locations.values(), key=lambda l: -l["servers"]),
     }
@@ -277,10 +429,11 @@ def fetch() -> dict[str, Any]:
         return json.load(r)
 
 
-def cycle(history: History, last: dict[str, Any] | None) -> dict[str, Any] | None:
+def cycle(history: History, official: Official, last: dict[str, Any] | None) -> dict[str, Any] | None:
     t = time.time()
+    official.update(t)
     try:
-        body = aggregate(fetch(), history, t)
+        body = aggregate(fetch(), history, t, official)
         history.save()
     except Exception as e:  # noqa: BLE001 - keep running, report the outage
         log.warning("status API unavailable: %s", e)
@@ -297,7 +450,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--once", action="store_true", help="fetch and write once, then exit")
     ap.add_argument("--forget", metavar="PLAYER_ID", help="stop counting this player (EchoVRCE user ID)")
+    ap.add_argument("--hide-top", metavar="PLAYER_ID", help="hide this player's name in the top 3")
     args = ap.parse_args()
+    if args.hide_top:
+        hide_from_top(History(STATE), args.hide_top.strip())
+        print("hidden: shown as 'Hidden player' from the next top-3 refresh (within 10 minutes)")
+        return
     if args.forget:
         History(STATE).forget(args.forget.strip())
         print("forgotten: that player is no longer counted (applied within 30 s)")
@@ -310,10 +468,11 @@ def main() -> None:
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s", handlers=handlers)
     history = History(STATE)
+    official = Official(history)
     last = None
     log.info("polling %s every %s s into %s", API, EVERY_S, OUT)
     while True:
-        last = cycle(history, last) or last
+        last = cycle(history, official, last) or last
         if args.once:
             return
         time.sleep(EVERY_S)

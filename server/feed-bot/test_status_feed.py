@@ -96,6 +96,49 @@ class AggregateTest(unittest.TestCase):
         self.assertEqual(self.history.counts(T + 30)["last_hour"], 1)
         self.assertNotIn(self.history.pseudonym("a"), self.history.seen)
 
+    def test_official_lists_join_the_counts(self):
+        self.history.record({"a"}, T - 1800)
+        official = sf.Official(self.history)
+        official.daily = {self.history.pseudonym("a"), self.history.pseudonym("arena-only")}
+        official.weekly = official.daily | {self.history.pseudonym("week-only")}
+        official.queue = {"searching": {"arena": 2}, "total": 2, "wait_s": 90}
+        official.top = [{"rank": 1, "name": "Someone", "wins": 12}]
+        out = sf.aggregate(SAMPLE, self.history, T, official)
+        # 13 players in SAMPLE plus "a"; "a" is also on the day's list and counts once.
+        p = out["players"]
+        self.assertEqual((p["last_hour"], p["arena_today"], p["arena_week"]), (14, 2, 3))
+        self.assertEqual(p["last_24h"], 15)
+        self.assertEqual(p["last_30d"], 16)
+        self.assertEqual(out["queue"]["wait_s"], 90)
+        self.assertEqual(out["top"]["entries"][0]["wins"], 12)
+        self.assertIsNone(sf.aggregate(SAMPLE, self.history, T)["queue"])
+
+    def test_queue_numbers(self):
+        state = {
+            "index": [
+                {"StringProperties": {"game_mode": "echo_arena"}, "Count": 2},
+                {"StringProperties": {"game_mode": "echo_combat"}, "Count": 1},
+                {"StringProperties": {"game_mode": "echo_arena"}},
+            ],
+            "stats": {"completions": [
+                {"create_time": {"seconds": 100}, "complete_time": {"seconds": 160}},
+                {"create_time": {"seconds": 100}, "complete_time": {"seconds": 190}},
+                {"create_time": {"seconds": 100}, "complete_time": {"seconds": 400}},
+            ]},
+        }
+        q = sf.queue_numbers(state)
+        self.assertEqual(q["searching"], {"arena": 3, "combat": 1, "lobby": 0, "other": 0})
+        self.assertEqual((q["total"], q["wait_s"]), (4, 90))
+
+    def test_decode_score(self):
+        self.assertEqual(sf.decode_score(1_000_000_000_000_012, 750_000_000), 12.75)
+        self.assertAlmostEqual(sf.decode_score(999_999_999_999_997, 499_999_999), -2.5, places=6)
+        self.assertEqual(sf.record_name({"username": {"value": "Ace"}}), "Ace")
+
+    def test_hide_from_top(self):
+        sf.hide_from_top(self.history, "u-1")
+        self.assertIn(self.history.pseudonym("u-1"), sf.hidden_from_top(self.history))
+
     def test_stale_source(self):
         out = sf.aggregate(SAMPLE, self.history, T + 3600)
         self.assertEqual(out["status"], "stale")
