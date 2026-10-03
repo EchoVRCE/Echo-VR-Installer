@@ -19,7 +19,59 @@ What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/
   read-only Discord bot. It receives no message events and only fetches the picked
   messages by ID, every 5 min. Log: `/root/log/launcher_feed.log`.
 
-Logs rotate daily and are kept 30 days. Tests: `python3 -m unittest test_status_feed`.
+Logs rotate daily and are kept 30 days. Tests: `python3 -m unittest test_status_feed
+test_log_upload`.
+
+## Log uploads
+
+Settings → Upload logs in the launcher sends the player's logs (the launcher's, Echo VR's,
+EchoXR's, plugins', the Quest's) as one plain-text bundle to
+`https://files.echovr.de/launcher/logs`. `log_upload.py` (as `echo-launcher-logs.service`,
+on `127.0.0.1:8787` behind Apache) keeps an upload only when it is logs: see its docstring
+for every check. In short: 10 attempts per hour per IP; the launcher's user agent; strict
+UTF-8 text without control, format or private-use characters, line and size limits,
+checked while it streams in; ClamAV on every file as it arrives; Magika (Google's file
+type detection) on every file and every 2 KiB of it, refusing code and scripts. Nothing
+is kept from a refused upload. Kept uploads are deleted after 30 days; no IP is stored.
+
+The player gets an 8-character reference to give you. On the server:
+
+```sh
+L='/opt/echo-launcher-logs/.venv/bin/python /opt/echo-launcher-logs/log_upload.py --dir /var/lib/echo-launcher-logs'
+ssh files.echo "$L --list"
+ssh files.echo "$L --show K7Q4MZ2A" | less     # never -R: the text is checked, but stay safe
+ssh files.echo "$L --delete K7Q4MZ2A"          # on request
+ssh files.echo "$L --check /path/to/some.log"  # every check on files, to tune
+```
+
+Deploy (ClamAV needs about 1.2 GiB of RAM, 2.4 GiB while it reloads its signatures):
+
+```sh
+ssh files.echo 'apt install -y clamav-daemon clamav-freshclam && systemctl enable --now clamav-freshclam clamav-daemon'
+ssh files.echo 'mkdir -p /opt/echo-launcher-logs'
+scp log_upload.py requirements-log-upload.txt files.echo:/opt/echo-launcher-logs/
+scp echo-launcher-logs.service files.echo:/etc/systemd/system/
+ssh files.echo 'cd /opt/echo-launcher-logs && python3 -m venv .venv && .venv/bin/pip install -r requirements-log-upload.txt'
+# Before going live: real Echo VR and EchoXR logs must pass (copy some over first).
+ssh files.echo "$L --check /tmp/sample-logs/*"
+ssh files.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-logs'
+```
+
+Apache (`a2enmod proxy proxy_http headers`), in the `files.echovr.de` virtual host, before
+any other `ProxyPass` for that path; then `apache2ctl configtest && systemctl reload
+apache2`:
+
+```apache
+<Location /launcher/logs>
+    LimitRequestBody 35651584
+    RequestHeader set X-Real-IP "expr=%{REMOTE_ADDR}"
+    ProxyPass http://127.0.0.1:8787/launcher/logs timeout=600
+</Location>
+```
+
+`X-Real-IP` is what the rate limit counts by, and the service only believes it from
+127.0.0.1. The timeout covers the checks after the upload (Magika on every 2 KiB of up to
+32 MiB takes a while).
 
 ## Discord setup
 

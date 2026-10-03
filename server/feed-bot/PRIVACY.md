@@ -1,16 +1,19 @@
 # Privacy Policy: Echo VR Launcher Feed
 
-*Last updated: September 29, 2026*
+*Last updated: October 3, 2026*
 
 This policy explains what personal data the Echo VR Launcher Feed processes, why, and what
-your rights are. The feed has two parts:
+your rights are. The feed has three parts:
 
 - **The Discord bot ("the Bot"):** it copies the community news messages that moderators
   pick.
 - **The status service:** it turns the public EchoVRCE server status into the numbers
   shown under SERVER INFO.
+- **The log upload service:** it receives the logs a player chooses to send with "Upload
+  logs" in the launcher, to help them with a problem.
 
-Both publish files that the Echo VR Launcher shows.
+The first two publish files that the Echo VR Launcher shows; uploaded logs are never
+published.
 
 ## Who is responsible
 
@@ -80,6 +83,29 @@ and traceable operation (Art. 6(1)(f) GDPR).
 The IDs of the channels and messages the Bot shows are stored on the server. They contain no
 personal data.
 
+### Log uploads
+
+When you choose **Upload logs** in the launcher's Settings, and confirm after it has shown
+what goes, the launcher sends log files from your PC: the launcher's own logs, Echo VR's
+logs (from each installed version), EchoXR's logs, plugins' logs, and the Quest logs you
+saved last. They can contain your computer's user name (in folder paths), where Echo VR
+and the launcher are installed, your headset's model and serial number, your Echo VR
+account name and the matches you joined, the versions and options you use, and error
+messages.
+
+- **Purpose:** finding the cause of a problem you asked for help with.
+- **Legal basis:** your consent (Art. 6(1)(a) GDPR), given by confirming the upload. You
+  can withdraw it at any time by asking for the upload to be deleted.
+- **Who sees them:** only the developer. They are stored on the server, not published,
+  and not shared.
+- **What else is stored with them:** the time, the launcher's version, and the files'
+  names, sizes and checksums. Your IP address is **not** stored with them; it is held in
+  memory for one hour only, to limit uploads to 10 per hour per address (legitimate
+  interest in keeping the service available, Art. 6(1)(f) GDPR).
+- **Checks:** every upload is checked automatically (a virus scanner, ClamAV, and a file
+  type check, Magika, both running on the server). An upload that isn't plain-text logs is
+  discarded without being kept.
+
 ### Web server logs
 
 When the launcher (or anyone) downloads the feed files, the web server at `files.echovr.de`
@@ -92,7 +118,8 @@ operation and security, based on legitimate interest (Art. 6(1)(f) GDPR).
 |---|---|
 | Feed files (`news.json`, `servers.json`, images) | Replaced on every update. Unselected or deleted news leaves the feed within about 5 minutes. |
 | Player pseudonyms with their last-seen time | 30 days after that player was last seen |
-| Bot and status-service logs | 30 days |
+| Uploaded logs | 30 days, or until you ask for their deletion |
+| Bot, status-service and log-upload-service logs | 30 days |
 | Web server logs | 14 days |
 | Configuration (channel and message IDs) | Until changed |
 
