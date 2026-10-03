@@ -131,15 +131,22 @@ fn game_name(s: &str) -> bool {
 
 /// Pure: whether a process (its name and command line) is the game: by its name, or by
 /// the program its command line starts with (Proton's game processes have a cut-off
-/// name). Any argument counts only for Wine's own loaders, so wrappers that pass the
-/// game's path on (Revive's injector, `proton`, EchoXR.exe) are not the game.
+/// name). Any argument counts only for Wine's own loaders, and only while they aren't
+/// running another Windows program, so wrappers that pass the game's path on (Revive's
+/// injector, `proton`, EchoXR.exe, GE-Proton's umu.exe) are not the game.
 pub fn is_game(name: &str, cmd: &[String]) -> bool {
     if game_name(name) || cmd.first().is_some_and(|c| game_name(c)) {
         return true;
     }
     let n = name.to_ascii_lowercase();
     let loader = n.is_empty() || n.starts_with("wine") || n.ends_with("-preloader");
-    loader && cmd.iter().any(|a| game_name(a))
+    // The first Windows program on a loader's command line is what it runs (the scan may
+    // keep the command line from before Wine rewrites it: `wine-preloader wine umu.exe
+    // .../echovr.exe`); any later one is just an argument.
+    let program = cmd
+        .iter()
+        .find(|a| file_name(a).to_ascii_lowercase().ends_with(".exe"));
+    loader && program.is_some_and(|p| game_name(p))
 }
 
 /// Pure: a game process's role from its arguments and whether the server plugin is loaded.
@@ -564,6 +571,7 @@ impl Monitor {
             }
             if let Some(o) = guard.as_mut() {
                 let mut roots: Vec<u32> = play.iter().map(|p| p.pid).collect();
+                roots.extend(play.as_ref().and_then(|p| p.reaper));
                 roots.extend(o.starter.filter(|_| o.pending(now)));
                 if adopt(o, &games, &parents, &roots, now) {
                     save_ours(Some(o));
@@ -711,6 +719,16 @@ mod tests {
             &args(r"Z:\g\bin\win10\EchoXR.exe -noovr")
         ));
         assert!(!is_game("echovr.exe.bak", &[]));
+        // GE-Proton starts the game through umu.exe, run by Wine's preloader.
+        let umu = args(r"c:\windows\system32\umu.exe /home/u/g/bin/win10/echovr.exe -noovr");
+        assert!(!is_game("wine-preloader", &umu));
+        assert!(!is_game("umu.exe", &umu));
+        // ...as first seen, before Wine rewrites its command line.
+        let early = args("/p/wine-preloader /p/wine c:\\windows\\system32\\umu.exe /g/bin/win10/echovr.exe -noovr");
+        assert!(!is_game("wine-preloader", &early));
+        // The game itself, as first seen.
+        let game = args("/p/wine64-preloader /p/wine X:\\g\\bin\\win10\\echovr.exe -noovr");
+        assert!(is_game("wine64-preloader", &game));
     }
 
     #[test]

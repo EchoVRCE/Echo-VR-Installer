@@ -95,6 +95,17 @@ pub fn set_next_lobby(lobby: Option<(&str, bool)>) {
 pub struct Playing {
     pub pid: u32,
     pub version: String,
+    /// Steam's `reaper` for this launch (`--play`'s parent). Wine's processes are orphaned
+    /// as they start, so the game ends up under it, not under `--play`.
+    #[serde(default)]
+    pub reaper: Option<u32>,
+}
+
+/// `--play`'s parent when it is Steam's per-launch `reaper`.
+fn steam_reaper() -> Option<u32> {
+    let parent = std::os::unix::process::parent_id();
+    let comm = std::fs::read_to_string(format!("/proc/{parent}/comm")).ok()?;
+    (comm.trim() == "reaper").then_some(parent)
 }
 
 /// Where `--play` says what it runs (so the launcher knows the game for its own).
@@ -163,11 +174,31 @@ pub fn play_from_steam() -> i32 {
     let playing = Playing {
         pid: std::process::id(),
         version: v.id.clone(),
+        reaper: steam_reaper(),
     };
     if let Ok(json) = serde_json::to_vec(&playing) {
         let _ = std::fs::write(playing_file(), json);
     }
-    let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args).and_then(|mut c| {
+    let flat = profile.runtime == crate::core::launcher::store::Runtime::Flat;
+    // Flat with EchoRelay's patch: -windowed instead of -noovr, so the game logs in with
+    // the licence patch's Oculus identity rather than as a demo player. Spectating
+    // stays -noovr -spectatorstream.
+    let oculus =
+        flat && !profile.spectator && crate::core::launcher::mods::relay_patch_in(&v.bin_dir());
+    let mut args = args;
+    let start = if !flat {
+        echoxr::Start::Vr
+    } else if oculus {
+        args.retain(|a| !a.eq_ignore_ascii_case("-noovr"));
+        if !args.iter().any(|a| a.eq_ignore_ascii_case("-windowed")) {
+            args.insert(0, "-windowed".into());
+        }
+        echoxr::Start::FlatOculus
+    } else {
+        echoxr::Start::Flat
+    };
+    tracing::info!("--play: {} {start:?}", v.id);
+    let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args, start).and_then(|mut c| {
         tracing::info!("--play: {c:?}");
         Ok(c.status()?)
     });
