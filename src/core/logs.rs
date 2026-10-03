@@ -34,8 +34,10 @@ const MAX_BASE64_RUN: usize = 1024;
 
 /// Echo VR's newest logs, across the installed versions, from the last two weeks.
 const ECHO_FILES: usize = 5;
-/// A plugin's newest logs per version.
+/// Each plugin's newest logs (and the newest crash records) per version.
 const PLUGIN_FILES: usize = 3;
+/// The loader's and the plugins' logs, across the versions.
+const PLUGIN_TOTAL: usize = 8;
 const RECENT: Duration = Duration::from_secs(14 * 24 * 3600);
 
 /// The launcher's own logs, as `core::log` writes and rotates them.
@@ -48,10 +50,8 @@ const LAUNCHER_LOGS: [&str; 6] = [
     "admin-helper.log.1",
 ];
 
-/// Plugins' logs: their folder under the game's bin folder, and how their file names
-/// start. The game's plugins live in `bin/win10/plugins` (the community update's
-/// `dbgcore.dll` loads them); a plugin's entry comes with it.
-pub const PLUGIN_LOGS: &[(&str, &str)] = &[];
+/// The mod loader's own files in its log folder (`plugin_logs`), sent first.
+const LOADER_FILES: [&str; 3] = ["loader.log", "loader.log.1", super::launcher::mods::STATUS];
 
 /// Where a log is from (its folder in the bundle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -163,13 +163,8 @@ fn source(kind: Kind, name: &str, path: PathBuf) -> Option<Source> {
 }
 
 /// Every log there is to send, by kind, at most `MAX_FILES`: from the launcher's log
-/// folder `log_dir`, the installed versions, and the plugins in `plugin_logs`.
-fn collect_from(
-    log_dir: &Path,
-    versions: &[InstalledVersion],
-    plugin_logs: &[(&str, &str)],
-    now: SystemTime,
-) -> Vec<Source> {
+/// folder `log_dir` and the installed versions (with their mod loader's `plugin_logs`).
+fn collect_from(log_dir: &Path, versions: &[InstalledVersion], now: SystemTime) -> Vec<Source> {
     let recent = |t: &SystemTime| now.duration_since(*t).map_or(true, |age| age <= RECENT);
     let mut out: Vec<Source> = LAUNCHER_LOGS
         .iter()
@@ -204,24 +199,11 @@ fn collect_from(
         );
         out.extend(source(Kind::Echo, &name, p));
     }
+    let mut plugins = Vec::new();
     for v in &present {
-        for (folder, prefix) in plugin_logs {
-            let dir = v.bin_dir().join(folder);
-            let files = newest_in(&dir, |n| n.starts_with(prefix) && is_log(n));
-            for (p, _) in files
-                .into_iter()
-                .filter(|(_, t)| recent(t))
-                .take(PLUGIN_FILES)
-            {
-                let name = format!(
-                    "{}.{}",
-                    v.id,
-                    p.file_name().unwrap_or_default().to_string_lossy()
-                );
-                out.extend(source(Kind::Plugin, &name, p));
-            }
-        }
+        plugins.extend(plugin_logs(v, &recent));
     }
+    out.extend(plugins.into_iter().take(PLUGIN_TOTAL));
     // The Quest's logs as "Quest logs" saved them last (a folder each time).
     let quest = newest_in_dirs(&log_dir.join("quest")).filter(|(_, t)| recent(t));
     if let Some((dir, _)) = quest {
@@ -245,6 +227,50 @@ fn collect_from(
     out
 }
 
+/// `v`'s mod loader logs: its own files, then each plugin's folder (and `crashes`), the
+/// newest of each.
+fn plugin_logs(v: &InstalledVersion, recent: &impl Fn(&SystemTime) -> bool) -> Vec<Source> {
+    let dir = super::launcher::mods::log_dir(&v.bin_dir());
+    let fresh = |p: &Path| modified(p).is_some_and(|t| recent(&t));
+    let mut out: Vec<Source> = LOADER_FILES
+        .iter()
+        .map(|n| dir.join(n))
+        .filter(|p| fresh(p))
+        .filter_map(|p| {
+            let name = format!("{}.{}", v.id, p.file_name()?.to_string_lossy());
+            source(Kind::Plugin, &name, p)
+        })
+        .collect();
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    folders.sort();
+    for folder in folders {
+        let label = folder
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        for (p, _) in newest_in(&folder, is_log)
+            .into_iter()
+            .filter(|(_, t)| recent(t))
+            .take(PLUGIN_FILES)
+        {
+            let name = format!(
+                "{}.{label}.{}",
+                v.id,
+                p.file_name().unwrap_or_default().to_string_lossy()
+            );
+            out.extend(source(Kind::Plugin, &name, p));
+        }
+    }
+    out
+}
+
 /// The newest folder in `dir`.
 fn newest_in_dirs(dir: &Path) -> Option<(PathBuf, SystemTime)> {
     std::fs::read_dir(dir)
@@ -257,7 +283,7 @@ fn newest_in_dirs(dir: &Path) -> Option<(PathBuf, SystemTime)> {
 
 /// Every log there is to send for these installed versions.
 pub fn collect(versions: &[InstalledVersion]) -> Vec<Source> {
-    collect_from(&paths::log_dir(), versions, PLUGIN_LOGS, SystemTime::now())
+    collect_from(&paths::log_dir(), versions, SystemTime::now())
 }
 
 /// Pure: `text`'s newest part of at most `max` bytes, starting at a character, and at a
@@ -514,8 +540,23 @@ mod tests {
                 &format!("[10-03-2026] [10:00:0{i}]: x\n"),
             );
         }
-        write(&bin.join("plugins/myplugin-1.log"), "plugin says hi\n");
-        write(&bin.join("plugins/other.log"), "not ours\n");
+        write(&bin.join("plugin_logs/loader.log"), "[EchoLoader] up\n");
+        write(
+            &bin.join("plugin_logs/loader-status.json"),
+            "{\"schema\":1}\n",
+        );
+        write(
+            &bin.join("plugin_logs/NvrAssetPatches/NvrAssetPatches.log"),
+            "plugin says hi\n",
+        );
+        write(
+            &bin.join("plugin_logs/crashes/2026-10-03T10-00-00Z.txt"),
+            "crash\n",
+        );
+        write(
+            &bin.join("plugin_logs/NvrAssetPatches/patch.bin"),
+            "not a log\n",
+        );
         write(
             &logs.join("quest/2026-10-03_10-00-00/r14logs/a.log"),
             "quest\n",
@@ -525,14 +566,27 @@ mod tests {
             root: paths::normalize(&root.to_string_lossy()),
             ..Default::default()
         };
-        let sources = collect_from(&logs, &[v], &[("plugins", "myplugin")], SystemTime::now());
+        let sources = collect_from(&logs, &[v], SystemTime::now());
         let count = |k: Kind| sources.iter().filter(|s| s.kind == k).count();
         assert_eq!(count(Kind::Launcher), 1, "the empty play.log is left out");
         assert_eq!(count(Kind::EchoXr), 1);
         assert_eq!(count(Kind::Echo), ECHO_FILES);
-        assert_eq!(count(Kind::Plugin), 1);
+        assert_eq!(count(Kind::Plugin), 4);
         assert_eq!(count(Kind::Quest), 1);
-        assert!(sources.iter().any(|s| s.name == "pc-latest.myplugin-1.log"));
+        let plugin: Vec<_> = sources
+            .iter()
+            .filter(|s| s.kind == Kind::Plugin)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            plugin,
+            [
+                "pc-latest.loader.log",
+                "pc-latest.loader-status.json",
+                "pc-latest.NvrAssetPatches.NvrAssetPatches.log",
+                "pc-latest.crashes.2026-10-03T10-00-00Z.txt"
+            ]
+        );
 
         let b = String::from_utf8(bundle(&sources).unwrap()).unwrap();
         let first = "2026-10-03T10:00:00Z  INFO hi\n";
@@ -541,7 +595,9 @@ mod tests {
             first.len()
         )));
         assert!(b.contains("FILE echoxr/pc-latest.launcher.log 19\n===== launch =====\n"));
-        assert!(b.contains("FILE plugin/pc-latest.myplugin-1.log 15\nplugin says hi\n"));
+        assert!(b.contains(
+            "FILE plugin/pc-latest.NvrAssetPatches.NvrAssetPatches.log 15\nplugin says hi\n"
+        ));
         assert!(b.ends_with("END\n"));
     }
 
