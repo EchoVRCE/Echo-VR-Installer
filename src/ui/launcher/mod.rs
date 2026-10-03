@@ -333,6 +333,8 @@ pub enum SnapVariant {
     DialogInstallError,
     /// Removing a version (a red button).
     DialogConfirm,
+    /// Discord's authorization page opened: continue in the browser.
+    DialogBrowser,
     /// A version's Manage menu, open.
     MenuOpen,
     /// The Install card's questions, as an owner (prefilled).
@@ -484,6 +486,8 @@ pub struct Dashboard {
     vrce: echovrce::Vrce,
     /// Linux: GE-Proton and EchoXR are in place (checked at start).
     linux_set_up: bool,
+    /// The job whose "continue in your browser" dialog is up (Discord's authorization).
+    browser_job: Option<String>,
     /// echovrce.com inside the window, on the EchoVRCE page.
     web: crate::ui::web::WebPane,
     /// The game service's servers, party, friends and history (the Servers page).
@@ -928,6 +932,15 @@ impl Dashboard {
                 "Delete Echo VR (PC, latest)?\n\nThis removes C:/EchoVR/versions/pc-latest from disk.",
                 "Delete",
             ),
+            Some(SnapVariant::DialogBrowser) => {
+                let (title, body) = browser_dialog(setup::LICENCE_JOB);
+                self.dialogs.browser(
+                    BROWSER_KEY,
+                    title,
+                    &body,
+                    "https://discord.com/oauth2/authorize?client_id=1",
+                );
+            }
             Some(SnapVariant::MenuOpen) => {
                 let id = crate::ui::widgets::menu_id("menu-pc-latest");
                 ctx.data_mut(|d| d.insert_temp(id, true));
@@ -1283,8 +1296,21 @@ impl Dashboard {
                     self.catalog_loading = false;
                 }
                 Msg::JobStep(id, step) => {
+                    // Discord answered (the job moved on): the browser dialog has done its part.
+                    if self.browser_job.as_deref() == Some(id.as_str())
+                        && !matches!(step, Step::Browser(_))
+                    {
+                        self.browser_job = None;
+                        self.dialogs.dismiss(BROWSER_KEY);
+                    }
                     if let Some(j) = self.jobs.get_mut(&id) {
                         match step {
+                            Step::Browser(url) => {
+                                j.label = "Waiting for Discord in your browser...".into();
+                                let (title, body) = browser_dialog(&id);
+                                self.dialogs.browser(BROWSER_KEY, title, &body, &url);
+                                self.browser_job = Some(id.clone());
+                            }
                             Step::Status(s) => {
                                 // The downloader reports progress as "12.34%" status lines too.
                                 j.fraction = s
@@ -1310,6 +1336,10 @@ impl Dashboard {
                     }
                 }
                 Msg::JobDone(id, r) => {
+                    if self.browser_job.as_deref() == Some(id.as_str()) {
+                        self.browser_job = None;
+                        self.dialogs.dismiss(BROWSER_KEY);
+                    }
                     let kind = self.jobs.remove(&id).map(|j| j.kind);
                     self.job_done(ctx, &id, kind, r);
                 }
@@ -1469,6 +1499,12 @@ impl Dashboard {
                         self.feed.textures.insert(name, tex);
                     }
                 }
+            }
+        }
+        if self.dialogs.take(BROWSER_KEY).is_some() {
+            if let Some(id) = self.browser_job.take() {
+                tracing::info!("job {id}: browser wait cancelled by the player");
+                self.cancel_job(&id);
             }
         }
         if let Some(a) = self.dialogs.take(setup::CONSENT_KEY) {
@@ -2200,6 +2236,24 @@ impl Dashboard {
 }
 
 /// A centred card for pages that are not built yet.
+/// The "continue in your browser" dialog while a job waits on Discord's authorization.
+const BROWSER_KEY: &str = "browser-wait";
+
+/// What that dialog says, for job `id`: why the page opened and what to do there.
+fn browser_dialog(id: &str) -> (&'static str, String) {
+    let what = if id == setup::QUEST_JOB {
+        "a patched Echo VR for your Quest"
+    } else {
+        "your personal licence patch, which new players need to play Echo VR on PC"
+    };
+    (
+        "Continue in your browser",
+        format!(
+            "Discord's authorization page just opened in your browser. The Echo VR Patcher bot uses it to build {what} for your Discord account.\n\nAuthorize it there (you need to be a member of its Discord server), then come back here: the launcher picks it up by itself.\n\nNo page in your browser? Open it again, or copy the link into your browser yourself."
+        ),
+    )
+}
+
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
     let (w, h) = (dz(780.0), dz(336.0));
     let x = X0 + (CW + kit.ex - w) / 2.0;

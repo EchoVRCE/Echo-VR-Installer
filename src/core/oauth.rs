@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::core::launcher::versions::Step;
+
 const CLIENT_ID: &str = "1326594571584409650";
 const SERVER_URL: &str = "https://files.echovr.de";
 /// Must match the redirect registered in the Discord developer portal.
@@ -158,9 +160,9 @@ fn respond(req: tiny_http::Request, status: u16, body: &str) {
 pub fn run(
     file_type: FileType,
     cancel: &AtomicBool,
-    status: &mut dyn FnMut(String),
+    on: &mut dyn FnMut(Step),
 ) -> Result<String, OAuthError> {
-    status("Discord authorization opened in your browser.".into());
+    on(Step::Status("Opening Discord in your browser...".into()));
     let server = bind()?;
     let state = hex::encode(rand::random::<[u8; 16]>());
     let auth_url = authorize_url(&state);
@@ -172,6 +174,7 @@ pub fn run(
     if crate::core::platform::try_open_url(&auth_url).is_err() {
         return Err(OAuthError::NoBrowser(auth_url));
     }
+    on(Step::Browser(auth_url.clone()));
 
     let deadline = Instant::now() + CALLBACK_TIMEOUT;
     let code = loop {
@@ -222,7 +225,7 @@ pub fn run(
     };
     drop(server); // free the port right away for another try
 
-    status("Generating your patch file...".into());
+    on(Step::Status("Generating your patch file...".into()));
     exchange(&code, file_type)
 }
 

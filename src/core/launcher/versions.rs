@@ -21,6 +21,9 @@ pub enum Step {
     Percent(f64),
     /// Checking the game files against their checksums, this far (0 to 100).
     Checking(f64),
+    /// A page just opened in the browser (Discord's authorization) and the job waits for
+    /// what the player does there; the UI says so and offers to open it again.
+    Browser(String),
 }
 
 pub fn root_for(library: &str, id: &str) -> String {

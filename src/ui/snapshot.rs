@@ -88,6 +88,7 @@ pub fn shots() -> Vec<Shot> {
         ("mods_legacy", Page::Mods, SnapVariant::ModsLegacy),
         ("mods_options", Page::Mods, SnapVariant::ModsOptions),
         ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
+        ("dialog_browser", Page::Play, SnapVariant::DialogBrowser),
         (
             "settings_delete_cache",
             Page::Settings,

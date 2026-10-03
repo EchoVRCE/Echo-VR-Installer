@@ -135,8 +135,7 @@ pub fn install(
                 ApkSource::Url(u) => oauth::validate_apk_url(u.trim()).ok_or_else(|| {
                     anyhow!("That link is not a patched APK link. Please check it and try again.")
                 })?,
-                _ => oauth::run(oauth::FileType::Apk, cancel, &mut |s| on(Step::Status(s)))
-                    .map_err(JobError::OAuth)?,
+                _ => oauth::run(oauth::FileType::Apk, cancel, on).map_err(JobError::OAuth)?,
             };
             on(Step::Status("Downloading your patched APK...".into()));
             (

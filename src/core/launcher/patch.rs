@@ -68,8 +68,7 @@ pub fn fetch(
             LINK_DLL,
         ),
         Source::Discord => (
-            oauth::run(oauth::FileType::Dll, cancel, &mut |s| on(Step::Status(s)))
-                .map_err(FetchError::OAuth)?,
+            oauth::run(oauth::FileType::Dll, cancel, on).map_err(FetchError::OAuth)?,
             DLL,
         ),
     };
