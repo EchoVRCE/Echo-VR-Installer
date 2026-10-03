@@ -102,6 +102,22 @@ pub fn legacy_in(bin: &Path) -> bool {
     std::fs::read(bin.join(LEGACY)).is_ok_and(|b| find(&b, b"[EchoLoader]").is_some())
 }
 
+/// Whether EchoRelay's patch (the update's `plugins/dbgcore.dll`) runs when the game in
+/// `bin` starts: a mod loader to load it (EchoLoader 2 in the slot, or EchoLoader 1),
+/// and neither mods nor the patch turned off. It gives the game `-windowed`: no
+/// headset, the Oculus platform's own login.
+pub fn relay_patch_in(bin: &Path) -> bool {
+    let loader =
+        legacy_in(bin) || std::fs::read(bin.join(SLOT)).is_ok_and(|b| find(&b, MARKER).is_some());
+    let overlay = Overlay::read(&bin.join(OVERLAY));
+    let off = overlay
+        .overrides(LEGACY)
+        .and_then(|o| o.get("enabled"))
+        .and_then(Value::as_bool)
+        == Some(false);
+    loader && overlay.enabled() && !off && bin.join("plugins").join(LEGACY).is_file()
+}
+
 // ---- echoloader.json (the update's) ----
 
 /// An entry of a `plugins` list: a file name, or an object.
@@ -379,6 +395,40 @@ impl Overlay {
         before != list.len()
     }
 
+    /// Drops what only repeats `shipped` (echoloader.json's active list) or a default:
+    /// an override equal to the shipped entry, mods on. What is left are real choices,
+    /// so a later change to the shipped config isn't masked by a stale copy of it.
+    pub fn prune(&mut self, shipped: &[Entry]) {
+        if self.0.get("enabled").and_then(Value::as_bool) == Some(true) {
+            self.0.remove("enabled");
+        }
+        let Some(all) = self.0.get_mut("overrides").and_then(Value::as_object_mut) else {
+            return;
+        };
+        all.retain(|file, o| {
+            let Some(o) = o.as_object_mut() else {
+                return false;
+            };
+            if let Some(e) = shipped.iter().find(|e| e.file.eq_ignore_ascii_case(file)) {
+                if o.get("enabled").and_then(Value::as_bool) == Some(e.enabled) {
+                    o.remove("enabled");
+                }
+                if o.get("args").is_some_and(|a| same_args(a, &e.args)) {
+                    o.remove("args");
+                }
+            }
+            !o.is_empty()
+        });
+        if all.is_empty() {
+            self.0.remove("overrides");
+        }
+    }
+
+    /// Nothing but the version is left.
+    pub fn is_empty(&self) -> bool {
+        self.0.keys().all(|k| k == "version")
+    }
+
     /// Turns `file` on or off: on its entry when the launcher added it, else as an
     /// override.
     pub fn set_plugin_enabled(&mut self, file: &str, on: bool) {
@@ -575,9 +625,23 @@ pub fn asset_patches(manifest: &str, overlay: &str) -> (bool, Vec<AssetPatch>) {
     (all_on, patches)
 }
 
+/// Pure: whether two args objects say the same, compared as the loader hands them on
+/// (every value as a string).
+fn same_args(a: &Value, b: &Map<String, Value>) -> bool {
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    a.as_object().is_some_and(|a| {
+        a.len() == b.len()
+            && a.iter()
+                .all(|(k, v)| b.get(k).is_some_and(|w| text(v) == text(w)))
+    })
+}
+
 /// Pure: `overlay` (the asset patches' overlay) with `label` turned on or off (`None`:
-/// every patch).
-fn set_asset(overlay: &str, label: Option<&str>, on: bool) -> Value {
+/// every patch), keeping only what differs from `manifest` (the shipped patches).
+fn set_asset(manifest: &str, overlay: &str, label: Option<&str>, on: bool) -> Value {
     let mut o = match serde_json::from_str::<Value>(overlay) {
         Ok(Value::Object(o)) => o,
         _ => Map::new(),
@@ -600,6 +664,24 @@ fn set_asset(overlay: &str, label: Option<&str>, on: bool) -> Value {
                 .as_object_mut()
                 .expect("an object")
                 .insert(label.to_string(), Value::Object(choice));
+        }
+    }
+    // Only real choices stay: all on is the default, and a patch set as it ships.
+    let (_, shipped) = asset_patches(manifest, "");
+    if o.get("enabled").and_then(Value::as_bool) == Some(true) {
+        o.remove("enabled");
+    }
+    if let Some(ps) = o.get_mut("patches").and_then(Value::as_object_mut) {
+        ps.retain(|label, c| {
+            let chosen = c.get("enabled").and_then(Value::as_bool);
+            let ships = shipped
+                .iter()
+                .find(|a| &a.label == label)
+                .map(|a| a.enabled);
+            chosen.is_some() && chosen != ships.or(Some(true))
+        });
+        if ps.is_empty() {
+            o.remove("patches");
         }
     }
     Value::Object(o)
@@ -866,17 +948,38 @@ pub fn set_args(v: &InstalledVersion, file: &str, args: &BTreeMap<String, String
 }
 
 fn edit_overlay(v: &InstalledVersion, f: impl FnOnce(&mut Overlay)) -> Result<()> {
-    let path = v.bin_dir().join(OVERLAY);
+    let bin = v.bin_dir();
+    let path = bin.join(OVERLAY);
     let mut o = Overlay::read(&path);
     f(&mut o);
-    o.write(&path)
+    o.prune(&config(&bin).active(o.profile()).unwrap_or_default());
+    write_or_remove(&path, o.is_empty(), || o.write(&path))
+}
+
+/// Writes an overlay, or deletes it when it holds no choice any more.
+fn write_or_remove(path: &Path, empty: bool, write: impl FnOnce() -> Result<()>) -> Result<()> {
+    if !empty {
+        return write();
+    }
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("Couldn't remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Asset patch `label` on or off (`None`: all of them).
 pub fn set_asset_patch(v: &InstalledVersion, label: Option<&str>, on: bool) -> Result<()> {
-    let path = v.bin_dir().join(ASSETS_OVERLAY);
+    let bin = v.bin_dir();
+    let path = bin.join(ASSETS_OVERLAY);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    write_json(&path, &set_asset(&text, label, on))
+    let manifest = std::fs::read_to_string(bin.join(ASSETS)).unwrap_or_default();
+    let o = set_asset(&manifest, &text, label, on);
+    let empty = o
+        .as_object()
+        .is_none_or(|m| m.keys().all(|k| k == "version"));
+    write_or_remove(&path, empty, || write_json(&path, &o))
 }
 
 /// Pure: whether `name` is a plugin file name the launcher takes (no folders).
@@ -1369,12 +1472,40 @@ mod tests {
         assert!(on);
         assert_eq!(ps.len(), 3);
         assert!(!ps[2].enabled);
-        let o = set_asset("", Some("poster_a_tex"), false);
-        let o = set_asset(&o.to_string(), None, false);
+        let o = set_asset(manifest, "", Some("poster_a_tex"), false);
+        let o = set_asset(manifest, &o.to_string(), None, false);
         let (on, ps) = asset_patches(manifest, &o.to_string());
         assert!(!on);
         assert!(ps[0].enabled && !ps[1].enabled);
         assert_eq!(o["version"], 1);
+        // Back to how they ship: nothing is left but the version.
+        let o = set_asset(manifest, &o.to_string(), Some("poster_a_tex"), true);
+        let o = set_asset(manifest, &o.to_string(), None, true);
+        assert_eq!(o, serde_json::json!({"version": 1}));
+        // Turning on what the update ships off is a real choice and stays.
+        let o = set_asset(manifest, "", Some("off_by_update"), true);
+        assert_eq!(o["patches"]["off_by_update"]["enabled"], true);
+    }
+
+    #[test]
+    fn overlay_keeps_only_real_choices() {
+        let shipped = Config::parse(LIVE).active(None).unwrap();
+        let mut o = Overlay::default();
+        o.set_enabled(false);
+        o.set_plugin_enabled("dbgcore.dll", false);
+        let mut args = BTreeMap::new();
+        args.insert("logging".to_string(), "verbose".to_string());
+        o.set_args("NvrAssetPatches.dll", &args);
+        o.prune(&shipped);
+        assert!(!o.enabled());
+        assert!(!o.is_empty());
+        // Everything set back to how it ships: the overlay is empty again.
+        o.set_enabled(true);
+        o.set_plugin_enabled("DBGCORE.DLL", true);
+        args.insert("logging".to_string(), "normal".to_string());
+        o.set_args("NvrAssetPatches.dll", &args);
+        o.prune(&shipped);
+        assert!(o.is_empty(), "{:?}", o.0);
     }
 
     #[test]

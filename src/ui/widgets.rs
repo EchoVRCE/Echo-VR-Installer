@@ -323,7 +323,8 @@ impl Kit<'_> {
         tip: &str,
     ) -> Resp {
         let r = self.rect(x, y, w, h);
-        self.a11y_name = Some(label.to_string());
+        // Icon-only buttons go by their tooltip.
+        self.a11y_name = Some(label.to_string()).filter(|l| !l.is_empty());
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
         self.button_face(r, tone.fill(), enabled, t, pressed);
         self.button_label(r, icon, label, fg(enabled));

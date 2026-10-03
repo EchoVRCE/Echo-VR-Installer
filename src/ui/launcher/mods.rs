@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use egui::Color32;
 
 use super::{hero, server_info, versions, Dashboard, JobKind, JobResult, Msg, Page, SnapVariant};
+use crate::core::launcher::catalog::Platform;
 use crate::core::launcher::feed;
 use crate::core::launcher::mods::{
     self, AssetPatch, Loader, ModCatalog, ModEntry, ModView, Plugin, PluginStatus, Source, Status,
@@ -245,6 +246,7 @@ fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>)
             "{} is an event build: it runs EchoRelay's patch where the mod loader would be, so it has no mods.\n\nChoose the live build on the Play page to see its mods.",
             v.name
         ),
+        None if d.platform == Platform::Quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
         None => "Mods are for Echo VR on this PC: install the live build first, then choose its plugins here.".into(),
     };
     kit.caps_text(x, y, w, &text, 16.0, design::BODY, dz(14.0));
