@@ -14,6 +14,56 @@ use crate::core::launcher::store::{LauncherState, Target};
 /// What Steam's shortcut runs the launcher with.
 pub const PLAY_FLAG: &str = "--play";
 
+/// Gives xdg-open what it needs on KDE when the launcher was started without the
+/// desktop's full environment (from a terminal over SSH, a systemd unit, some app
+/// launchers): without `KDE_SESSION_VERSION` it falls back to KDE 3's `kfmclient`, which
+/// no current system has, reports success anyway, and links open nowhere. Must run
+/// before any thread starts. Returns what it changed, for the log.
+pub fn prepare_desktop_env() -> Option<String> {
+    if !cfg!(target_os = "linux") || std::env::var_os("KDE_SESSION_VERSION").is_some() {
+        return None;
+    }
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    if !desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE")) {
+        return None;
+    }
+    let version = if on_path("kde-open") {
+        "6"
+    } else if on_path("kde-open5") {
+        "5"
+    } else {
+        return None;
+    };
+    std::env::set_var("KDE_SESSION_VERSION", version);
+    Some(format!(
+        "KDE_SESSION_VERSION was not set; set it to {version} so links open through kde-open"
+    ))
+}
+
+/// Logs what decides how links and folders open here (Linux only).
+pub fn log_desktop_env(fix: Option<&str>) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let var = |k: &str| std::env::var(k).unwrap_or_else(|_| "-".into());
+    tracing::info!(
+        "desktop: XDG_CURRENT_DESKTOP={} XDG_SESSION_TYPE={} KDE_SESSION_VERSION={} BROWSER={} xdg-open={}",
+        var("XDG_CURRENT_DESKTOP"),
+        var("XDG_SESSION_TYPE"),
+        var("KDE_SESSION_VERSION"),
+        var("BROWSER"),
+        if on_path("xdg-open") { "yes" } else { "missing" },
+    );
+    if let Some(fix) = fix {
+        tracing::warn!("desktop: {fix}");
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(program).is_file()))
+}
+
 /// Where a lobby to join waits for the next `--play` (Steam's link can't carry it).
 fn next_lobby_file() -> PathBuf {
     echoxr::root().join("next-lobby")

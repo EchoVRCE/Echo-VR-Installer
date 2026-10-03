@@ -174,11 +174,29 @@ pub fn free_space(path: &Path) -> Option<u64> {
 }
 
 pub fn open_folder(path: &Path) -> Result<()> {
-    open::that_detached(path).map_err(|e| anyhow::anyhow!("Couldn't open {}: {e}", path.display()))
+    tracing::info!("opening folder {}", path.display());
+    open::that_detached(path).map_err(|e| {
+        tracing::warn!("couldn't open {}: {e}", path.display());
+        anyhow::anyhow!("Couldn't open {}: {e}", path.display())
+    })
+}
+
+/// Opens `url` in the browser. Err when no opener could be started; Ok only means one
+/// started (xdg-open can still fail quietly, see core::linux::prepare_desktop_env).
+pub fn try_open_url(url: &str) -> std::io::Result<()> {
+    let shown = crate::core::download::redact(url);
+    match open::that_detached(url) {
+        Ok(()) => {
+            tracing::info!("opened {shown} in the browser");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("couldn't open {shown} in the browser: {e}");
+            Err(e)
+        }
+    }
 }
 
 pub fn open_url(url: &str) {
-    if let Err(e) = open::that_detached(url) {
-        tracing::warn!("couldn't open {url}: {e}");
-    }
+    let _ = try_open_url(url);
 }

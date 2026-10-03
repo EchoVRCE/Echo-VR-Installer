@@ -7,6 +7,7 @@ mod version;
 fn main() {
     // Before any thread starts (see feed::init_local_offset).
     core::launcher::feed::init_local_offset();
+    let desktop_fix = core::linux::prepare_desktop_env();
     let args: Vec<String> = std::env::args().collect();
     // Elevated helper mode: the app relaunches itself with this flag (as admin) to perform
     // privileged operations for the normal process. Never starts the GUI.
@@ -30,6 +31,7 @@ fn main() {
     }
 
     core::log::init("EchoVR_Installer.log");
+    core::linux::log_desktop_env(desktop_fix.as_deref());
     let result = ui::run();
     core::elevation::shutdown();
     if let Err(e) = result {

@@ -133,22 +133,50 @@ fn rank(timed: Vec<(&'static str, Option<Duration>)>) -> Vec<&'static str> {
     up.into_iter().map(|(m, _)| m).collect()
 }
 
-/// Tries `urls` in order, moving on to the next only when a server doesn't have the file;
-/// any other failure ends it.
-fn from_first_that_has(urls: &[String], mut fetch: impl FnMut(&str) -> Result<()>) -> Result<()> {
+/// Tries `urls` in order, moving on to the next when a server doesn't have the file, or
+/// can't resume a partial one while another might (`fetch` gets whether it is the last
+/// try, where a restart from zero is allowed); any other failure ends it.
+fn from_first_that_has(
+    urls: &[String],
+    mut fetch: impl FnMut(&str, bool) -> Result<()>,
+) -> Result<()> {
     let mut missing = None;
-    for url in urls {
-        match fetch(url) {
+    for (i, url) in urls.iter().enumerate() {
+        match fetch(url, i + 1 == urls.len()) {
             Ok(()) => return Ok(()),
             Err(e) if e.downcast_ref::<NotOnServer>().is_some() => {
                 tracing::info!("{} doesn't have this file", redact(url));
                 missing = Some(e);
             }
-            Err(e) => return Err(e),
+            Err(e) if e.downcast_ref::<CantResume>().is_some() => {
+                tracing::info!(
+                    "{} can't resume the partial file; trying the next mirror",
+                    redact(url)
+                );
+            }
+            Err(e) => {
+                if !http::is_cancelled(&e) {
+                    tracing::warn!("download from {} failed: {e:#}", redact(url));
+                }
+                return Err(e);
+            }
         }
     }
     Err(missing.unwrap_or_else(|| anyhow!("nothing to download")))
 }
+
+/// A mirror answered a resume request with the whole file while another mirror is left
+/// to try (the partial file is kept).
+#[derive(Debug)]
+struct CantResume;
+
+impl std::fmt::Display for CantResume {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the server can't resume this download")
+    }
+}
+
+impl std::error::Error for CantResume {}
 
 /// How to continue from a partial local file, decided from the size probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +239,9 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
             .with_context(|| format!("couldn't delete the old {}", target.display()))?;
     }
 
-    from_first_that_has(&urls, |url| fetch(url, &target, cancel, on))?;
+    from_first_that_has(&urls, |url, last| {
+        fetch_from(url, &target, cancel, on, last)
+    })?;
 
     if job.extract {
         on(Progress::Extracting);
@@ -222,11 +252,14 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
 }
 
 /// Downloads `url` to `target`, resuming a partial file when the server supports it.
-pub fn fetch(
+/// With `may_restart` false, a server that can't resume is a [`CantResume`] error instead
+/// of a restart from zero.
+fn fetch_from(
     url: &str,
     target: &Path,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Progress),
+    may_restart: bool,
 ) -> Result<()> {
     http::block_on(async {
         let head = http::client()
@@ -268,6 +301,11 @@ pub fn fetch(
 
         let mut req = http::client().get(url);
         if offset > 0 {
+            tracing::info!(
+                "resuming {} at {offset} of {} bytes",
+                target.display(),
+                remote.unwrap_or(0)
+            );
             req = req.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
         let mut resp = req
@@ -285,6 +323,9 @@ pub fn fetch(
                 }
             }
             200 => {
+                if offset > 0 && !may_restart {
+                    return Err(CantResume.into());
+                }
                 if offset > 0 {
                     tracing::info!("server ignored the Range request; restarting from zero");
                 }
@@ -333,6 +374,10 @@ pub fn fetch(
 
         if let Some(t) = total {
             if written != t {
+                tracing::warn!(
+                    "download of {} ended at {written} of {t} bytes",
+                    target.display()
+                );
                 bail!(
                     "{NETWORK_ERROR} (ERR2)\n\nThe download ended early ({written} of {t} bytes)."
                 );
@@ -441,7 +486,7 @@ mod tests {
         let urls = ["https://a/f".to_string(), "https://b/f".to_string()];
         // The first mirror doesn't have it: the second is asked.
         let mut asked = Vec::new();
-        let r = from_first_that_has(&urls, |u| {
+        let r = from_first_that_has(&urls, |u, _| {
             asked.push(u.to_string());
             if u.starts_with("https://a") {
                 Err(NotOnServer(404).into())
@@ -453,16 +498,39 @@ mod tests {
         assert_eq!(asked, urls);
         // Any other failure ends it.
         let mut asked = 0;
-        let r = from_first_that_has(&urls, |_| {
+        let r = from_first_that_has(&urls, |_, _| {
             asked += 1;
             Err(anyhow!("connection reset"))
         });
         assert!(r.is_err());
         assert_eq!(asked, 1);
         // Nobody has it: that is what the error says.
-        let e = from_first_that_has(&urls, |_| Err(NotOnServer(404).into())).unwrap_err();
+        let e = from_first_that_has(&urls, |_, _| Err(NotOnServer(404).into())).unwrap_err();
         assert!(e.downcast_ref::<NotOnServer>().is_some());
         assert!(!format!("{e:#}").contains("Ethernet"));
+    }
+
+    #[test]
+    fn a_mirror_that_cant_resume_hands_over_to_the_next() {
+        let urls = ["https://a/f".to_string(), "https://b/f".to_string()];
+        // Only the last mirror may restart from zero; the first one passes it on.
+        let mut asked = Vec::new();
+        let r = from_first_that_has(&urls, |u, last| {
+            asked.push((u.to_string(), last));
+            if last {
+                Ok(())
+            } else {
+                Err(CantResume.into())
+            }
+        });
+        assert!(r.is_ok());
+        assert_eq!(
+            asked,
+            [
+                ("https://a/f".to_string(), false),
+                ("https://b/f".to_string(), true)
+            ]
+        );
     }
 
     #[test]
@@ -482,13 +550,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("t");
         let cancel = AtomicBool::new(false);
-        fetch(&url, &target, &cancel, &mut |_| {}).unwrap();
+        fetch_from(&url, &target, &cancel, &mut |_| {}, true).unwrap();
         let full = std::fs::metadata(&target).unwrap().len();
         let hash = sha256_file(&target).unwrap();
         let f = OpenOptions::new().write(true).open(&target).unwrap();
         f.set_len(full / 3).unwrap();
         drop(f);
-        fetch(&url, &target, &cancel, &mut |_| {}).unwrap();
+        fetch_from(&url, &target, &cancel, &mut |_| {}, true).unwrap();
         assert_eq!(std::fs::metadata(&target).unwrap().len(), full);
         assert_eq!(sha256_file(&target).unwrap(), hash);
     }

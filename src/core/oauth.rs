@@ -164,26 +164,44 @@ pub fn run(
     let server = bind()?;
     let state = hex::encode(rand::random::<[u8; 16]>());
     let auth_url = authorize_url(&state);
-    if open::that_detached(&auth_url).is_err() {
+    tracing::info!(
+        "OAuth: opening Discord's authorization page ({}); waiting on 127.0.0.1:{CALLBACK_PORT} for up to {}s",
+        file_type.as_str(),
+        CALLBACK_TIMEOUT.as_secs()
+    );
+    if crate::core::platform::try_open_url(&auth_url).is_err() {
         return Err(OAuthError::NoBrowser(auth_url));
     }
 
     let deadline = Instant::now() + CALLBACK_TIMEOUT;
     let code = loop {
         if cancel.load(Ordering::Relaxed) {
+            tracing::info!("OAuth: cancelled while waiting for Discord");
             return Err(OAuthError::Cancelled);
         }
         if Instant::now() >= deadline {
+            tracing::warn!(
+                "OAuth: no answer from Discord within {}s (the browser didn't open, or the authorization wasn't finished there)",
+                CALLBACK_TIMEOUT.as_secs()
+            );
             return Err(OAuthError::Timeout);
         }
         let req = match server.recv_timeout(Duration::from_millis(250)) {
             Ok(Some(r)) => r,
             Ok(None) => continue,
-            Err(e) => return Err(OAuthError::Server(format!("Callback server failed: {e}"))),
+            Err(e) => {
+                tracing::warn!("OAuth: callback server failed: {e}");
+                return Err(OAuthError::Server(format!("Callback server failed: {e}")));
+            }
         };
         match parse_callback(req.url(), &state) {
-            Callback::Ignore => respond(req, 404, "Not found"),
+            Callback::Ignore => {
+                let path = req.url().split('?').next().unwrap_or("").to_string();
+                tracing::info!("OAuth: ignored a request for {path}");
+                respond(req, 404, "Not found")
+            }
             Callback::Denied => {
+                tracing::info!("OAuth: authorization cancelled on Discord's page");
                 respond(
                     req,
                     200,
@@ -192,6 +210,7 @@ pub fn run(
                 return Err(OAuthError::Denied);
             }
             Callback::Code(c) => {
+                tracing::info!("OAuth: Discord answered with a code");
                 respond(
                     req,
                     200,

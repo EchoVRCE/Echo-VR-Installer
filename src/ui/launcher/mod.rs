@@ -1523,6 +1523,20 @@ impl Dashboard {
     }
 
     fn job_done(&mut self, ctx: &egui::Context, id: &str, kind: Option<JobKind>, r: JobResult) {
+        match &r {
+            JobResult::Failed(None) => tracing::info!("job {id}: cancelled"),
+            JobResult::Failed(Some(e)) => {
+                tracing::error!(
+                    "job {id} failed: {}: {}",
+                    e.title,
+                    e.message.replace('\n', " ")
+                )
+            }
+            JobResult::OAuthFailed(e) => {
+                tracing::warn!("job {id}: Discord authorization failed: {e:?}")
+            }
+            _ => tracing::info!("job {id}: done"),
+        }
         // A new player's patch: gone with its fetch, or with its version's install.
         if id == setup::LICENCE_JOB && !matches!(r, JobResult::LicenceFetched(_)) {
             self.pending_patch = None;
@@ -1718,6 +1732,7 @@ impl Dashboard {
         label: &str,
         f: impl FnOnce(&AtomicBool, &mut dyn FnMut(Step)) -> JobResult + Send + 'static,
     ) {
+        tracing::info!("job {id}: {title}");
         let cancel = Arc::new(AtomicBool::new(false));
         self.jobs.insert(
             id.to_string(),
@@ -1739,6 +1754,7 @@ impl Dashboard {
 
     fn cancel_job(&mut self, id: &str) {
         if let Some(j) = self.jobs.get(id) {
+            tracing::info!("job {id}: cancel requested");
             j.cancel.store(true, Ordering::Relaxed);
         }
     }
