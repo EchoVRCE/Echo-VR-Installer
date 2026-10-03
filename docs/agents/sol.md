@@ -14,7 +14,7 @@
 
 - [ ] Read the PR diff, ADR, BACs, Luna's test evidence, and any design changes.
 - [ ] Check every applicable BAC against implementation and tests, including failure and recovery paths.
-- [ ] Run `cargo build --release` and `cargo test` when feasible; compare tests with the 165 passed, 13 ignored baseline on `ad9f709`.
+- [ ] Run `cargo build --release` and `cargo test` when feasible; compare tests with the baseline recorded in `AGENTS.md`.
 - [ ] Put concrete findings and file locations on the PR; distinguish blocking issues from suggestions.
 - [ ] Recheck blocking fixes and record an explicit review outcome on the PR.
 - [ ] Hand the PR to Astra for independent critique; do not mark it done with unresolved blocking findings.
