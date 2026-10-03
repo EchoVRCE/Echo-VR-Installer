@@ -95,6 +95,16 @@ pub fn nine_h(
     }
 }
 
+/// An interactive area's accessible name when it has no label: its tooltip, else its
+/// key ("rail-mods" -> "rail mods").
+pub(crate) fn a11y_fallback(key: &str, tip: &str) -> String {
+    if tip.is_empty() {
+        key.replace(['-', '_'], " ")
+    } else {
+        tip.to_string()
+    }
+}
+
 impl Kit<'_> {
     fn sid(&self, key: &str) -> Id {
         Id::new(("style", key))
@@ -103,6 +113,7 @@ impl Kit<'_> {
     /// A hover/click area with an animated hover amount (0..1) and an egui tooltip.
     pub fn hot(&mut self, key: &str, r: Rect, enabled: bool, tip: &str) -> (Resp, f32, bool) {
         let id = self.sid(key);
+        let name = self.a11y_name.take();
         let mut out = Resp::default();
         let mut pressed = false;
         if !self.blocked {
@@ -112,6 +123,10 @@ impl Kit<'_> {
                 Sense::hover()
             };
             let mut resp = self.ui.interact(r, id, sense);
+            let name = name.unwrap_or_else(|| a11y_fallback(key, tip));
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone())
+            });
             if !tip.is_empty() {
                 resp = resp.on_hover_text(tip);
             }

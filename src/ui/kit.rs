@@ -20,6 +20,9 @@ pub struct Kit<'a> {
     /// as the launcher is scaled to fit).
     pub ex: f32,
     pub ey: f32,
+    /// The name the next interactive area gets for accessibility tools (screen readers,
+    /// AT-SPI); without one it is named after its tooltip, else its key.
+    pub a11y_name: Option<String>,
 }
 
 impl<'a> Kit<'a> {
@@ -34,6 +37,7 @@ impl<'a> Kit<'a> {
             ghost: false,
             ex: (window.x - W).max(0.0),
             ey: (window.y - H).max(0.0),
+            a11y_name: None,
         }
     }
 

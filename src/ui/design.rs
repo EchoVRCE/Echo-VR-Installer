@@ -391,6 +391,7 @@ impl Kit<'_> {
     ) -> (Resp, f32, bool) {
         let id = Id::new(("design", key));
         let poly: Vec<Pos2> = shape.iter().map(|&(x, y)| self.dpos(x, y)).collect();
+        let name = self.a11y_name.take();
         let mut out = Resp::default();
         let mut pressed = false;
         if !self.blocked {
@@ -400,10 +401,16 @@ impl Kit<'_> {
                 Sense::hover()
             };
             let resp = self.ui.interact(self.drect(area), id, sense);
+            let name = name.unwrap_or_else(|| super::style::a11y_fallback(key, tip));
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone())
+            });
             let within = |p: Option<Pos2>| p.is_some_and(|p| inside(p, &poly));
             out.hovered = resp.hovered() && within(resp.hover_pos());
             if enabled {
-                out.clicked = resp.clicked() && within(resp.interact_pointer_pos());
+                // A click without a pointer (keyboard, accessibility tools) is in the shape.
+                let at = resp.interact_pointer_pos();
+                out.clicked = resp.clicked() && (at.is_none() || within(at));
                 pressed = out.hovered && resp.is_pointer_button_down_on();
                 if out.hovered {
                     self.ui.ctx().set_cursor_icon(CursorIcon::PointingHand);

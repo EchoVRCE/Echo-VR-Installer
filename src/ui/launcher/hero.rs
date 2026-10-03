@@ -289,6 +289,10 @@ pub(super) fn extra_for(kit: &Kit, label: &str) -> f32 {
 pub(super) fn row(kit: &mut Kit, key: &str, extra: f32, r: &Row) -> (bool, bool) {
     let play_shape = design::shifted(PLAY_SHAPE, extra, 200.0);
     let update_shape = design::shifted(UPDATE_SHAPE, extra, 0.0);
+    kit.a11y_name = Some(match r.face {
+        Face::Label(label) => label.to_string(),
+        Face::Running => "Running".into(),
+    });
     let (resp, t, pressed) = kit.hot_shape(
         &format!("{key}-main"),
         PLAY_AREA.wider(extra),
@@ -314,6 +318,10 @@ pub(super) fn row(kit: &mut Kit, key: &str, extra: f32, r: &Row) -> (bool, bool)
     kit.shape_veil(&play_shape, 0.0, off && pressed);
     let main = resp.clicked;
 
+    kit.a11y_name = Some(match r.side {
+        Side::Updates { .. } => "Check for updates".into(),
+        Side::Blue { label, .. } => label.to_string(),
+    });
     let (resp, t, pressed) = kit.hot_shape(
         &format!("{key}-side"),
         UPDATE_AREA.moved(extra),

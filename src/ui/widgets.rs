@@ -239,6 +239,7 @@ impl Kit<'_> {
             true,
         );
         let r = Rect::from_min_size(self.origin + vec2(x, y), g.size());
+        self.a11y_name = Some(text.to_string());
         let (resp, t, _) = self.hot(key, r, true, tip);
         let g = if t > 0.01 {
             // Galleys keep their colour: lay the hovered one out again, tinted.
@@ -322,6 +323,7 @@ impl Kit<'_> {
         tip: &str,
     ) -> Resp {
         let r = self.rect(x, y, w, h);
+        self.a11y_name = Some(label.to_string());
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
         self.button_face(r, tone.fill(), enabled, t, pressed);
         self.button_label(r, icon, label, fg(enabled));
@@ -373,6 +375,7 @@ impl Kit<'_> {
         selected: bool,
     ) -> Resp {
         let r = self.rect(x, y, w, h);
+        self.a11y_name = Some(title.to_string());
         let (resp, t, pressed) = self.hot(key, r, true, "");
         let fill = if selected {
             design::BLUE
@@ -618,6 +621,7 @@ impl Kit<'_> {
         let (s, h, gap) = (16.0, 24.0, 10.0);
         let g = self.label_galley(label, design::din(18.0), fg(enabled), f32::INFINITY);
         let r = self.rect(x, y, s + gap + g.size().x, h);
+        self.a11y_name = Some(label.to_string());
         let (resp, t, pressed) = self.hot(key, r, enabled, tip);
         let b = self.rect(x, y + (h - s) / 2.0, s, s);
         let p = self.ui.painter();
@@ -672,6 +676,7 @@ impl Kit<'_> {
         tip: &str,
     ) -> Option<usize> {
         let r = self.rect(x, y, w, h);
+        self.a11y_name = Some(label.to_string());
         let (resp, t, pressed) = self.hot(key, r, true, tip);
         self.button_face(r, design::DARK, true, t, pressed);
         let chevron = (h * 0.34).round();
