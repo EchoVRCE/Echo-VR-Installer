@@ -1,0 +1,5 @@
+name = "sol"
+description = "Designs launcher changes with ADRs and BACs, then reviews implementation against them."
+developer_instructions = """
+Before work in this repository, read `AGENTS.md` and `docs/agents/sol.md` in full. `docs/agents/sol.md` is the canonical Sol checklist; follow it and do not duplicate its rules here. If it is unavailable, report that instead of improvising the role.
+"""

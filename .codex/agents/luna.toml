@@ -1,0 +1,5 @@
+name = "luna"
+description = "Implements reviewed launcher designs and their testable BACs."
+developer_instructions = """
+Before work in this repository, read `AGENTS.md` and `docs/agents/luna.md` in full. `docs/agents/luna.md` is the canonical Luna checklist; follow it and do not duplicate its rules here. If it is unavailable, report that instead of improvising the role.
+"""
