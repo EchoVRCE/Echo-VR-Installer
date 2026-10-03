@@ -13,7 +13,7 @@ use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::feed::NewsItem;
-use crate::core::launcher::store::{InstalledVersion, Runtime, Target};
+use crate::core::launcher::store::{InstalledVersion, Runtime, SteamVrVia, Target};
 use crate::core::launcher::{launch, quest, relay};
 use crate::core::revive;
 use crate::ui::design::{self, dz, Dr};
@@ -106,6 +106,8 @@ enum Main {
     Stop,
     Patch(String),
     SetUpRevive,
+    /// SteamVR through EchoXR (Windows).
+    SetUpEchoXr,
     /// Linux: GE-Proton, EchoXR and the Steam shortcut.
     SetUpLinux,
     QuestConnect,
@@ -207,7 +209,9 @@ fn explain_disabled(d: &Dashboard, a: &mut Action) {
                 "Connect your Quest first".into()
             }
             (None, Update::Quest) => "Install Echo VR on your Quest first".into(),
-            (None, _) if d.game().is_running() => "Close Echo VR first".into(),
+            (None, Update::Pc(v)) if d.files_in_use(v).is_some() => {
+                d.files_in_use(v).unwrap_or_default().into()
+            }
             (None, _) => a.update_tip.clone(),
         };
     }
@@ -242,12 +246,17 @@ fn pc_action(d: &mut Dashboard) -> Action {
     };
     let job = id
         .and_then(|id| setup::job_for(d, &id))
-        .or_else(|| hero::job_view(d, setup::REVIVE_JOB));
+        .or_else(|| hero::job_view(d, setup::REVIVE_JOB))
+        .or_else(|| hero::job_view(d, setup::ECHOXR_JOB));
     let mut a = Action::new();
-    let needs_revive = d.state.profile.runtime == Runtime::Revive
-        && (cfg!(windows) || d.demo)
-        && d.revive_missing();
-    let running = d.game().is_running();
+    let needs_steamvr = d.steamvr_missing();
+    let echoxr = d.state.profile.runtime == Runtime::Revive
+        && d.state.profile.steamvr_via == SteamVrVia::EchoXr;
+    let local = d.local();
+    // Echo VR clients: the launcher's own game, or one started elsewhere. Servers on this
+    // PC don't count (they never block PLAY).
+    let running = local.state.is_running();
+    let ours_running = local.ours.is_some();
     let ours = d.ours();
     match target {
         Target::Installed(v) => {
@@ -263,7 +272,7 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 "Starting"
             } else if setup::needs_patch(d, &v) {
                 "Needs the licence patch"
-            } else if needs_revive {
+            } else if needs_steamvr {
                 "SteamVR is not set up"
             } else if event {
                 "Classic lobby"
@@ -277,13 +286,14 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.line.parts.push(d.state.relay_server.clone());
             }
             a.line.parts.extend(size);
+            a.line.parts.extend(servers_here(local.servers.len()));
             a.line.path = Some(v.root.clone());
             a.line.path_click = PathClick::Open;
             if let Some(job) = &a.job {
                 a.line.parts[0] = job_state(job);
                 a.line.parts.push(job.step());
             }
-            if running && ours {
+            if ours_running {
                 (a.label, a.main, a.enabled, a.grey) = ("STOP", Main::Stop, true, true);
                 a.tip = "Close Echo VR".into();
             } else if running {
@@ -297,10 +307,21 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.enabled = !d.any_job();
                 a.tip =
                     "New players need a personal licence patch: get yours through Discord".into();
-            } else if needs_revive {
+            } else if needs_steamvr && echoxr {
+                (a.label, a.main) = ("SET UP", Main::SetUpEchoXr);
+                a.enabled = !d.any_job();
+                a.tip =
+                    "Set up SteamVR through EchoXR: its OpenXR runtime goes into the game's folder"
+                        .into();
+            } else if needs_steamvr {
                 (a.label, a.main) = ("SET UP", Main::SetUpRevive);
                 a.enabled = !d.any_job();
                 a.tip = "Set up SteamVR: installs Revive, which runs Echo VR on SteamVR (asks for administrator rights)".into();
+            } else if echoxr && cfg!(windows) && v.publisher_lock.is_some() {
+                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                a.tip =
+                    "Event builds don't run through EchoXR: choose Revive for SteamVR in Settings"
+                        .into();
             } else if cfg!(target_os = "linux") && v.publisher_lock.is_some() {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
                 a.tip =
@@ -318,9 +339,13 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.tip = "Start Echo VR".into();
             }
             let updates = crate::core::launcher::versions::has_updates(&v);
-            a.update_enabled = updates && !running && !ours && !d.any_job();
+            let in_use = d.files_in_use(&v);
+            a.update_enabled = updates && in_use.is_none() && !ours && !d.any_job();
             if ours && !running {
                 a.update_tip = "Echo VR is starting".into();
+            }
+            if let Some(why) = in_use {
+                a.update_tip = why.into();
             }
             if !updates {
                 a.update_tip = "Event builds don't get updates: REINSTALL on the Install page checks their files".into();
@@ -476,6 +501,7 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Main::Stop => stop(d),
             Main::Patch(id) => d.overlay = Some(setup::licence(&id)),
             Main::SetUpRevive => setup::revive(d, ctx),
+            Main::SetUpEchoXr => setup::echoxr_windows(d, ctx),
             Main::SetUpLinux => setup::linux_setup(d, ctx),
             Main::QuestConnect => d.check_quest(ctx, true),
             Main::QuestPlay => quest_launch(d, ctx),
@@ -1066,14 +1092,23 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
     }
 }
 
-/// STOP: ends what PLAY started -- the starter (Revive's injector) and the game itself,
-/// never a game started some other way.
+/// "1 server running here": dedicated servers on this PC, for the Play line.
+fn servers_here(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some("1 server running here".into()),
+        n => Some(format!("{n} servers running here")),
+    }
+}
+
+/// STOP: ends what PLAY started -- the starter (Revive's injector, EchoXR.exe) and the
+/// game itself, never a game started some other way, nor a server.
 fn stop(d: &mut Dashboard) {
     if let Some(mut c) = d.child.take() {
         let _ = c.kill();
     }
-    if let Some(l) = d.launched {
-        crate::core::launcher::game::stop_started_since(l.unix);
+    if let Some(m) = &d.monitor {
+        m.stop_ours();
     }
 }
 
@@ -1116,7 +1151,12 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         };
         crate::core::linux::set_next_lobby(lobby.as_ref().map(|j| (j.lobby.as_str(), j.spectate)));
         match crate::core::linux::steam::run(&root, appid) {
-            Ok(()) => d.launched = Some(super::Launched::now()),
+            Ok(()) => {
+                if let Some(m) = &d.monitor {
+                    m.launched(None, &v.id, &v.bin_dir());
+                }
+                d.launched = Some(super::Launched::now());
+            }
             Err(e) => d.dialogs.error(
                 "Couldn't start Echo VR",
                 &format!("{e:#}"),
@@ -1125,11 +1165,34 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         }
         return;
     }
-    let revive_dir = if d.state.profile.runtime == Runtime::Revive {
-        revive::find_revive_dir()
-    } else {
-        None
+    let revive_dir = match (d.state.profile.runtime, d.state.profile.steamvr_via) {
+        (Runtime::Revive, SteamVrVia::Revive) => revive::find_revive_dir(),
+        _ => None,
     };
+    // SteamVR through EchoXR: EchoXR into the game's folder and its copy of the game
+    // current. Where that needs administrator rights (the Meta library's), SET UP's job
+    // does it.
+    if cfg!(windows)
+        && d.state.profile.runtime == Runtime::Revive
+        && d.state.profile.steamvr_via == SteamVrVia::EchoXr
+        && v.publisher_lock.is_none()
+    {
+        let bin = v.bin_dir();
+        let platform = crate::core::echoxr::platform_dir_for(&bin);
+        if let Err(e) = crate::core::echoxr::prepare(&bin, platform.as_deref()) {
+            if revive::needs_elevation(&e) {
+                d.notify("EchoXR needs administrator rights for this folder: PLAY again once it's set up");
+                setup::echoxr_windows(d, ctx);
+            } else {
+                d.dialogs.error(
+                    "Couldn't set up EchoXR",
+                    &format!("{e:#}"),
+                    Default::default(),
+                );
+            }
+            return;
+        }
+    }
     // Watching: on the monitor, as the spectator stream.
     let mut profile = d.state.profile.clone();
     if lobby.as_ref().is_some_and(|j| j.spectate) {
@@ -1149,7 +1212,13 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     let result = command.and_then(|c| launch::spawn(&c));
     match result {
         Ok(child) => {
+            if let Some(m) = &d.monitor {
+                m.launched(Some(child.id()), &v.id, &v.bin_dir());
+            }
             d.child = Some(child);
+            d.child_echoxr = profile.runtime == Runtime::Revive
+                && profile.steamvr_via == SteamVrVia::EchoXr
+                && v.publisher_lock.is_none();
             d.launched = Some(super::Launched::now());
             if d.state.minimize_on_launch {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));

@@ -36,6 +36,11 @@ pub enum FetchError {
     Other(anyhow::Error),
 }
 
+/// Whether the bin folder `bin` has a licence patch in (its original kept beside it).
+pub fn is_applied(bin: &Path) -> bool {
+    bin.join(ORIG).is_file()
+}
+
 /// The staged patch from Discord in the download dir (deleted when the app exits).
 pub fn staged() -> PathBuf {
     paths::downloads_dir().join(DLL)

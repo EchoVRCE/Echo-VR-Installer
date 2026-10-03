@@ -62,20 +62,7 @@ pub fn install(
         );
     }
     let root = root_for(library, &entry.id);
-    let version = InstalledVersion {
-        id: entry.id.clone(),
-        name: entry.name.clone(),
-        root: root.clone(),
-        external: false,
-        catalog_id: Some(entry.id.clone()),
-        update_manifest: entry.update_manifest.clone(),
-        installed_at: time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .ok(),
-        patched: false,
-        exe: entry.exe.clone(),
-        publisher_lock: entry.publisher_lock.clone(),
-    };
+    let version = from_entry(entry, &entry.id, &root);
     if version.present() {
         on(Step::Status(
             "Found the game files of an earlier install".into(),
@@ -89,14 +76,81 @@ pub fn install(
             );
         }
     }
-    // Every file against the build's checksums, whichever mirror the zip came from (their
-    // archives differ, their files don't); broken ones come again from the archive.
+    finish(entry, version, cancel, on)
+}
+
+/// Takes the copy of `entry` at `root` (installed some other way: the Meta app, an older
+/// installer) into the library as version `id`, instead of downloading it: its files are
+/// checked against the build's checksums (a few broken ones come again), then it gets its
+/// update. A folder holding another build is refused, never overwritten. A licence patch
+/// in it stays.
+pub fn adopt(
+    entry: &VersionEntry,
+    root: &str,
+    id: &str,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<Installed> {
+    if entry.platform != Platform::Pc {
+        bail!("Quest versions are installed from the Quest side of the Play page.");
+    }
+    let root = paths::normalize(root);
+    let mut version = from_entry(entry, id, &root);
+    version.external = true;
+    // Its own executable, whatever the catalogue says: the checksums tell the build.
+    version.exe = paths::find_exe(&root)
+        .filter(|e| *e != paths::DEFAULT_EXE)
+        .map(str::to_string);
+    if !version.present() {
+        bail!("There is no Echo VR in {root}.");
+    }
+    version.patched = super::patch::is_applied(&version.bin_dir());
+    finish(entry, version, cancel, on)
+}
+
+/// Version `id` of `entry` at `root`, as installed now.
+fn from_entry(entry: &VersionEntry, id: &str, root: &str) -> InstalledVersion {
+    InstalledVersion {
+        id: id.to_string(),
+        name: entry.name.clone(),
+        root: root.to_string(),
+        external: false,
+        catalog_id: Some(entry.id.clone()),
+        update_manifest: entry.update_manifest.clone(),
+        installed_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok(),
+        patched: false,
+        exe: entry.exe.clone(),
+        publisher_lock: entry.publisher_lock.clone(),
+    }
+}
+
+/// The rest of an install once the game files are in place: every file against the
+/// build's checksums, whichever mirror the zip came from (their archives differ, their
+/// files don't), the broken ones again from the archive; then its patch and update. A
+/// copy installed elsewhere (`external`) that is mostly another build is refused.
+fn finish(
+    entry: &VersionEntry,
+    version: InstalledVersion,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<Installed> {
     if let Some(url) = &entry.files_manifest {
-        match Checksums::fetch(url, &version, false) {
+        match Checksums::fetch(url, &version, version.patched) {
             Ok(sums) => {
                 let bad = sums.check(cancel, on)?;
+                if version.external && mostly_bad(bad.len(), sums.files().count()) {
+                    bail!(
+                        "{} holds another build of Echo VR than {}, so it wasn't added as that. Add it with \"Add existing folder\" in your library instead, or download {} here.",
+                        version.root,
+                        entry.name,
+                        entry.name
+                    );
+                }
                 sums.repair(&bad, cancel, on)?;
             }
+            Err(e) if version.external => return Err(e),
             Err(e) => tracing::warn!("{} installed unchecked: {e:#}", entry.id),
         }
     }
@@ -106,6 +160,12 @@ pub fn install(
         version,
         update_failed,
     })
+}
+
+/// Pure: most of a build's `total` files are broken or missing (`bad`): another build,
+/// or most of it gone.
+fn mostly_bad(bad: usize, total: usize) -> bool {
+    bad * 2 > total
 }
 
 /// Reinstalls `v` (installed from `entry`) without downloading it all again: every game
@@ -129,7 +189,7 @@ pub fn reinstall(
     on(Step::Status("Reading the build's checksums...".into()));
     let sums = Checksums::fetch(url, v, keep_patch)?;
     let mut bad = sums.check(cancel, on)?;
-    if bad.len() * 2 > sums.files().count() {
+    if mostly_bad(bad.len(), sums.files().count()) {
         on(Step::Status(
             "Most game files are missing: downloading all of them".into(),
         ));
@@ -438,6 +498,39 @@ fn ensure_present(v: &InstalledVersion) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_build_is_mostly_bad() {
+        assert!(!mostly_bad(0, 100));
+        assert!(!mostly_bad(50, 100));
+        assert!(mostly_bad(51, 100));
+        assert!(!mostly_bad(0, 0));
+    }
+
+    #[test]
+    fn adopts_only_a_folder_with_the_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = paths::normalize(&dir.path().to_string_lossy());
+        let entry = VersionEntry {
+            id: "pc-latest".into(),
+            name: "Echo VR".into(),
+            ..Default::default()
+        };
+        let cancel = AtomicBool::new(false);
+        let err = adopt(&entry, &root, "pc-latest", &cancel, &mut |_| {}).err();
+        assert!(err.is_some_and(|e| e.to_string().contains("no Echo VR")));
+
+        // No checksums to go by: taken as it is, as the launcher's version of the entry.
+        let bin = dir.path().join(paths::ARENA_DIR).join("bin/win10");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(paths::DEFAULT_EXE), b"MZ").unwrap();
+        std::fs::write(bin.join("pnsovr.dll.orig"), b"original").unwrap();
+        let i = adopt(&entry, &root, "pc-latest-2", &cancel, &mut |_| {}).unwrap();
+        assert_eq!(i.version.id, "pc-latest-2");
+        assert_eq!(i.version.catalog_id.as_deref(), Some("pc-latest"));
+        assert!(i.version.external && i.version.patched);
+        assert_eq!(i.version.exe, None);
+    }
 
     /// Every event build on the server: its checksums read, they name the archive the
     /// catalogue downloads, and the archive opens over ranges with the build's executable

@@ -68,6 +68,16 @@ pub fn shots() -> Vec<Shot> {
         ("play_notice", Page::Play, SnapVariant::Notice),
         ("install_ask", Page::Install, SnapVariant::InstallAsk),
         ("install_ask_new", Page::Install, SnapVariant::InstallAskNew),
+        (
+            "install_ask_found",
+            Page::Install,
+            SnapVariant::InstallAskFound,
+        ),
+        (
+            "install_ask_choose",
+            Page::Install,
+            SnapVariant::InstallAskChoose,
+        ),
         ("dialog_error", Page::Play, SnapVariant::DialogError),
         (
             "dialog_install_error",
@@ -86,6 +96,7 @@ pub fn shots() -> Vec<Shot> {
             Page::Settings,
             SnapVariant::UploadLogs,
         ),
+        ("settings_logs_sent", Page::Settings, SnapVariant::LogsSent),
         ("install_menu", Page::Install, SnapVariant::MenuOpen),
         ("install_fresh", Page::Install, SnapVariant::Fresh),
         ("install_extracting", Page::Install, SnapVariant::Extracting),
@@ -99,6 +110,7 @@ pub fn shots() -> Vec<Shot> {
         ("play_launching", Page::Play, SnapVariant::Launching),
         ("play_running", Page::Play, SnapVariant::Running),
         ("play_stop", Page::Play, SnapVariant::RunningOurs),
+        ("play_server_here", Page::Play, SnapVariant::ServerHere),
         ("play_version_menu", Page::Play, SnapVariant::VersionMenu),
         ("play_quest_running", Page::Play, SnapVariant::QuestRunning),
         (
@@ -126,6 +138,11 @@ pub fn shots() -> Vec<Shot> {
             "settings_steamvr",
             Page::Settings,
             SnapVariant::SettingsSteamVr,
+        ),
+        (
+            "settings_echoxr",
+            Page::Settings,
+            SnapVariant::SettingsEchoXr,
         ),
         (
             "install_placeholder",

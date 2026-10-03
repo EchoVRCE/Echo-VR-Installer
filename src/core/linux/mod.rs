@@ -40,6 +40,26 @@ pub fn set_next_lobby(lobby: Option<(&str, bool)>) {
     }
 }
 
+/// The game `--play` runs: its launcher process and the version, while it runs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Playing {
+    pub pid: u32,
+    pub version: String,
+}
+
+/// Where `--play` says what it runs (so the launcher knows the game for its own).
+fn playing_file() -> PathBuf {
+    echoxr::root().join("playing.json")
+}
+
+/// What `--play` runs right now, if anything (Linux only).
+pub fn playing() -> Option<Playing> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    serde_json::from_str(&std::fs::read_to_string(playing_file()).ok()?).ok()
+}
+
 /// The lobby left for this start, and whether to watch it.
 fn take_next_lobby() -> Option<(String, bool)> {
     let f = next_lobby_file();
@@ -90,11 +110,26 @@ pub fn play_from_steam() -> i32 {
         tracing::error!("--play: event builds don't run on Linux yet");
         return 2;
     }
-    match echoxr::game_command(&steam_root, &v.bin_dir(), &args).and_then(|mut c| {
+    let playing = Playing {
+        pid: std::process::id(),
+        version: v.id.clone(),
+    };
+    if let Ok(json) = serde_json::to_vec(&playing) {
+        let _ = std::fs::write(playing_file(), json);
+    }
+    let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args).and_then(|mut c| {
         tracing::info!("--play: {c:?}");
         Ok(c.status()?)
-    }) {
-        Ok(status) => status.code().unwrap_or(0),
+    });
+    let _ = std::fs::remove_file(playing_file());
+    match result {
+        Ok(status) => {
+            let code = status.code().unwrap_or(0);
+            if let Some(why) = crate::core::echoxr::exit_message(code) {
+                tracing::error!("--play: EchoXR ({code}): {why}");
+            }
+            code
+        }
         Err(e) => {
             tracing::error!("--play: {e:#}");
             1

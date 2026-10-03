@@ -24,16 +24,31 @@ yet. **Open spark:// links** in Settings takes them over from Spark, or turns th
 macOS can't pass links to the launcher, so paste them there.
 
 
+## Already have Echo VR?
+
+INSTALL looks for a copy first (the Meta app's libraries, `C:\EchoVR`, the launcher's own
+library folder, and Wine prefixes on Linux) and offers **Use the copy on this PC**, or
+**Choose echovr.exe** for one somewhere else. That copy is checked against the build's
+checksums and added instead of downloading it again.
+
+## SteamVR on Windows
+
+The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revive)
+(installed by the launcher) or, picked under Settings → Game, through
+[EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer in the game's folder: no
+injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
+only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
+
 ## Linux
 
 The PC version plays on Linux through Steam. **SET UP** on the Play page downloads a
 private GE-Proton and [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer (it
 answers Echo's Oculus calls over OpenXR, so SteamVR, Monado or WiVRn drive the headset),
-reads Meta's Platform SDK loader out of Meta's own runtime package, and adds Echo VR to
-Steam as a non-Steam game (Steam restarts for that). PLAY then starts it through Steam.
-It needs an active OpenXR runtime and a registered OpenVR runtime (SteamVR, or xrizer /
-OpenComposite on Monado and WiVRn): Proton only turns OpenXR on when OpenVR is there.
-Only the live build runs this way; the event builds don't yet.
+reads Meta's Platform SDK loader and P2P library out of Meta's own runtime package, and
+adds Echo VR to Steam as a non-Steam game (Steam restarts for that). PLAY then starts it
+through Steam.
+It needs an active OpenXR runtime (SteamVR, Monado or WiVRn) and its service running; no
+OpenVR runtime is needed. Only the live build runs this way; the event builds don't yet.
 
 ## Building from source
 

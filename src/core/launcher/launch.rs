@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use super::store::{LaunchProfile, Runtime};
-use crate::core::revive;
+use super::store::{LaunchProfile, Runtime, SteamVrVia};
+use crate::core::{echoxr, revive};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -106,6 +106,13 @@ pub fn build(
             args,
             cwd,
         }),
+        // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on
+        // SteamVR's OpenXR runtime, with the game's arguments.
+        Runtime::Revive if profile.steamvr_via == SteamVrVia::EchoXr => Ok(Command {
+            program: cwd.join(echoxr::LAUNCHER),
+            args,
+            cwd,
+        }),
         Runtime::Revive => {
             let Some(dir) = revive_dir else {
                 bail!("Revive is not installed. Set up SteamVR from the PLAY button first.");
@@ -135,6 +142,9 @@ pub fn build_relay(
         Runtime::Flat => Runtime::MetaLink,
         rt => rt,
     };
+    if runtime == Runtime::Revive && profile.steamvr_via == SteamVrVia::EchoXr {
+        bail!("Event builds don't run through EchoXR (it runs only the live build): choose Revive for SteamVR in Settings.");
+    }
     let bare = LaunchProfile {
         runtime,
         ..Default::default()
@@ -247,6 +257,23 @@ mod tests {
             build(&p, exe, None, None).unwrap().args,
             ["-noovr", "-spectatorstream", "-windowed", "-foo"]
         );
+
+        // SteamVR through EchoXR: EchoXR.exe beside the game, the game's arguments, no
+        // Revive needed; event builds can't.
+        p = LaunchProfile {
+            runtime: Runtime::Revive,
+            steamvr_via: SteamVrVia::EchoXr,
+            extra_args: "-foo".into(),
+            ..Default::default()
+        };
+        let c = build(&p, exe, None, Some(LOBBY)).unwrap();
+        assert_eq!(
+            c.program,
+            Path::new("C:/E/ready-at-dawn-echo-arena/bin/win10/EchoXR.exe")
+        );
+        assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);
+        assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena/bin/win10"));
+        assert!(build_relay(&p, old, None).is_err());
 
         p = LaunchProfile {
             runtime: Runtime::Revive,

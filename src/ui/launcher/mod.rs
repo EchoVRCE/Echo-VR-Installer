@@ -30,9 +30,9 @@ use crate::core::ffmpeg;
 use crate::core::launcher::background;
 use crate::core::launcher::catalog::{Catalog, Platform, VersionEntry};
 use crate::core::launcher::feed;
-use crate::core::launcher::game::{GameState, Monitor};
+use crate::core::launcher::game::{self, GameState, Local, Monitor};
 use crate::core::launcher::quest::QuestInfo;
-use crate::core::launcher::store::{InstalledVersion, LauncherState, Runtime, Target};
+use crate::core::launcher::store::{InstalledVersion, LauncherState, Runtime, SteamVrVia, Target};
 use crate::core::launcher::update_check;
 use crate::core::launcher::versions::Step;
 use crate::core::links;
@@ -121,6 +121,8 @@ enum JobResult {
     LibraryEntry(bool),
     /// Linux: set up, with the Steam shortcut's appid.
     LinuxReady(u32),
+    /// SteamVR through EchoXR is set up (Windows).
+    EchoXrReady,
     QuestInstalled(crate::core::launcher::quest::Installed),
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
@@ -146,6 +148,11 @@ enum Msg {
     FreeSpace(String, Option<u64>),
     /// Where Revive is installed.
     Revive(Option<String>),
+    /// EchoXR (and what it needs) is fetched.
+    EchoXr(bool),
+    /// Echo VR copies on this PC the library doesn't have yet (for the library and the
+    /// number of versions it had).
+    Found((String, usize), Vec<String>),
     /// Bytes "Delete cache" would free.
     CacheSize(u64),
     /// How far a scan for the Quest on the network is (0 to 1).
@@ -160,6 +167,8 @@ enum Msg {
     LinkHandler(links::Handler, Option<String>),
     /// The headset's logs were saved into this folder, or why not.
     QuestLogs(Result<PathBuf, UiError>),
+    /// The logs were uploaded: the service's reference, or why not.
+    LogsUploaded(Result<String, String>),
 }
 
 /// Whether a newer launcher is out (Settings shows it, the rail marks it).
@@ -322,6 +331,10 @@ pub enum SnapVariant {
     InstallAsk,
     /// ...as a new player, with a patch link.
     InstallAskNew,
+    /// ...with Echo VR found in the Meta library.
+    InstallAskFound,
+    /// ...not installed, nothing found (choose echovr.exe).
+    InstallAskChoose,
     /// ...for the Quest, as a new player.
     InstallAskQuest,
     /// PLAY of a version not installed here: the licence question first.
@@ -338,6 +351,8 @@ pub enum SnapVariant {
     DeleteCache,
     /// Settings: "Upload logs" says what the logs contain.
     UploadLogs,
+    /// ...and they were sent: the reference.
+    LogsSent,
     /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
     /// The Quest side, a headset without Echo VR.
@@ -350,6 +365,8 @@ pub enum SnapVariant {
     Running,
     /// Echo VR runs, started by the launcher (STOP).
     RunningOurs,
+    /// A dedicated server runs on this PC; no game.
+    ServerHere,
     /// The Play page's version picker, open.
     VersionMenu,
     /// A placeholder version chosen on the Install page.
@@ -358,6 +375,8 @@ pub enum SnapVariant {
     JoinLobby,
     /// Settings with SteamVR chosen (its artwork and library options).
     SettingsSteamVr,
+    /// ...through EchoXR.
+    SettingsEchoXr,
     /// Servers: signed in, the live list (and you in a party queueing).
     ServersLive,
     /// Servers: your match history.
@@ -388,31 +407,25 @@ enum SnapGame {
     Launching,
     Ours,
     Elsewhere,
+    /// A dedicated server, from another folder.
+    Server,
     /// Echo VR runs on the Quest (its API answers over the network).
     QuestRunning,
 }
 
-/// The game PLAY started, remembered after its starter (Revive's injector) exits so
-/// STOP still ends it.
+/// PLAY was clicked: the game is starting until the monitor finds it (it knows the game
+/// for the launcher's own from then on) or it never shows up.
 #[derive(Clone, Copy)]
 struct Launched {
     at: std::time::Instant,
-    /// The same moment in Unix seconds, to tell the game's process from older ones.
-    unix: u64,
     /// The game has been seen running since.
     seen: bool,
 }
 
 impl Launched {
-    /// How long a started game may take to show up before PLAY is back.
-    const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-
     fn now() -> Launched {
         Launched {
             at: std::time::Instant::now(),
-            unix: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
             seen: false,
         }
     }
@@ -429,6 +442,8 @@ pub struct Dashboard {
     worker: Worker<Msg>,
     monitor: Option<Monitor>,
     child: Option<std::process::Child>,
+    /// That is EchoXR.exe, whose exit codes say why the game didn't start.
+    child_echoxr: bool,
     /// The game PLAY started, until it has ended (or never showed up).
     launched: Option<Launched>,
     /// The lobby to join once "Launch anyway" is answered.
@@ -491,13 +506,23 @@ pub struct Dashboard {
     consent: Option<std::sync::mpsc::SyncSender<bool>>,
     /// Where Revive is installed.
     revive: Probe<(), Option<String>>,
+    /// EchoXR and Meta's loader are fetched (SteamVR through EchoXR).
+    echoxr: Probe<(), bool>,
     /// Free space in the library.
     free: Probe<String, Option<u64>>,
     /// What "Delete cache" would free.
     cache: Probe<(), u64>,
+    /// Echo VR copies on this PC the library doesn't have yet.
+    found: Probe<(String, usize), Vec<String>>,
+    /// Snapshots: the copies found.
+    snap_found: Vec<String>,
     launcher_update: LauncherUpdate,
     started: bool,
     deleting_cache: bool,
+    /// The logs are on their way to the upload service.
+    uploading_logs: bool,
+    /// The logs "Upload logs" asked about.
+    upload_sources: Vec<crate::core::logs::Source>,
     feed: Feed,
     /// Something that went well, shown in the status bar for a few seconds.
     notice: Option<(String, std::time::Instant)>,
@@ -696,6 +721,37 @@ impl Dashboard {
         self.demo || self.revive.get(()).is_some_and(|dir| dir.is_none())
     }
 
+    /// EchoXR (for SteamVR) is known not to be fetched.
+    fn echoxr_missing(&mut self) -> bool {
+        self.demo || self.echoxr.get(()).is_some_and(|ready| !ready)
+    }
+
+    /// SteamVR is the choice, on Windows, and isn't set up the way it runs yet (Revive's
+    /// injector, or EchoXR).
+    fn steamvr_missing(&mut self) -> bool {
+        if self.state.profile.runtime != Runtime::Revive || !(cfg!(windows) || self.demo) {
+            return false;
+        }
+        match self.state.profile.steamvr_via {
+            SteamVrVia::Revive => self.revive_missing(),
+            SteamVrVia::EchoXr => self.echoxr_missing(),
+        }
+    }
+
+    /// Echo VR copies on this PC the library doesn't have yet (looked for on a worker,
+    /// again when the library changes), most likely first.
+    fn found_installs(&mut self) -> Vec<String> {
+        if self.demo {
+            return self.snap_found.clone();
+        }
+        let key = (self.state.library.clone(), self.state.versions.len());
+        let found = self.found.get(key).unwrap_or_default();
+        found
+            .into_iter()
+            .filter(|r| !self.state.has_root(r))
+            .collect()
+    }
+
     /// What "Delete cache" would free (`None`: not measured yet).
     fn cache_bytes(&mut self) -> Option<u64> {
         if self.demo {
@@ -758,6 +814,18 @@ impl Dashboard {
                 tx.send(Msg::Revive(crate::core::revive::find_revive_dir()));
             });
         }
+        if self.echoxr.due(std::time::Duration::from_secs(5)).is_some() {
+            self.worker.spawn(ctx, |tx| {
+                tx.send(Msg::EchoXr(crate::core::echoxr::is_fetched()));
+            });
+        }
+        if let Some(key) = self.found.due(std::time::Duration::from_secs(30)) {
+            let state = self.state.clone();
+            self.worker.spawn(ctx, move |tx| {
+                let found = crate::core::launcher::discover::find_installs(&state);
+                tx.send(Msg::Found(key, found));
+            });
+        }
     }
 
     /// What PLAY acts on.
@@ -798,6 +866,7 @@ impl Dashboard {
         self.state.profile = demo_state().profile;
         self.snap_game = None;
         self.install_pick = None;
+        self.snap_found.clear();
         self.state.versions = demo_state().versions;
         if matches!(
             self.snap_variant,
@@ -850,13 +919,26 @@ impl Dashboard {
             }
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
-            Some(v @ (SnapVariant::InstallAsk | SnapVariant::InstallAskNew)) => {
+            Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A"),
+            Some(
+                v @ (SnapVariant::InstallAsk
+                | SnapVariant::InstallAskNew
+                | SnapVariant::InstallAskFound
+                | SnapVariant::InstallAskChoose),
+            ) => {
                 let entry = self
                     .catalog
                     .as_ref()
                     .and_then(|c| c.versions.iter().find(|e| e.id == "pc-latest").cloned());
                 if v == SnapVariant::InstallAskNew {
                     self.state.owner = Some(false);
+                }
+                // Nothing installed by the launcher yet; (found) the Meta app's copy.
+                if matches!(v, SnapVariant::InstallAskFound | SnapVariant::InstallAskChoose) {
+                    self.state.versions.clear();
+                }
+                if v == SnapVariant::InstallAskFound {
+                    self.snap_found = vec!["C:/Program Files/Oculus/Software/Software".into()];
                 }
                 if let Some(e) = entry {
                     setup::ask_install(self, e);
@@ -876,11 +958,16 @@ impl Dashboard {
             Some(SnapVariant::Launching) => self.snap_game = Some(SnapGame::Launching),
             Some(SnapVariant::Running) => self.snap_game = Some(SnapGame::Elsewhere),
             Some(SnapVariant::RunningOurs) => self.snap_game = Some(SnapGame::Ours),
+            Some(SnapVariant::ServerHere) => self.snap_game = Some(SnapGame::Server),
             Some(SnapVariant::VersionMenu) => {
                 let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
                 ctx.data_mut(|d| d.insert_temp(id, true));
             }
             Some(SnapVariant::SettingsSteamVr) => self.state.profile.runtime = Runtime::Revive,
+            Some(SnapVariant::SettingsEchoXr) => {
+                self.state.profile.runtime = Runtime::Revive;
+                self.state.profile.steamvr_via = SteamVrVia::EchoXr;
+            }
             Some(SnapVariant::SettingsLinks) => {
                 self.link_handler = Some(links::Handler::Other("Spark".into()))
             }
@@ -1076,11 +1163,37 @@ impl Dashboard {
         self.feed.ready() || self.feed.status_failed || self.feed.news_failed
     }
 
+    /// Echo VR's clients on this PC (servers don't count).
     fn game(&self) -> GameState {
+        self.local().state
+    }
+
+    /// Echo on this PC: the clients' state, the launcher's own game, servers.
+    fn local(&self) -> Local {
+        let ours = || self.state.selected.clone();
         match self.snap_game {
-            Some(SnapGame::Ours | SnapGame::Elsewhere) => GameState::Running,
-            Some(SnapGame::Launching | SnapGame::QuestRunning) => GameState::NotRunning,
-            None => self.monitor.as_ref().map(Monitor::get).unwrap_or_default(),
+            Some(SnapGame::Ours) => Local {
+                state: GameState::Running,
+                ours: ours(),
+                ..Local::default()
+            },
+            Some(SnapGame::Elsewhere) => Local {
+                state: GameState::Running,
+                others: 1,
+                ..Local::default()
+            },
+            Some(SnapGame::Server) => Local {
+                servers: vec![Some(
+                    "D:/EchoServer/ready-at-dawn-echo-arena/bin/win10/echovr.exe".into(),
+                )],
+                ..Local::default()
+            },
+            Some(SnapGame::Launching | SnapGame::QuestRunning) => Local::default(),
+            None => self
+                .monitor
+                .as_ref()
+                .map(Monitor::local)
+                .unwrap_or_default(),
         }
     }
 
@@ -1088,7 +1201,21 @@ impl Dashboard {
     fn ours(&self) -> bool {
         self.child.is_some()
             || self.launched.is_some()
-            || matches!(self.snap_game, Some(SnapGame::Launching | SnapGame::Ours))
+            || self.local().ours.is_some()
+            || matches!(self.snap_game, Some(SnapGame::Launching))
+    }
+
+    /// Why version `v`'s files can't be changed now (`None`: they can): Echo VR runs, or
+    /// a server runs from its folder (both hold its files).
+    fn files_in_use(&self, v: &InstalledVersion) -> Option<&'static str> {
+        let local = self.local();
+        if local.state.is_running() {
+            Some("Close Echo VR first: it holds the game's files")
+        } else if local.server_in(&v.root) {
+            Some("An Echo VR server runs from this folder and holds its files: stop it first")
+        } else {
+            None
+        }
     }
 
     fn check_quest(&mut self, ctx: &egui::Context, interactive: bool) {
@@ -1101,15 +1228,34 @@ impl Dashboard {
         // Forget our child once it exited, and the game we started once it has ended
         // (or never showed up).
         if let Some(c) = self.child.as_mut() {
-            if !matches!(c.try_wait(), Ok(None)) {
-                self.child = None;
+            match c.try_wait() {
+                Ok(None) => {}
+                Ok(Some(status)) => {
+                    // EchoXR.exe ended before the game showed up: it says why (later on,
+                    // its exit code is Echo's own).
+                    let starting = self.launched.is_some_and(|l| !l.seen);
+                    let why = status
+                        .code()
+                        .and_then(crate::core::echoxr::exit_message)
+                        .filter(|_| self.child_echoxr && starting);
+                    self.child = None;
+                    if let Some(why) = why {
+                        self.launched = None;
+                        self.dialogs.error(
+                            "Echo VR didn't start through EchoXR",
+                            why,
+                            Default::default(),
+                        );
+                    }
+                }
+                Err(_) => self.child = None,
             }
         }
-        let running = self.game().is_running();
+        let ours = self.local().ours.is_some();
         if let Some(l) = self.launched.as_mut() {
-            if running {
+            if ours {
                 l.seen = true;
-            } else if l.seen || l.at.elapsed() > Launched::WAIT {
+            } else if l.seen || l.at.elapsed() > game::LAUNCH_WAIT {
                 self.launched = None;
             }
         }
@@ -1265,6 +1411,17 @@ impl Dashboard {
                         Err(e) => self.dialogs.error_ui(&e),
                     }
                 }
+                Msg::LogsUploaded(r) => {
+                    self.uploading_logs = false;
+                    match r {
+                        Ok(code) => settings::logs_sent(self, ctx, &code),
+                        Err(why) => self.dialogs.error(
+                            "Couldn't upload your logs",
+                            &why,
+                            Default::default(),
+                        ),
+                    }
+                }
                 Msg::QuestNetwork(r) => match r {
                     Ok(()) => self.notify("ADB over the network is on: you can unplug your Quest"),
                     Err(e) => self.dialogs.error_ui(&e),
@@ -1280,6 +1437,8 @@ impl Dashboard {
                     }
                 }
                 Msg::Revive(dir) => self.revive.done((), dir),
+                Msg::EchoXr(ready) => self.echoxr.done((), ready),
+                Msg::Found(key, found) => self.found.done(key, found),
                 Msg::FeedImage(name, img) => {
                     if let Some(img) = img {
                         let size = [img.width() as usize, img.height() as usize];
@@ -1480,6 +1639,10 @@ impl Dashboard {
                         ),
                     );
                 }
+            }
+            JobResult::EchoXrReady => {
+                self.echoxr = Probe::default();
+                self.notify("SteamVR through EchoXR is ready: PLAY starts Echo VR through it");
             }
             JobResult::LinuxReady(appid) => {
                 self.state.linux_appid = Some(appid);
@@ -1857,12 +2020,10 @@ impl Dashboard {
         }
         match self.target() {
             Target::Installed(v) => {
-                let needs_revive = self.state.profile.runtime == Runtime::Revive
-                    && (cfg!(windows) || self.demo)
-                    && self.revive_missing();
+                let needs_steamvr = self.steamvr_missing();
                 if setup::needs_patch(self, &v) {
                     ("PCVR: needs the patch", design::QUEST_WARN)
-                } else if needs_revive {
+                } else if needs_steamvr {
                     ("PCVR: set up SteamVR", design::QUEST_WARN)
                 } else {
                     ("PCVR: ready", design::QUEST_ON)

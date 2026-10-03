@@ -15,15 +15,17 @@ use crate::core::launcher::launch;
 use crate::core::launcher::patch::{self, FetchError, Source};
 use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
 use crate::core::launcher::relay;
-use crate::core::launcher::store::{InstalledVersion, RelayAccount, Runtime, Target};
+use crate::core::launcher::store::{InstalledVersion, RelayAccount, Runtime, SteamVrVia, Target};
 use crate::core::launcher::versions::Step;
-use crate::core::{download, elevation, oauth, platform, revive};
+use crate::core::{download, echoxr, elevation, oauth, paths, platform, revive};
 use crate::ui::design::{self, dz};
 use crate::ui::kit::Kit;
 use crate::ui::parts::Tx;
 use crate::ui::widgets::{Tone, BTN_H};
 
 pub(super) const REVIVE_JOB: &str = "revive";
+/// SteamVR through EchoXR (Windows).
+pub(super) const ECHOXR_JOB: &str = "echoxr";
 /// Putting Echo VR into SteamVR's library (or taking it out) on its own.
 const LIBRARY_JOB: &str = "steamvr-library";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
@@ -74,6 +76,12 @@ pub(super) struct InstallAsk {
     /// A new player's patch from a link they have, instead of Discord.
     pub link: bool,
     pub url: String,
+    /// PC: a copy of Echo VR already on this PC (found, or chosen), as its install root.
+    pub copy: Option<String>,
+    /// Take that copy in instead of downloading.
+    pub use_copy: bool,
+    /// The copy was chosen or turned down: a copy found later isn't offered over it.
+    pub copy_decided: bool,
 }
 
 /// What the Install card installs.
@@ -109,13 +117,25 @@ pub(super) fn ask_install(d: &mut Dashboard, e: VersionEntry) {
         Runtime::Flat if e.publisher_lock.is_some() => Runtime::MetaLink,
         rt => rt,
     };
+    let copy = offers_copy(d, &e)
+        .then(|| d.found_installs().into_iter().next())
+        .flatten();
     d.overlay = Some(Overlay::Install(Box::new(InstallAsk {
         target: InstallFor::Pc(Box::new(e)),
         owner: d.state.owner,
         runtime,
         link: false,
         url: String::new(),
+        use_copy: copy.is_some(),
+        copy,
+        copy_decided: false,
     })));
+}
+
+/// Whether the Install card of `e` offers a copy found on this PC on its own: a live
+/// build (found copies are the Meta app's, or the old installer's), not installed yet.
+fn offers_copy(d: &Dashboard, e: &VersionEntry) -> bool {
+    e.publisher_lock.is_none() && e.exe.is_none() && d.state.installed_from(&e.id).is_none()
 }
 
 /// Asks before installing on the Quest: your licence (`link`: a new player's patched
@@ -132,6 +152,9 @@ pub(super) fn ask_quest_install(d: &mut Dashboard, link: bool) {
         runtime: d.state.profile.runtime,
         link,
         url: String::new(),
+        copy: None,
+        use_copy: false,
+        copy_decided: false,
     })));
 }
 
@@ -150,6 +173,22 @@ fn confirm_install(d: &mut Dashboard, ctx: &egui::Context, ask: InstallAsk) {
     }
     let link = ask.link.then(|| ask.url.trim().to_string());
     match ask.target {
+        // A copy already on this PC: taken in (checked first) instead of a download. Its
+        // licence patch, if any, stays; a new player without one gets PATCH on Play.
+        InstallFor::Pc(e) if ask.use_copy && ask.copy.is_some() => {
+            d.state.profile.runtime = ask.runtime;
+            let root = ask.copy.unwrap_or_default();
+            let probe = InstalledVersion {
+                exe: paths::find_exe(&root).map(str::to_string),
+                root: root.clone(),
+                ..Default::default()
+            };
+            let patched = patch::is_applied(&probe.bin_dir());
+            let id = super::versions::adopt(d, ctx, *e, root);
+            if !own && !patched && d.jobs.contains_key(&id) {
+                fetch_licence(d, ctx, &id, link.map_or(Source::Discord, Source::Url));
+            }
+        }
         InstallFor::Pc(e) => {
             // Already installed: a reinstall, which checks the files and fetches only the
             // broken ones. A new player's patch stays; an owner gets the original back.
@@ -292,8 +331,8 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    if d.game().is_running() {
-        d.notify("Close Echo VR first: it holds the file the patch replaces");
+    if let Some(why) = d.files_in_use(&v) {
+        d.notify(why);
         return;
     }
     let mut consent = consent_asker(d.worker.tx(ctx));
@@ -339,8 +378,8 @@ pub(super) fn unpatch(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    if d.game().is_running() {
-        d.notify("Close Echo VR first: it holds the file the patch replaces");
+    if let Some(why) = d.files_in_use(&v) {
+        d.notify(why);
         return;
     }
     let mut consent = consent_asker(d.worker.tx(ctx));
@@ -404,6 +443,40 @@ pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool)
             match elevation::set_library_entry(exe, args, &mut consent) {
                 Ok(()) => JobResult::LibraryEntry(add),
                 Err(e) => job_err(e, "SteamVR Library"),
+            }
+        },
+    );
+}
+
+/// Sets up SteamVR through EchoXR (Windows): EchoXR and, without the Meta app, Meta's
+/// Platform SDK loader; then EchoXR into the selected version's folder (asking for
+/// administrator rights for the Meta library's).
+pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
+    let mut consent = consent_asker(d.worker.tx(ctx));
+    let bin = match d.target() {
+        Target::Installed(v) if v.publisher_lock.is_none() => Some(v.bin_dir()),
+        _ => None,
+    };
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        ECHOXR_JOB,
+        "Setting up SteamVR through EchoXR",
+        "Downloading EchoXR...",
+        move |cancel, on| {
+            let r = echoxr::fetch(cancel, on).and_then(|()| match &bin {
+                Some(bin) => {
+                    on(Step::Status(
+                        "Putting EchoXR into the game's folder...".into(),
+                    ));
+                    let platform = echoxr::platform_dir_for(bin);
+                    elevation::prepare_echoxr(bin, platform.as_deref(), &mut consent)
+                }
+                None => Ok(()),
+            });
+            match r {
+                Ok(()) => JobResult::EchoXrReady,
+                Err(e) => job_err(e, "SteamVR Setup Failed"),
             }
         },
     );
@@ -473,8 +546,8 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         return;
     };
     let exe = v.exe_path();
-    let revive = match d.state.profile.runtime {
-        Runtime::Revive if !d.demo => revive::find_revive_dir(),
+    let revive = match (d.state.profile.runtime, d.state.profile.steamvr_via) {
+        (Runtime::Revive, SteamVrVia::Revive) if !d.demo => revive::find_revive_dir(),
         _ => None,
     };
     // The launch options from Settings go into the shortcut too. An event build's is
@@ -484,7 +557,18 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         Some(_) => format!("Echo VR {}", v.name),
         None => "Echo VR".to_string(),
     };
+    let echoxr = d.state.profile.runtime == Runtime::Revive
+        && d.state.profile.steamvr_via == SteamVrVia::EchoXr
+        && v.publisher_lock.is_none();
     let result = match (d.state.profile.runtime, revive) {
+        // EchoXR.exe beside the game starts it on SteamVR, with the game's icon.
+        _ if echoxr => platform::create_shortcut(
+            &name,
+            &v.bin_dir().join(echoxr::LAUNCHER),
+            (!args.is_empty()).then_some(args.as_str()),
+            Some(&v.bin_dir()),
+            Some(&exe),
+        ),
         (Runtime::Revive, Some(dir)) => revive::create_injector_shortcut(&dir, &exe, &args),
         _ => platform::create_shortcut(
             &name,
@@ -658,7 +742,7 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
     match r {
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
         Runtime::VirtualDesktop => "Quest over Virtual Desktop; start its streamer first.",
-        Runtime::Revive => "Any SteamVR headset. The launcher sets up Revive for you.",
+        Runtime::Revive => "Any SteamVR headset. The launcher sets it up for you.",
         Runtime::Flat => "No headset: play or spectate on the monitor.",
     }
 }
@@ -878,10 +962,27 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         _ => false,
     };
     let verb = if reinstall { "Reinstall" } else { "Install" };
+    // A copy found on this PC meanwhile (the search runs in the background) is offered
+    // until one is chosen or turned down.
+    let look = match &d.overlay {
+        Some(Overlay::Install(ask)) => match &ask.target {
+            InstallFor::Pc(e) => ask.copy.is_none() && !ask.copy_decided && offers_copy(d, e),
+            InstallFor::Quest => false,
+        },
+        _ => false,
+    };
+    let found = look
+        .then(|| d.found_installs().into_iter().next())
+        .flatten();
     let Some(Overlay::Install(ask)) = &mut d.overlay else {
         return;
     };
     let ask = &mut **ask;
+    if let Some(copy) = found {
+        ask.copy = Some(copy);
+        ask.use_copy = true;
+    }
+    let use_copy = ask.use_copy && ask.copy.is_some();
     let (title, root) = match &ask.target {
         InstallFor::Pc(e) => (
             format!("{verb} {}", e.name),
@@ -902,6 +1003,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let (w, pad, gap) = (dz(1100.0), dz(30.0), dz(16.0));
     let inner = w - 2.0 * pad;
     let (q_h, owner_h, runtime_h, place_h) = (dz(40.0), dz(110.0), dz(130.0), dz(50.0));
+    let where_h = dz(100.0);
 
     // Measured first: the card fits what it shows.
     let mut h = if event {
@@ -916,6 +1018,9 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         h += text_height(k, QUEST_WARNING, inner) + dz(24.0);
     } else {
         h += q_h + runtime_h + dz(24.0) + place_h + dz(24.0);
+        if ask.copy.is_some() {
+            h += q_h + where_h + dz(24.0);
+        }
     }
     let h = dz(46.0) + 2.0 * pad + h + BTN_H;
     let (x, mut y, cw, bottom) = card(k, w, h, &title);
@@ -956,6 +1061,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     }
 
     let mut change = false;
+    let mut choose = false;
     if let Some(root) = &root {
         question(k, x, y, cw, "How do you play Echo VR?");
         y += q_h;
@@ -980,19 +1086,81 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             }
         }
         y += runtime_h + dz(24.0);
-        let cap = k.caption(x, y, "Install location");
-        let change_tip = "Install into another folder (your library)";
-        change = k
-            .link(
-                "install-change",
-                x + cap.width() + dz(14.0),
-                y - dz(2.0),
-                "Change",
-                14.0,
-                change_tip,
-            )
-            .clicked;
-        let path = super::install::myriad(k, root, design::myriad(18.0), design::TEXT, cw, true);
+        // Echo VR already on this PC: take it in, or download it anyway.
+        if ask.copy.is_some() {
+            question(k, x, y, cw, "Where is Echo VR?");
+            y += q_h;
+            let tw = (cw - gap) / 2.0;
+            let size = match &ask.target {
+                InstallFor::Pc(e) => e.size.map(super::play::gb),
+                InstallFor::Quest => None,
+            };
+            let download = size.map_or_else(
+                || "Downloads it into your library".to_string(),
+                |s| format!("Downloads {s} into your library"),
+            );
+            let tiles = [
+                (false, "Download it", download.as_str()),
+                (true, "Use the copy on this PC", COPY_NOTE),
+            ];
+            for (i, (copy, label, note)) in tiles.into_iter().enumerate() {
+                let tx = x + i as f32 * (tw + gap);
+                if k.tile(
+                    &format!("install-where-{i}"),
+                    tx,
+                    y,
+                    tw,
+                    where_h,
+                    label,
+                    note,
+                    use_copy == copy,
+                )
+                .clicked
+                {
+                    ask.use_copy = copy;
+                    ask.copy_decided = true;
+                }
+            }
+            y += where_h + dz(24.0);
+        }
+        let (caption, path) = match &ask.copy {
+            Some(copy) if use_copy => ("Echo VR is in", copy.as_str()),
+            _ => ("Install location", root.as_str()),
+        };
+        let cap = k.caption(x, y, caption);
+        if !use_copy {
+            let change_tip = "Install into another folder (your library)";
+            change = k
+                .link(
+                    "install-change",
+                    x + cap.width() + dz(14.0),
+                    y - dz(2.0),
+                    "Change",
+                    14.0,
+                    change_tip,
+                )
+                .clicked;
+        }
+        // Anyone who has Echo VR already says where, instead of downloading it again.
+        if !reinstall {
+            let text = if ask.copy.is_some() {
+                "Not this one? Choose echovr.exe"
+            } else {
+                "Already have it? Choose echovr.exe"
+            };
+            let lw = k.link_width(text, 14.0);
+            choose = k
+                .link(
+                    "install-choose",
+                    x + cw - lw,
+                    y - dz(2.0),
+                    text,
+                    14.0,
+                    "Use an Echo VR that is already on this PC: choose its echovr.exe",
+                )
+                .clicked;
+        }
+        let path = super::install::myriad(k, path, design::myriad(18.0), design::TEXT, cw, true);
         k.put(x, y + dz(24.0), path);
     } else {
         k.caps_text(x, y, cw, QUEST_WARNING, 17.0, design::BODY, dz(PARA));
@@ -1000,6 +1168,16 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
 
     let ready = event || (ask.owner.is_some() && (!new || link_ok(quest, ask.link, &ask.url)));
     let tip = match (quest, ask.owner, ask.link) {
+        (false, Some(true), _) if use_copy => {
+            "Check this copy against the build's checksums and add it to your library: only broken files are downloaded"
+        }
+        (false, Some(false), false) if use_copy => {
+            "Add this copy; Discord opens in your browser meanwhile for your patch"
+        }
+        (false, Some(false), true) if use_copy => "Add this copy and put your patch in",
+        _ if event && use_copy => {
+            "Check this copy against the event build's checksums, add it and EchoRelay's patch"
+        }
         _ if event && reinstall => "Check every game file and fetch only the broken ones again",
         _ if event => {
             "Download this event build and add EchoRelay's patch, for the classic lobbies"
@@ -1025,7 +1203,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "install",
         x + cw,
         bottom - BTN_H,
-        verb,
+        if use_copy { "Use this copy" } else { verb },
         ready && !busy,
         tip,
     );
@@ -1037,6 +1215,14 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         confirm_install(d, ctx, ask);
     } else if change {
         hero::choose_library(d);
+    } else if choose {
+        if let Some(root) = super::versions::choose_copy(d) {
+            if let Some(Overlay::Install(ask)) = &mut d.overlay {
+                ask.copy = Some(root);
+                ask.use_copy = true;
+                ask.copy_decided = true;
+            }
+        }
     }
 }
 
@@ -1243,6 +1429,8 @@ const EVENT_NOTE: &str = "An event build: it plays on the community's classic lo
 const PC_LICENCE: &str = "New players need a personal licence patch. Authorize with Discord and the Echo VR Patcher bot builds one for your account; you need to be a member of its server.\n\nIt replaces pnsovr.dll in {version}. The original is kept, so you can take the patch off again in MANAGE.";
 const PC_OPTIONS: &str = "New players need a personal licence patch. Authorize with Discord while Echo VR downloads: the Echo VR Patcher bot builds one for your account (you need to be a member of its server), and it goes in once Echo VR is installed.";
 const QUEST_OPTIONS: &str = "New players install a personal patched build. Authorize with Discord and the Echo VR Patcher bot builds it for your account; you need to be a member of its server.";
+/// The Install card's tile for a copy of Echo VR already on this PC.
+const COPY_NOTE: &str = "Already on this PC: nothing to download";
 const QUEST_WARNING: &str = "Installing replaces Echo VR on your Quest: the installed app and its local data are removed first.";
 
 #[cfg(test)]

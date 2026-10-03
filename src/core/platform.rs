@@ -26,6 +26,32 @@ pub fn oculus_base_path() -> Option<String> {
     None
 }
 
+/// Every Meta (Oculus) app library folder set up in the Meta Quest app:
+/// `HKCU\Software\Oculus VR, LLC\Oculus\Libraries\{id}` -> `OriginalPath`. Games are in
+/// its `Software` folder.
+#[cfg(windows)]
+pub fn meta_libraries() -> Vec<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    let Ok(libraries) = winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Oculus VR, LLC\\Oculus\\Libraries")
+    else {
+        return Vec::new();
+    };
+    libraries
+        .enum_keys()
+        .filter_map(Result::ok)
+        .filter_map(|id| libraries.open_subkey(id).ok())
+        .filter_map(|lib| lib.get_value::<String, _>("OriginalPath").ok())
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn meta_libraries() -> Vec<String> {
+    Vec::new()
+}
+
 /// InstallLocation of an uninstall entry whose DisplayName contains "Revive".
 #[cfg(windows)]
 pub fn revive_install_location() -> Option<String> {

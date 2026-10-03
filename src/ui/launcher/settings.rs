@@ -5,9 +5,9 @@
 use super::install::{myriad, text_link};
 use super::{hero, server_info, setup, Dashboard, LauncherUpdate, Msg, CREDITS};
 use crate::core::launcher::relay;
-use crate::core::launcher::store::Runtime;
+use crate::core::launcher::store::{Runtime, SteamVrVia};
 use crate::core::links::Handler;
-use crate::core::{paths, platform};
+use crate::core::{logs, paths, platform};
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
@@ -31,9 +31,9 @@ const CACHE_KEY: &str = "settings-delete-cache";
 pub(super) const FFMPEG_KEY: &str = "settings-download-ffmpeg";
 pub(super) const BACKGROUND_JOB: &str = "background";
 const UPLOAD_KEY: &str = "settings-upload-logs";
-const UPLOAD_TEXT: &str = "This sends the launcher's log files to the developer, marshmallow-mia, to help with a problem. Only the developer can see them.\n\n\
-They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
-To have them deleted, message marshmallow-mia on Discord or email echovr@mia-hentschel.de.";
+const UPLOAD_TEXT: &str = "This sends your logs to the developer, marshmallow-mia, to help with a problem: the launcher's, Echo VR's (from each installed version), EchoXR's, plugins' and the Quest logs you saved last. Only the developer can see them, and they're deleted after 30 days.\n\n\
+They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
+To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.ghost {
@@ -65,8 +65,7 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
         .take(UPLOAD_KEY)
         .is_some_and(|a| a == crate::ui::dialogs::Answer::Button(0))
     {
-        // Where the logs will be uploaded once there is somewhere to send them.
-        d.notify("Log upload isn't available yet");
+        upload(d, ctx);
     }
 }
 
@@ -298,12 +297,50 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     }
     if d.state.profile.runtime == Runtime::Revive {
         let ay = top + dz(TILE_H) + dz(24.0);
+        // SteamVR through Revive's injector, or EchoXR's OpenXR runtime in the game's
+        // folder; Revive's own options beside them.
+        let cap = kit.caption(x, ay + dz(9.0), "SteamVR through");
+        let mut bx = x + cap.width() + dz(16.0);
+        // Lower than a card's buttons: the row is the card's last.
+        let bh = dz(42.0);
+        let choices = [
+            (
+                SteamVrVia::Revive,
+                "Revive",
+                "Revive injects itself into Echo VR; the launcher installs it (asks for administrator rights)",
+            ),
+            (
+                SteamVrVia::EchoXr,
+                "EchoXR",
+                "EchoXR's OpenXR runtime in the game's folder: no injection and no administrator rights. Live build only.",
+            ),
+        ];
+        for (via, label, tip) in choices {
+            let on = d.state.profile.steamvr_via == via;
+            let bw = kit.button_width(label, None, bh).max(dz(130.0));
+            let tone = if on { Tone::Blue } else { Tone::Dark };
+            let key = format!("steamvr-via-{label}");
+            if kit
+                .button(&key, bx, ay - dz(4.0), bw, bh, tone, None, label, true, tip)
+                .clicked
+                && !on
+            {
+                d.state.profile.steamvr_via = via;
+                d.save();
+            }
+            bx += bw + dz(10.0);
+        }
+        if d.state.profile.steamvr_via != SteamVrVia::Revive {
+            return;
+        }
+        let cx = bx + dz(30.0);
+        let cy = ay;
         if kit.check(
             "artwork",
             &mut d.state.revive_artwork,
-            "SteamVR: add game artwork",
-            x,
-            ay,
+            "Game artwork",
+            cx,
+            cy,
             true,
             "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
         ) {
@@ -314,9 +351,9 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         if kit.check(
             "steamvr-library",
             &mut d.state.revive_library,
-            "SteamVR: show Echo VR in the library",
-            x + w / 2.0,
-            ay,
+            "Echo VR in SteamVR's library",
+            cx + (x + w - cx) * 0.4,
+            cy,
             idle,
             "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. After switching versions, tick this off and on to update it.",
         ) {
@@ -633,6 +670,14 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 
     // Support.
     y += markdown::draw(kit, x, y, w, "__**Support**__", &look) + dz(10.0);
+    let (label, tip) = if d.uploading_logs {
+        ("Uploading logs…", "Your logs are on their way")
+    } else {
+        (
+            "Upload logs",
+            "Asks first, and says which logs go and what they contain",
+        )
+    };
     if kit
         .button(
             "upload-logs",
@@ -642,9 +687,9 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             BTN_H,
             Tone::Panel,
             Some(Icon::Info),
-            "Upload logs",
-            true,
-            "Asks first, and says what the logs contain",
+            label,
+            !d.uploading_logs,
+            tip,
         )
         .clicked
     {
@@ -764,12 +809,93 @@ pub(super) fn ask_delete_cache(d: &mut Dashboard) {
 
 /// What uploading the logs shares, and with whom; asks before it happens.
 pub(super) fn ask_upload(d: &mut Dashboard) {
+    d.upload_sources = if d.demo {
+        demo_sources()
+    } else {
+        logs::collect(&d.state.versions)
+    };
+    if d.upload_sources.is_empty() {
+        d.dialogs.info(
+            "No logs yet",
+            "There are no logs to upload yet: start Echo VR once, then try again.",
+        );
+        return;
+    }
+    let text = format!("{}\n\n{UPLOAD_TEXT}", what_goes(&d.upload_sources));
     d.dialogs.options(
         UPLOAD_KEY,
         "Upload your logs?",
-        UPLOAD_TEXT,
+        &text,
         DlgIcon::Info,
         &["Upload", "Cancel"],
+    );
+}
+
+/// Pure: "It sends 8 log files (6.3 MB): from the launcher (2), Echo VR (5) and EchoXR (1)."
+fn what_goes(sources: &[logs::Source]) -> String {
+    let bytes: u64 = sources.iter().map(|s| s.bytes).sum();
+    let parts: Vec<String> = logs::Kind::ALL
+        .iter()
+        .filter_map(|k| {
+            let n = sources.iter().filter(|s| s.kind == *k).count();
+            (n > 0).then(|| format!("{} ({n})", k.label()))
+        })
+        .collect();
+    let from = match parts.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    let files = if sources.len() == 1 { "file" } else { "files" };
+    format!(
+        "It sends {} log {files} ({:.1} MB): from {from}.",
+        sources.len(),
+        bytes as f64 / 1_000_000.0
+    )
+}
+
+/// Snapshots: logs as a player's PC has them.
+fn demo_sources() -> Vec<logs::Source> {
+    let s = |kind, name: &str, bytes| logs::Source {
+        kind,
+        name: name.into(),
+        path: Default::default(),
+        bytes,
+    };
+    vec![
+        s(logs::Kind::Launcher, "EchoVR_Installer.log", 412_000),
+        s(logs::Kind::EchoXr, "pc-latest.launcher.log", 9_000),
+        s(logs::Kind::EchoXr, "pc-latest.runtime.log", 31_000),
+        s(logs::Kind::Echo, "pc-latest.r14-1.log", 2_400_000),
+        s(logs::Kind::Echo, "pc-latest.r14-2.log", 1_900_000),
+        s(logs::Kind::Echo, "pc-latest.r14-3.log", 1_550_000),
+    ]
+}
+
+/// Sends the logs the dialog listed, in the background.
+fn upload(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.demo || d.uploading_logs {
+        return;
+    }
+    d.uploading_logs = true;
+    d.notify("Uploading your logs…");
+    let sources = std::mem::take(&mut d.upload_sources);
+    d.worker.spawn(ctx, move |tx| {
+        let r = logs::bundle(&sources)
+            .and_then(logs::upload)
+            .map_err(|e| format!("{e:#}"));
+        tx.send(Msg::LogsUploaded(r));
+    });
+}
+
+/// The logs arrived: their reference, copied, to give the developer.
+pub(super) fn logs_sent(d: &mut Dashboard, ctx: &egui::Context, code: &str) {
+    ctx.copy_text(code.to_string());
+    d.dialogs.info(
+        "Your logs are uploaded",
+        &format!(
+            "Your reference is {code} (it's copied). Send it to marshmallow-mia on Discord, so the right logs are looked at.\n\nThey're deleted after 30 days."
+        ),
     );
 }
 
@@ -794,5 +920,22 @@ pub(super) fn set_library(d: &mut Dashboard) {
     if lib != d.state.library {
         d.state.library = lib;
         d.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_what_goes() {
+        assert_eq!(
+            what_goes(&demo_sources()),
+            "It sends 6 log files (6.3 MB): from the launcher (1), EchoXR (2) and Echo VR (3)."
+        );
+        assert_eq!(
+            what_goes(&demo_sources()[..1]),
+            "It sends 1 log file (0.4 MB): from the launcher (1)."
+        );
     }
 }

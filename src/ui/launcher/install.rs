@@ -264,6 +264,8 @@ fn busy_text(d: &Dashboard) -> Option<String> {
 }
 
 fn pc_hero(d: &mut Dashboard) -> Hero {
+    // Look for copies already on this PC now, so the Install card can offer one at once.
+    let _ = d.found_installs();
     let mut h = Hero::new();
     let busy = busy_text(d);
     h.side = Side::Blue {
@@ -297,15 +299,15 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
             h.line.path = Some(v.root.clone());
             h.line.path_click = PathClick::Open;
             // Installed: REINSTALL checks it (the card asks first, as for an install).
-            let running = d.game().is_running();
+            let in_use = d.files_in_use(&v);
             h.face = Face::Label("REINSTALL");
             h.main = Main::Install(Box::new(e.clone()));
-            h.enabled = !running && busy.is_none();
+            h.enabled = in_use.is_none() && busy.is_none();
             h.grey = !h.enabled;
-            h.tip = match (&busy, running) {
+            h.tip = match (&busy, in_use) {
                 (Some(b), _) => b.clone(),
-                (None, true) => "Close Echo VR first".into(),
-                (None, false) => "Check every game file against the server's checksums and fetch only the broken ones again".into(),
+                (None, Some(why)) => why.into(),
+                (None, None) => "Check every game file against the server's checksums and fetch only the broken ones again".into(),
             };
             h.side = Side::Updates {
                 alert: d
@@ -314,14 +316,14 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
                     .is_some_and(|n| n.contains("failed")),
             };
             let updates = crate::core::launcher::versions::has_updates(&v);
-            h.side_enabled = updates && !running && busy.is_none();
-            h.side_tip = match (&busy, running, updates) {
+            h.side_enabled = updates && in_use.is_none() && busy.is_none();
+            h.side_tip = match (&busy, in_use, updates) {
                 (_, _, false) => {
                     "Event builds don't get updates: REINSTALL checks their files".into()
                 }
                 (Some(b), _, _) => b.clone(),
-                (None, true, _) => "Close Echo VR first".into(),
-                (None, false, _) => "Download any changed game files".into(),
+                (None, Some(why), _) => why.into(),
+                (None, None, _) => "Download any changed game files".into(),
             };
             h.side_act = SideAct::UpdatePc(v);
         }

@@ -216,6 +216,19 @@ impl Kit<'_> {
         y0 - y
     }
 
+    /// How wide [`Kit::link`] sets `text`.
+    pub fn link_width(&self, text: &str, size: f32) -> f32 {
+        self.spaced_galley(
+            &text.to_uppercase(),
+            design::din(size),
+            design::TEXT,
+            dz(0.5),
+            true,
+        )
+        .size()
+        .x
+    }
+
     /// An underlined DMCAPS link, as the cards' "JOIN THE DISCORD"; returns the click.
     pub fn link(&mut self, key: &str, x: f32, y: f32, text: &str, size: f32, tip: &str) -> Resp {
         let g = self.spaced_galley(

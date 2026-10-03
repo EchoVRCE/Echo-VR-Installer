@@ -2,6 +2,7 @@
 
 pub mod background;
 pub mod catalog;
+pub mod discover;
 pub mod feed;
 pub mod game;
 pub mod launch;

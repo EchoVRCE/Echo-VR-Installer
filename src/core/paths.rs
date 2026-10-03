@@ -11,6 +11,10 @@ pub const ARENA_DIR: &str = "ready-at-dawn-echo-arena";
 pub const DEFAULT_EXE: &str = "echovr.exe";
 /// Every executable name an Echo build has had (the 2017 ones: `EchoArena.exe`).
 pub const GAME_EXES: [&str; 2] = [DEFAULT_EXE, "EchoArena.exe"];
+/// The executable EchoXR runs: its patched copy of `echovr.exe`, made next to it.
+pub const OPENXR_EXE: &str = "echovr_openxr.exe";
+/// Every executable a running game can have.
+pub const GAME_PROCESSES: [&str; 3] = [DEFAULT_EXE, "EchoArena.exe", OPENXR_EXE];
 /// Where a build keeps its executable, newest layout first.
 const BIN_DIRS: [&str; 2] = ["bin/win10", "bin/win7"];
 

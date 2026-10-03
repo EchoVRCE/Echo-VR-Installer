@@ -46,10 +46,22 @@ impl Runtime {
     }
 }
 
+/// How the SteamVR choice (`Runtime::Revive`) runs Echo VR on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SteamVrVia {
+    /// Revive's injector (installed by the launcher, with administrator rights).
+    #[default]
+    Revive,
+    /// EchoXR's OpenXR runtime in the game's folder: no injection, no administrator.
+    EchoXr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LaunchProfile {
     pub runtime: Runtime,
+    /// SteamVR (`Runtime::Revive`) through Revive or EchoXR.
+    pub steamvr_via: SteamVrVia,
     /// Flat mode only: `-spectatorstream`.
     pub spectator: bool,
     /// `-windowed`
@@ -356,12 +368,13 @@ impl LauncherState {
         let exe = paths::find_exe(&root)
             .filter(|e| *e != paths::DEFAULT_EXE)
             .map(str::to_string);
+        // No update named: a live build's folder gets the live update anyway, and an
+        // older build's never gets the live files written into it.
         self.versions.push(InstalledVersion {
             id: id.clone(),
             name: name.unwrap_or_else(|| format!("Existing install ({root})")),
             root,
             external: true,
-            update_manifest: Some(crate::core::pc_update::PC_MANIFEST_URL.into()),
             exe,
             ..Default::default()
         });

@@ -51,6 +51,11 @@ pub enum Request {
     },
     /// Take the licence patch off the Meta library's Echo VR.
     RemovePatch,
+    /// Put EchoXR (its pinned zip, at this path) into the Meta library's Echo VR, and have
+    /// it make its copy of the game there.
+    InstallEchoXr {
+        zip: String,
+    },
     Shutdown,
 }
 
@@ -128,7 +133,30 @@ pub fn handle(req: &Request) -> Reply {
             Ok(()) => Reply::Ok,
             Err(e) => Reply::Err(format!("{e:#}")),
         },
+        Request::InstallEchoXr { zip } => match meta_base()
+            .and_then(|base| meta_bin_in(&base))
+            .and_then(|bin| install_meta_echoxr(&bin, zip))
+        {
+            Ok(()) => Reply::Ok,
+            Err(e) => Reply::Err(format!("{e:#}")),
+        },
     }
+}
+
+/// The helper's EchoXR: the zip at `zip` into the Meta library's Echo VR (`bin`), if it is
+/// the pinned build (held against writes from the check to the copy), then EchoXR's copy
+/// of the game. The Meta app brings its own Platform SDK loader.
+fn install_meta_echoxr(bin: &std::path::Path, zip: &str) -> Result<()> {
+    if !std::path::Path::new(zip).is_absolute() {
+        bail!("refusing EchoXR at {zip:?}");
+    }
+    let mut f = open_locked(zip)?;
+    if !super::echoxr::is_pinned_zip(&mut f)? {
+        bail!("refusing an EchoXR zip that isn't the pinned build");
+    }
+    super::echoxr::install_zip(f, bin, None)?;
+    super::echoxr::refresh_openxr_exe(bin)?;
+    super::echoxr::make_openxr_exe(bin)
 }
 
 /// The Meta (Oculus) app's folder, as its administrator-only registry key names it.
@@ -337,6 +365,31 @@ pub fn remove_patch(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) ->
         Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
             tracing::info!("removing the licence patch needs elevation ({e:#}); using the helper");
             match broker::request(&Request::RemovePatch, consent)? {
+                Reply::Err(m) => bail!("{m}"),
+                _ => Ok(()),
+            }
+        }
+        Err(e) if super::revive::needs_elevation(&e) => Err(e.context(NEEDS_ADMIN)),
+        r => r,
+    }
+}
+
+/// Gets the game's bin folder `bin` ready for EchoXR: EchoXR in it (Meta's Platform SDK
+/// loader into `platform_to` when given), and its copy of the game current. When that
+/// needs administrator rights, the helper does it (after `consent`) for the Meta library's
+/// Echo VR; any other folder can't without them.
+pub fn prepare_echoxr(
+    bin: &std::path::Path,
+    platform_to: Option<&std::path::Path>,
+    consent: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    match super::echoxr::prepare(bin, platform_to) {
+        Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
+            tracing::info!("EchoXR needs elevation ({e:#}); using the helper");
+            let req = Request::InstallEchoXr {
+                zip: super::echoxr::zip_file().to_string_lossy().into(),
+            };
+            match broker::request(&req, consent)? {
                 Reply::Err(m) => bail!("{m}"),
                 _ => Ok(()),
             }

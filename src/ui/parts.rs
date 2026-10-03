@@ -70,6 +70,15 @@ pub fn choose_folder() -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Opens a file picker for the game's executable (`echovr.exe`); `None` when cancelled.
+pub fn choose_exe() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Choose echovr.exe")
+        .add_filter("Echo VR", &["exe"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 // ---- Quest connection row ----
 
 enum ConnMsg {

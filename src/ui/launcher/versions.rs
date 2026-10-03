@@ -109,6 +109,56 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
     );
 }
 
+/// Takes the copy of `e` at `root` (installed some other way: the Meta app, an older
+/// installer) into the library instead of downloading it: a job that checks its files
+/// against the build's first. Returns the version's id.
+pub(super) fn adopt(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    e: VersionEntry,
+    root: String,
+) -> String {
+    // A folder added before (as "Existing install") becomes this version.
+    let norm = paths::normalize(&root);
+    let id = d
+        .state
+        .versions
+        .iter()
+        .find(|v| paths::normalize(&v.root).eq_ignore_ascii_case(&norm))
+        .map_or_else(|| d.state.free_id(&e.id), |v| v.id.clone());
+    d.state.selected = Some(id.clone());
+    d.save();
+    let job = id.clone();
+    d.start_job(
+        ctx,
+        JobKind::Install,
+        &job,
+        &format!("Adding {}", e.name),
+        "Checking the game files...",
+        move |cancel, on| match versions::adopt(&e, &norm, &id, cancel, on) {
+            Ok(i) => JobResult::Installed(i.version, i.update_failed),
+            Err(err) => job_err(err, "Couldn't Add Echo VR"),
+        },
+    );
+    job
+}
+
+/// Asks for the executable of an Echo VR copy already on this PC: its install root, or
+/// `None` (cancelled, or not Echo VR: said so).
+pub(super) fn choose_copy(d: &mut Dashboard) -> Option<String> {
+    let exe = parts::choose_exe()?;
+    let root = paths::resolve_install_root(&exe);
+    if paths::has_echo_install(&root) {
+        return Some(root);
+    }
+    d.dialogs.error(
+        "Echo VR not found",
+        "That isn't Echo VR: choose echovr.exe in its ready-at-dawn-echo-arena\\bin\\win10 folder.",
+        Default::default(),
+    );
+    None
+}
+
 pub(super) fn add_existing(d: &mut Dashboard) {
     let Some(p) = parts::choose_folder() else {
         return;
