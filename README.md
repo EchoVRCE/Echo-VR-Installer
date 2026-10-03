@@ -50,6 +50,16 @@ through Steam.
 It needs an active OpenXR runtime (SteamVR, Monado or WiVRn) and its service running; no
 OpenVR runtime is needed. Only the live build runs this way; the event builds don't yet.
 
+## Mods
+
+The **Mods** page shows the selected PC version's mod loader
+([EchoLoader](https://github.com/marshmallow-mia/EchoVR_Mod_Loader), the game's
+`BugSplat64.dll`) and what it loaded at the last start, lets you turn plugins and asset
+patches on or off, set a plugin's arguments, start without mods, and install mods from the
+catalogue on files.echovr.de or a DLL of your own. The launcher keeps its choices in
+overlay files beside the community update's, so updates and Verify never undo them. See
+[docs/launcher/mods.md](docs/launcher/mods.md).
+
 ## Building from source
 
 The installer is written in Rust (GUI: [egui](https://github.com/emilk/egui)). With a stable

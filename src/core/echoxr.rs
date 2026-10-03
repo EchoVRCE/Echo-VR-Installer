@@ -114,25 +114,12 @@ pub fn fetch_pinned(
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
 ) -> Result<PathBuf> {
-    let dir = store_dir();
-    let job = download::Job {
-        url: url.into(),
-        dir: paths::downloads_dir().join(dir.file_name().unwrap_or_default()),
-        filename: name.into(),
-        use_mirror: false,
-        fresh: false,
-        extract: false,
-    };
-    let file = download::run(&job, cancel, &mut |p| {
+    let dir = paths::downloads_dir().join(store_dir().file_name().unwrap_or_default());
+    download::fetch_pinned(url, &dir, name, sha256, cancel, &mut |p| {
         if let Progress::Percent(v) = p {
             on(Step::Percent(v));
         }
-    })?;
-    if !download::sha256_matches(&file, sha256) {
-        let _ = std::fs::remove_file(&file);
-        bail!("{name} didn't download correctly (checksum mismatch). Please try again.");
-    }
-    Ok(file)
+    })
 }
 
 /// Fetches what is missing: EchoXR, and Meta's Platform SDK loader.

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "mods": [
+    {
+      "id": "asset-patches",
+      "name": "Asset Patches",
+      "summary": "Fixes the netgun's bullets on every combat map and puts the community's posters into the arena.",
+      "author": "marshmallow-mia",
+      "version": "1.0.0",
+      "file": "NvrAssetPatches.dll",
+      "api": 2,
+      "capabilities": ["cosmetic", "hooks-engine"],
+      "args": { "logging": "normal" },
+      "homepage": "https://github.com/marshmallow-mia/NvrAssetPatches.dll",
+      "shipped": true
+    },
+    {
+      "id": "echorelay-patch",
+      "name": "EchoRelay Patch",
+      "summary": "Points the game at the community's services and adds the command line options servers use.",
+      "author": "EchoRelay",
+      "version": "2024.02",
+      "file": "dbgcore.dll",
+      "capabilities": ["network", "hooks-engine"],
+      "homepage": "https://github.com/heisthecat31/EchoRelay",
+      "shipped": true
+    }
+  ]
+}

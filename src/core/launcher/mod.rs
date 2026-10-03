@@ -6,6 +6,7 @@ pub mod discover;
 pub mod feed;
 pub mod game;
 pub mod launch;
+pub mod mods;
 pub mod patch;
 pub mod quest;
 pub mod quest_net;

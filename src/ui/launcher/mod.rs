@@ -6,6 +6,7 @@ mod echovrce;
 mod hero;
 mod install;
 mod install_panel;
+mod mods;
 mod play;
 mod server_info;
 mod servers;
@@ -129,6 +130,8 @@ enum JobResult {
     QuestNeedsReinstall(String),
     /// A custom background is converted and in place.
     BackgroundSet,
+    /// Mods were installed, added or removed: what to say.
+    ModsChanged(String),
 }
 
 enum Msg {
@@ -169,6 +172,9 @@ enum Msg {
     QuestLogs(Result<PathBuf, UiError>),
     /// The logs were uploaded: the service's reference, or why not.
     LogsUploaded(Result<String, String>),
+    /// A version's mods, read (for the Mods page's read number `gen`).
+    ModView(u64, String, crate::core::launcher::mods::ModView),
+    ModCatalog(crate::core::launcher::mods::ModCatalog),
 }
 
 /// Whether a newer launcher is out (Settings shows it, the rail marks it).
@@ -296,6 +302,8 @@ enum JobKind {
     QuestUpdate,
     /// Converting a custom background.
     Background,
+    /// Installing, adding or removing a plugin.
+    Mods,
 }
 
 struct Job {
@@ -399,6 +407,10 @@ pub enum SnapVariant {
     Licence,
     /// ...with a patch link pasted.
     LicenceLink,
+    /// Mods: the version still has the first mod loader.
+    ModsLegacy,
+    /// Mods: a plugin's options open.
+    ModsOptions,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -476,6 +488,8 @@ pub struct Dashboard {
     web: crate::ui::web::WebPane,
     /// The game service's servers, party, friends and history (the Servers page).
     servers: servers::Servers,
+    /// The selected version's mods and the mods catalogue (the Mods page).
+    mods: mods::Mods,
     /// Who opens spark:// links (Windows, Linux), once read.
     link_handler: Option<links::Handler>,
     /// When a link handed over by another launcher was last looked for.
@@ -863,6 +877,7 @@ impl Dashboard {
         self.update_note.clear();
         self.vrce = echovrce::Vrce::default();
         self.servers = servers::Servers::default();
+        self.mods = mods::Mods::default();
         self.state.profile = demo_state().profile;
         self.snap_game = None;
         self.install_pick = None;
@@ -1088,6 +1103,8 @@ impl Dashboard {
             Some(SnapVariant::Placeholder) => {
                 self.install_pick = Some("pc-halloween-2017".into())
             }
+            // The Mods page makes its own made-up state (`mods::show`).
+            Some(SnapVariant::ModsLegacy | SnapVariant::ModsOptions) => {}
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
@@ -1436,6 +1453,8 @@ impl Dashboard {
                         }
                     }
                 }
+                Msg::ModView(gen, id, view) => self.mods.read_done(gen, id, view),
+                Msg::ModCatalog(c) => self.mods.catalog_done(c),
                 Msg::Revive(dir) => self.revive.done((), dir),
                 Msg::EchoXr(ready) => self.echoxr.done((), ready),
                 Msg::Found(key, found) => self.found.done(key, found),
@@ -1570,6 +1589,7 @@ impl Dashboard {
                 }
             }
             JobResult::Updated => {
+                self.mods.changed();
                 self.update_note.insert(id.to_string(), "Up to date".into());
                 self.notify("Echo VR is up to date");
             }
@@ -1622,6 +1642,10 @@ impl Dashboard {
                     (_, Some((title, msg))) => self.dialogs.error(title, &msg, Default::default()),
                     (_, None) => {}
                 }
+            }
+            JobResult::ModsChanged(notice) => {
+                self.mods.changed();
+                self.notify(&notice);
             }
             JobResult::BackgroundSet => {
                 self.load_custom_background();
@@ -1892,12 +1916,7 @@ impl Dashboard {
             Page::Play => play::show(self, kit, ctx),
             Page::Install => install::show(self, kit, ctx),
             Page::Settings => settings::show(self, kit, ctx),
-            Page::Mods => empty_state(
-                kit,
-                Icon::Mods,
-                "Mods & plugins",
-                "Enable and disable DLL plugins and game tweaks per version.",
-            ),
+            Page::Mods => mods::show(self, kit, ctx),
             Page::Servers => servers::show(self, kit, ctx),
             Page::EchoVrce => echovrce::show(self, kit, ctx),
             p @ (Page::Spark | Page::Community) => empty_state(

@@ -85,6 +85,8 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::DialogInstallError,
         ),
         ("play_quest_fresh", Page::Play, SnapVariant::QuestFresh),
+        ("mods_legacy", Page::Mods, SnapVariant::ModsLegacy),
+        ("mods_options", Page::Mods, SnapVariant::ModsOptions),
         ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
         (
             "settings_delete_cache",

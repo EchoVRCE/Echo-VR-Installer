@@ -50,7 +50,7 @@ pub fn error_title(e: &anyhow::Error) -> String {
 
 /// Windows reports a locked file as a sharing violation (32) or lock violation (33);
 /// everything else is a genuine I/O problem.
-fn is_locked(e: &std::io::Error) -> bool {
+pub(crate) fn is_locked(e: &std::io::Error) -> bool {
     matches!(e.raw_os_error(), Some(32) | Some(33))
         || e.kind() == std::io::ErrorKind::PermissionDenied
 }

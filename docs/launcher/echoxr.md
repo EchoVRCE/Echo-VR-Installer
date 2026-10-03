@@ -94,7 +94,9 @@ GE-Proton runs `EchoXR.exe` (`proton waitforexitandrun`) with:
 - `wineopenxr` passing OpenXR on to the system's runtime (`XR_RUNTIME_JSON`, or the
   active one); no OpenVR runtime is needed since 0.4.0;
 - `PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1`;
-- `WINEDLLOVERRIDES=dbgcore=n,b`, because the game's plugin loader is `dbgcore.dll`;
+- `WINEDLLOVERRIDES=dbgcore=n,b` only while the old plugin loader, EchoLoader 1, is the
+  game's `dbgcore.dll` (Wine would load its own `dbgcore` instead). EchoLoader 2 is the
+  game's `BugSplat64.dll`, which Wine has no builtin of, so it needs no override;
 - `ECHOXR_VR_SERVICE=ready` when SteamVR's `vrserver`, or Monado's or WiVRn's socket, is
   there. Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
 

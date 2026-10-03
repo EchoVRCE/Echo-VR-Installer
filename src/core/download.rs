@@ -364,6 +364,32 @@ pub fn redact(url: &str) -> String {
     }
 }
 
+/// Downloads `url` (relative: from the fastest mirror) into `dir` as `name` and checks it
+/// against `sha256`; a file that doesn't match is deleted.
+pub fn fetch_pinned(
+    url: &str,
+    dir: &Path,
+    name: &str,
+    sha256: &str,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Progress),
+) -> Result<PathBuf> {
+    let job = Job {
+        url: url.into(),
+        dir: dir.to_path_buf(),
+        filename: name.into(),
+        use_mirror: !url.contains("://"),
+        fresh: false,
+        extract: false,
+    };
+    let file = run(&job, cancel, on)?;
+    if !sha256_matches(&file, sha256) {
+        let _ = std::fs::remove_file(&file);
+        bail!("{name} didn't download correctly (checksum mismatch). Please try again.");
+    }
+    Ok(file)
+}
+
 /// Lowercase hex SHA-256 of a file, streamed.
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;

@@ -214,10 +214,13 @@ pub fn game_command(
         .envs(proton_env(steam_root, Some(&game_root)))
         .env("XR_RUNTIME_JSON", xr)
         .env("PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES", "1")
-        .env("PRESSURE_VESSEL_FILESYSTEMS_RW", rw)
-        // dbgcore.dll in bin/win10 is the game's plugin loader (the community update ships
-        // it); Wine would load its own instead.
-        .env("WINEDLLOVERRIDES", "dbgcore=n,b");
+        .env("PRESSURE_VESSEL_FILESYSTEMS_RW", rw);
+    // The mod loader is the game's BugSplat64.dll, which Wine has no builtin of, so the
+    // game's own folder wins anyway. Only the old loader, EchoLoader 1, was dbgcore.dll:
+    // Wine would load its own dbgcore instead of that one.
+    if crate::core::launcher::mods::legacy_in(bin) {
+        c.env("WINEDLLOVERRIDES", "dbgcore=n,b");
+    }
     if vr_service_running() {
         c.env("ECHOXR_VR_SERVICE", "ready");
     } else {
