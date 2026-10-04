@@ -1309,17 +1309,48 @@ mod split_info_tests {
         let mut h = play_harness(play_dashboard());
         h.run_steps(2);
         let selected = h.state().state.selected.clone();
+        let action_before = pc_action(h.state_mut()).line.primary;
         let arrow = h.get_by_label("Choose PC version").rect();
-        click_at_one_frame_per_event(&mut h, arrow.center());
+        let center = arrow.center();
+
+        // Keep pointer movement, press, and release in distinct passes. The open-frame
+        // guard must keep the triggering release from being treated as an outside click.
+        h.event(egui::Event::PointerMoved(center));
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        h.step();
+        assert_eq!(h.state().page, Page::Play);
+        h.event(egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.step();
 
         assert!(h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
         assert_eq!(h.state().page, Page::Play);
         assert_eq!(h.state().state.selected, selected);
+        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
         assert!(h.state().jobs.is_empty());
         assert!(h.state().update_note.is_empty());
         assert!(!h.state().dialogs.is_open());
+
+        // A separate click on a later pass outside both menu and anchor still dismisses.
+        click_at_one_frame_per_event(&mut h, egui::pos2(1000.0, 650.0));
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(h.state().page, Page::Play);
+        assert_eq!(h.state().state.selected, selected);
+        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
     }
 
     #[test]
