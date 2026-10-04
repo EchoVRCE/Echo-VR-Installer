@@ -489,9 +489,6 @@ fn quest_action(d: &mut Dashboard) -> Action {
     if job.as_ref().is_some_and(JobView::installs) || (known && !installed) {
         a.not_installed(None, "Not installed on this Quest", job.as_ref());
         a.tip = "Echo VR isn't on your Quest yet. Click to install it".into();
-        a.line
-            .parts
-            .extend(d.quest_info.as_ref().and_then(|i| i.device.clone()));
     } else if installed {
         a.job = job;
         if let Some(job) = &a.job {
@@ -1006,6 +1003,20 @@ mod split_info_tests {
         d
     }
 
+    fn quest_dashboard(installed: bool) -> Dashboard {
+        let mut d = play_dashboard();
+        d.platform = Platform::Quest;
+        d.quest_conn.status = Some(Status::Ready);
+        d.quest_info = Some(super::super::QuestInfo {
+            device: Some("Meta Quest 3 (test-device)".into()),
+            installed,
+            marker: None,
+            wifi_ip: None,
+            over_network: false,
+        });
+        d
+    }
+
     fn play_harness(d: Dashboard) -> Harness<'static, Dashboard> {
         play_harness_at(d, egui::vec2(1280.0, 720.0))
     }
@@ -1204,6 +1215,90 @@ mod split_info_tests {
     }
 
     #[test]
+    fn arrow_opens_with_keyboard_and_pointer_selects_a_catalogue_choice() {
+        let mut keyboard_dashboard = play_dashboard();
+        keyboard_dashboard
+            .catalog
+            .as_mut()
+            .unwrap()
+            .versions
+            .push(VersionEntry {
+                id: "pc-beta".into(),
+                name: "Echo VR (PC, Beta)".into(),
+                platform: Platform::Pc,
+                ..Default::default()
+            });
+        let mut keyboard = play_harness(keyboard_dashboard);
+        keyboard.run_steps(2);
+        keyboard.get_by_label("Choose PC version").focus();
+        keyboard.key_press(egui::Key::Enter);
+        keyboard.run_steps(2);
+        assert!(keyboard.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        // Select a real catalogue row with the pointer after keyboard activation.
+        click_catalogue_choice(&mut keyboard, "pc-beta");
+        assert_eq!(keyboard.state().state.selected.as_deref(), Some("pc-beta"));
+        assert_eq!(keyboard.state().page, Page::Play);
+    }
+
+    #[test]
+    fn quest_info_band_includes_the_device_once_for_ready_and_installing() {
+        let device = "Meta Quest 3 (test-device)";
+        let mut ready = quest_dashboard(false);
+        let action = quest_action(&mut ready);
+        assert_eq!(
+            action
+                .line
+                .parts
+                .iter()
+                .filter(|part| part.as_str() == device)
+                .count(),
+            1
+        );
+
+        let mut installing = quest_dashboard(false);
+        installing.jobs.insert(
+            setup::QUEST_JOB.into(),
+            super::super::Job {
+                kind: super::super::JobKind::QuestInstall,
+                title: "Install Echo VR on Quest".into(),
+                label: "Copying files".into(),
+                fraction: Some(1.0),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        );
+        let action = quest_action(&mut installing);
+        assert_eq!(
+            action
+                .line
+                .parts
+                .iter()
+                .filter(|part| part.as_str() == device)
+                .count(),
+            1
+        );
+        assert_eq!(action.line.primary.last().map(String::as_str), Some("100%"));
+    }
+
+    #[test]
+    fn platform_switch_widgets_enter_quest_and_return_to_pc() {
+        let mut h = play_harness(play_dashboard());
+        h.run_steps(2);
+        h.get_by_label("Echo VR on your Quest, over USB")
+            .click_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().platform, Platform::Quest);
+        assert!(h.query_by_label("Choose PC version").is_none());
+
+        h.get_by_label("Echo VR on this PC").click_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().platform, Platform::Pc);
+        assert!(h.query_by_label("Choose PC version").is_some());
+    }
+
+    #[test]
     fn non_demo_selection_saves_and_reloads_in_isolated_state_file() {
         let dir = std::env::temp_dir().join(format!(
             "echovr-s0-7-state-{}",
@@ -1324,6 +1419,17 @@ mod split_info_tests {
             .get_by_label("Choose PC version")
             .accesskit_node()
             .is_disabled());
+        let disabled_arrow = h.get_by_label("Choose PC version").rect();
+        click_at(&mut h, disabled_arrow.center());
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        h.get_by_label("Choose PC version").focus();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
