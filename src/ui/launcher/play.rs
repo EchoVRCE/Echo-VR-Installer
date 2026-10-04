@@ -1314,8 +1314,8 @@ mod split_info_tests {
         let arrow = h.get_by_label("Choose PC version").rect();
         let center = arrow.center();
 
-        // Keep pointer movement, press, and release in distinct passes. The open-frame
-        // guard must keep the triggering release from being treated as an outside click.
+        // Keep pointer movement, press, and release in distinct passes. Only the arrow's
+        // hit region is excluded from outside-click dismissal on the triggering release.
         h.event(egui::Event::PointerMoved(center));
         h.step();
         h.event(egui::Event::PointerButton {
@@ -1830,7 +1830,8 @@ mod split_info_tests {
         arrow_open(&mut h);
         click_version_choice(&mut h, "selected-b");
         assert_eq!(h.state().state.selected.as_deref(), Some("selected-b"));
-        click_at(&mut h, egui::pos2(147.0, 80.0));
+        let main = h.get_by_label("PLAY").rect().center();
+        click_at(&mut h, main);
         let (title, message) = h
             .state()
             .dialogs
