@@ -119,3 +119,8 @@ The menu render filename is `launcher_play_version_menu.png`.
 - The standalone physical-pointer test uses the accessible arrow node's `rect().center()`. The BAC-0003 test seeds A as the initial selection, chooses B through the menu, and verifies B's preflight path. Each BAC-0004 busy state uses the helper that checks disabled metadata/reason and physical pointer plus Enter rejection. No temporary `eprintln!` remains in `hero.rs`.
 - The same named band-width and cycle-rate constants are shared with the original full-width job row, keeping its indeterminate motion aligned with the compact split control. The progress regression test keeps independent approved-design expected rectangles and a named 0.99 sample phase.
 - Rechecked after these clarifications: Play split tests 15 passed; hero split tests 3 passed; release build passed; `cargo fmt --all -- --check` and `git diff --check` passed. Full suite: 182 passed, 1 sandbox loopback bind failure at `src/core/remote_zip.rs:187`, 13 ignored.
+
+## Latest-tree verification
+
+- On committed code tree `207f098cdf417a4cdddb46df72b85541b9bf8ad2`, `ui::launcher::play::split_info_tests` passed (15 tests). `cargo fmt --all -- --check` and `git diff --check` passed.
+- Full `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test` on that tree: 182 passed, 1 failed, 13 ignored. The failure is the known sandbox-denied loopback bind in `core::remote_zip::tests::repairs_single_files_from_a_remote_zip` at `src/core/remote_zip.rs:187` (`PermissionDenied: Operation not permitted`). The code change since the release build is test-only; the release build passed on the immediately preceding tree.
