@@ -210,7 +210,12 @@ pub fn shots() -> Vec<Shot> {
     }
     if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
         let terms: Vec<&str> = only.split(',').map(str::trim).collect();
-        shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
+        shots.retain(|s| {
+            terms.iter().any(|term| {
+                term.strip_prefix('=')
+                    .map_or_else(|| s.name.contains(term), |name| s.name == name)
+            })
+        });
     }
     shots
 }
