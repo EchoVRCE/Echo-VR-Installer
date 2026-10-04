@@ -1,4 +1,4 @@
 name = "astra"
-description = "Reviews launcher designs and critiques PRs."
-model = "gpt-6-sol"
-developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/review-design/SKILL.md or .agents/skills/critique-pr/SKILL.md."
+description = "Designs launcher changes (ADRs and BACs) and critiques PRs."
+model = "gpt-6-astra"
+developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/write-adr/SKILL.md, .agents/skills/write-bac/SKILL.md, or .agents/skills/critique-pr/SKILL.md."
