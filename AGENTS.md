@@ -13,12 +13,10 @@ Report counts and size changes from commands over a named population, with diffe
 
 ## Handoffs
 
-Each role runs on the model it is named after: Astra on `gpt-6-astra`, Sol on `gpt-6-sol`, Luna on `gpt-6-luna`. Sol owns plan review and verification and never reviews a plan it wrote, so planning belongs to Astra.
-
-1. **Astra designs:** use `write-adr` and `write-bac`. Record open choices, especially those requiring Andrew and Mia, before implementation.
-2. **Sol reviews design:** use `review-design`. Astra resolves blocking findings and requests another review when the contract changes.
-3. **Luna implements:** use `implement-bac` against the reviewed ADR and BACs. A new design choice returns to Astra and Sol.
-4. **Sol verifies code:** use `review-code` against the diff, ADR, BACs, and test evidence.
+1. **Sol designs:** use `write-adr` and `write-bac`. Record open choices, especially those requiring Andrew and Mia, before implementation.
+2. **Astra reviews design:** use `review-design`. Sol resolves blocking findings and requests another review when the contract changes.
+3. **Luna implements:** use `implement-bac` against the reviewed ADR and BACs. A new design choice returns to Sol and Astra.
+4. **Sol reviews code:** use `review-code` against the diff, ADR, BACs, and test evidence.
 5. **Astra critiques every PR:** use `critique-pr` independently, including fixes to prior findings.
 
 After committing an item, the finishing agent couriers Glow the branch, commit and result, then runs `codex queue` to the named next agent's thread in the same handoff step. The next agent can read the committed local branch immediately; a push is not a prerequisite for queueing. If further changes are needed, the reviewer queues the originating agent's thread directly. If `codex queue` fails in the sandbox, courier Glow the exact error and exit status immediately and mark the handoff pending. Do not rely on a user or coordinator to wake the next agent.
@@ -40,9 +38,9 @@ A PR is ready for maintainer merge consideration when the reviewed ADR and BACs 
 | Task | Skill |
 |---|---|
 | Start every sprint | `.agents/skills/start-sprint/SKILL.md` |
-| Astra architecture decision | `.agents/skills/write-adr/SKILL.md` |
-| Astra acceptance criteria | `.agents/skills/write-bac/SKILL.md` |
-| Sol design review | `.agents/skills/review-design/SKILL.md` |
+| Sol architecture decision | `.agents/skills/write-adr/SKILL.md` |
+| Sol acceptance criteria | `.agents/skills/write-bac/SKILL.md` |
+| Astra design review | `.agents/skills/review-design/SKILL.md` |
 | Luna implementation | `.agents/skills/implement-bac/SKILL.md` |
 | Sol code review | `.agents/skills/review-code/SKILL.md` |
 | Astra PR critique | `.agents/skills/critique-pr/SKILL.md` |

@@ -1,4 +1,4 @@
 name = "sol"
-description = "Reviews launcher designs and verifies implementations."
+description = "Designs launcher changes and reviews implementation."
 model = "gpt-6-sol"
-developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/review-design/SKILL.md or .agents/skills/review-code/SKILL.md."
+developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/write-adr/SKILL.md, .agents/skills/write-bac/SKILL.md, or .agents/skills/review-code/SKILL.md."
