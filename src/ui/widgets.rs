@@ -714,7 +714,15 @@ impl Kit<'_> {
     /// Opens or closes the menu of `key`, for a control that draws its own button.
     pub fn toggle_menu(&self, key: &str) {
         let (id, open) = (menu_id(key), self.menu_open(key));
-        self.ui.ctx().data_mut(|d| d.insert_temp(id, !open));
+        let frame = self.ui.ctx().cumulative_pass_nr();
+        self.ui.ctx().data_mut(|d| {
+            d.insert_temp(id, !open);
+            if !open {
+                // The trigger lies outside the popup rectangle, so don't let the same
+                // pointer click that opened the menu immediately dismiss it.
+                d.insert_temp(id.with("opened-frame"), frame);
+            }
+        });
     }
 
     /// Close a temporary menu and clear its open flag during page/platform transitions.
@@ -897,12 +905,16 @@ impl Kit<'_> {
         let rim = Kit::rim_shape(popup, dz(6.0), 1.5);
         ctx.layer_painter(egui::LayerId::new(Order::Foreground, open_id.with("area")))
             .add(rim);
-        let outside_click = ctx.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|p| !popup.contains(p) && !anchor.contains(p))
-        });
+        let opened_frame = ctx
+            .data(|d| d.get_temp::<u64>(open_id.with("opened-frame")))
+            .is_some_and(|frame| frame == ctx.cumulative_pass_nr());
+        let outside_click = !opened_frame
+            && ctx.input(|i| {
+                i.pointer.any_click()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !popup.contains(p) && !anchor.contains(p))
+            });
         if picked.is_some() || outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.data_mut(|d| d.insert_temp(open_id, false));
         }

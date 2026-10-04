@@ -1057,6 +1057,25 @@ mod split_info_tests {
         h.run_steps(2);
     }
 
+    fn click_at_one_frame_per_event(h: &mut Harness<'_, Dashboard>, p: egui::Pos2) {
+        h.event(egui::Event::PointerMoved(p));
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+
     fn arrow_open(h: &mut Harness<'_, Dashboard>) {
         h.get_by_label("Choose PC version").click_accesskit();
         h.run_steps(2);
@@ -1216,31 +1235,46 @@ mod split_info_tests {
 
     #[test]
     fn arrow_opens_with_keyboard_and_pointer_selects_a_catalogue_choice() {
-        let mut keyboard_dashboard = play_dashboard();
-        keyboard_dashboard
-            .catalog
-            .as_mut()
-            .unwrap()
-            .versions
-            .push(VersionEntry {
+        let with_beta = || {
+            let mut d = play_dashboard();
+            d.catalog.as_mut().unwrap().versions.push(VersionEntry {
                 id: "pc-beta".into(),
                 name: "Echo VR (PC, Beta)".into(),
                 platform: Platform::Pc,
                 ..Default::default()
             });
-        let mut keyboard = play_harness(keyboard_dashboard);
+            d
+        };
+        let mut keyboard = play_harness(with_beta());
         keyboard.run_steps(2);
         keyboard.get_by_label("Choose PC version").focus();
         keyboard.key_press(egui::Key::Enter);
-        keyboard.run_steps(2);
+        keyboard.step();
         assert!(keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-
         // Select a real catalogue row with the pointer after keyboard activation.
         click_catalogue_choice(&mut keyboard, "pc-beta");
         assert_eq!(keyboard.state().state.selected.as_deref(), Some("pc-beta"));
         assert_eq!(keyboard.state().page, Page::Play);
+
+        // A separate physical pointer press/release on the arrow opens its popup once.
+        let mut pointer = play_harness(with_beta());
+        pointer.run_steps(2);
+        click_at_one_frame_per_event(&mut pointer, egui::pos2(235.0, 80.0));
+        assert!(pointer.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(pointer.state().page, Page::Play);
+        click_catalogue_choice(&mut pointer, "pc-beta");
+        assert_eq!(pointer.state().state.selected.as_deref(), Some("pc-beta"));
+
+        // Main receives its own physical Enter event and routes the chosen catalogue entry.
+        pointer.get_by_label("PLAY").focus();
+        pointer.key_press(egui::Key::Enter);
+        pointer.step();
+        assert_eq!(pointer.state().page, Page::Install);
+        assert_eq!(pointer.state().install_pick.as_deref(), Some("pc-beta"));
     }
 
     #[test]
@@ -1286,15 +1320,23 @@ mod split_info_tests {
     fn platform_switch_widgets_enter_quest_and_return_to_pc() {
         let mut h = play_harness(play_dashboard());
         h.run_steps(2);
-        h.get_by_label("Echo VR on your Quest, over USB")
-            .click_accesskit();
-        h.run_steps(2);
+        arrow_open(&mut h);
+        assert!(h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        let quest_switch = h.get_by_label("Echo VR on your Quest, over USB").rect();
+        click_at_one_frame_per_event(&mut h, quest_switch.center());
         assert_eq!(h.state().platform, Platform::Quest);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        h.step();
         assert!(h.query_by_label("Choose PC version").is_none());
 
-        h.get_by_label("Echo VR on this PC").click_accesskit();
-        h.run_steps(2);
+        let pc_switch = h.get_by_label("Echo VR on this PC").rect();
+        click_at_one_frame_per_event(&mut h, pc_switch.center());
         assert_eq!(h.state().platform, Platform::Pc);
+        h.step();
         assert!(h.query_by_label("Choose PC version").is_some());
     }
 

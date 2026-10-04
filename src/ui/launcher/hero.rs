@@ -55,6 +55,24 @@ fn compact_play_regions(has_arrow: bool) -> (Dr, Option<Dr>, Dr) {
 fn compact_job_progress_body(has_arrow: bool) -> Dr {
     compact_play_regions(has_arrow).0
 }
+
+fn job_progress_clip(body: Rect, fraction: Option<f32>, time: f32) -> Rect {
+    if let Some(fraction) = fraction {
+        return Rect::from_min_max(
+            body.min,
+            pos2(
+                body.min.x + body.width() * fraction.clamp(0.0, 1.0),
+                body.max.y,
+            ),
+        );
+    }
+    let band = body.width() * 0.35;
+    let x = body.min.x - band + (time * 0.6).fract() * (body.width() + band);
+    Rect::from_min_max(
+        pos2(x.max(body.min.x), body.min.y),
+        pos2((x + band).min(body.max.x), body.max.y),
+    )
+}
 /// PLAY's native size, and the rounded left end and slanted right end (native pixels)
 /// that keep their shape when the green in between is stretched.
 const PLAY_NATIVE: (f32, f32) = (821.0, 380.0);
@@ -692,15 +710,13 @@ pub(super) fn play_job_row(
         );
         let body = kit.drect(compact_job_progress_body(arrow));
         play_body_at(kit, EXTRA, true, 0.0, UP);
+        let time = kit.ui.input(|i| i.time) as f32;
+        let clip = job_progress_clip(body, job.fraction, time);
+        let saved = kit.ui.clip_rect();
+        kit.ui.set_clip_rect(saved.intersect(clip));
+        play_body_at(kit, EXTRA, false, 0.0, UP);
+        kit.ui.set_clip_rect(saved);
         if let Some(f) = job.fraction {
-            let clip = Rect::from_min_max(
-                body.min,
-                pos2(body.min.x + body.width() * f.clamp(0.0, 1.0), body.max.y),
-            );
-            let saved = kit.ui.clip_rect();
-            kit.ui.set_clip_rect(saved.intersect(clip));
-            play_body_at(kit, EXTRA, false, 0.0, UP);
-            kit.ui.set_clip_rect(saved);
             play_label_at(
                 kit,
                 &format!("{:.0}%", f * 100.0),
@@ -711,17 +727,6 @@ pub(super) fn play_job_row(
                 130.0,
             );
         } else {
-            let t = kit.ui.input(|i| i.time) as f32;
-            let band = body.width() * 0.35;
-            let x = body.min.x - band + (t * 0.6).fract() * (body.width() + band);
-            let clip = Rect::from_min_max(
-                pos2(x.max(body.min.x), body.min.y),
-                pos2((x + band).min(body.max.x), body.max.y),
-            );
-            let saved = kit.ui.clip_rect();
-            kit.ui.set_clip_rect(saved.intersect(clip));
-            play_body_at(kit, EXTRA, false, 0.0, UP);
-            kit.ui.set_clip_rect(saved);
             kit.ui.ctx().request_repaint();
         }
         if arrow {
@@ -1232,13 +1237,22 @@ mod play_split_tests {
 
     #[test]
     fn job_progress_uses_the_active_main_button_width() {
-        assert_eq!(
-            compact_job_progress_body(true),
-            Dr::new(139.0, 88.0, 160.999, 66.8)
-        );
-        assert_eq!(
-            compact_job_progress_body(false),
-            Dr::new(139.0, 88.0, 305.999, 66.8)
-        );
+        let pc = compact_job_progress_body(true);
+        let quest = compact_job_progress_body(false);
+        assert_eq!(pc.right(), 299.999);
+        assert_eq!(quest.right(), 444.999);
+
+        let rect = |body: Dr| Rect::from_min_size(pos2(body.x, body.y), egui::vec2(body.w, body.h));
+        let pc_determinate = job_progress_clip(rect(pc), Some(1.0), 0.0);
+        let quest_determinate = job_progress_clip(rect(quest), Some(1.0), 0.0);
+        assert_eq!(pc_determinate.max.x, rect(pc).max.x);
+        assert!(pc_determinate.max.x < 300.0);
+        assert_eq!(quest_determinate.max.x, rect(quest).max.x);
+
+        let pc_indeterminate = job_progress_clip(rect(pc), None, 0.99);
+        let quest_indeterminate = job_progress_clip(rect(quest), None, 0.99);
+        assert!(pc_indeterminate.max.x < 300.0);
+        assert!(quest_indeterminate.max.x > 300.0);
+        assert!(quest_indeterminate.max.x <= rect(quest).max.x);
     }
 }
