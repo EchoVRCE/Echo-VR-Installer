@@ -1,4 +1,4 @@
 name = "astra"
 description = "Reviews launcher designs and critiques PRs."
-model = "gpt-6-astra"
+model = "gpt-6-sol"
 developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/review-design/SKILL.md or .agents/skills/critique-pr/SKILL.md."
