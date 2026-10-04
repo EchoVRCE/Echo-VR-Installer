@@ -1004,8 +1004,6 @@ mod split_info_tests {
     const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
     const TEST_PROGRESS_35_PERCENT_FRACTION: f32 = 0.35;
     const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
-    // Click-away point inside the 1280×720 harness, outside the popup and Play controls.
-    const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
 
     fn play_dashboard() -> Dashboard {
         let mut d = Dashboard::default();
@@ -1358,6 +1356,11 @@ mod split_info_tests {
         );
         assert_eq!(h.state().page, Page::Play);
         assert_eq!(h.state().state.selected, selected);
+        let action_after_update = pc_action(h.state_mut()).line.primary;
+        assert!(action_after_update.iter().any(|line| line == "Updating"));
+        assert!(action_after_update
+            .iter()
+            .any(|line| line == "Checking for updates…"));
     }
 
     #[test]
@@ -1380,7 +1383,7 @@ mod split_info_tests {
             .unwrap_or(false)));
         assert_eq!(h.state().page, Page::Play);
 
-        // Keyboard activation also opens the menu; a later generic outside click closes it.
+        // Keyboard activation also opens the menu; a later blue Update click closes it.
         let mut keyboard = play_harness(play_dashboard());
         keyboard.run_steps(2);
         keyboard.get_by_label("Choose PC version").focus();
@@ -1389,12 +1392,13 @@ mod split_info_tests {
         assert!(keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        click_at_one_frame_per_event(&mut keyboard, OUTSIDE_MENU_TEST_POINT);
+        let update = keyboard.get_by_label("Check for updates").rect().center();
+        click_at_one_frame_per_event(&mut keyboard, update);
         assert!(!keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
 
-        // AccessKit activation has the same later outside-click dismissal behavior.
+        // AccessKit activation also leaves the blue Update click available for dismissal.
         let mut accesskit = play_harness(play_dashboard());
         accesskit.run_steps(2);
         accesskit
@@ -1404,7 +1408,8 @@ mod split_info_tests {
         assert!(accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        click_at_one_frame_per_event(&mut accesskit, OUTSIDE_MENU_TEST_POINT);
+        let update = accesskit.get_by_label("Check for updates").rect().center();
+        click_at_one_frame_per_event(&mut accesskit, update);
         assert!(!accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
