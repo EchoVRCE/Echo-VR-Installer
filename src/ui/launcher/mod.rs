@@ -1139,7 +1139,7 @@ impl Dashboard {
                         kind: JobKind::QuestInstall,
                         title: "Installing Echo VR on Quest".into(),
                         label: "Copying game files".into(),
-                        fraction: Some(0.42),
+                        fraction: Some(1.0),
                         cancel: Arc::new(AtomicBool::new(false)),
                     },
                 );
