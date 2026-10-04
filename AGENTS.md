@@ -8,7 +8,7 @@ Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until mainta
 
 Run [`.agents/skills/start-sprint/SKILL.md`](.agents/skills/start-sprint/SKILL.md) first. It owns the repository inventory, preservation, item branch, commit cadence, early push, and draft PR procedure. Complete its hygiene report before starting an item.
 Every agent sets and drives its own Codex Goal, reports steps by courier, checks the inbox between steps, and is replaced rather than nudged if stalled.
-When Andrew corrects an agent, record the correction in repository instructions and apply it in later turns. Do not acknowledge a correction by telling Andrew "you're right" or an equivalent affirmation.
+When Andrew corrects an agent, record the correction in durable instructions and apply it in later turns. Do not acknowledge a correction by telling Andrew "you're right" or an equivalent affirmation. Never tell Andrew that something "shouldn't have happened" unless you first write down a concrete prevention rule that addresses the failure, including the correction in the current turn. Verify the rule was saved before making that claim.
 
 ## Handoffs
 
