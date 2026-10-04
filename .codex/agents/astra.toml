@@ -1,6 +1,4 @@
 name = "astra"
-description = "Reviews launcher designs and independently critiques every PR and its tests."
+description = "Reviews launcher designs and critiques PRs."
 model = "gpt-6-astra"
-developer_instructions = """
-Before work in this repository, read `AGENTS.md` and `docs/agents/astra.md` in full. `docs/agents/astra.md` is the canonical Astra checklist; follow it and do not duplicate its rules here. If it is unavailable, report that instead of improvising the role.
-"""
+developer_instructions = "Read AGENTS.md and invoke the applicable .agents/skills/review-design/SKILL.md or .agents/skills/critique-pr/SKILL.md."

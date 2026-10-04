@@ -1,38 +1,38 @@
 # Launcher agent workflow
 
-Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 work until the maintainers choose another integration branch. Keep decisions and acceptance criteria in the repository so a new agent can pick up the work.
+This file owns the repository-wide workflow. A role's task instructions live in the relevant `.agents/skills/*/SKILL.md`; `docs/agents/` and `.codex/agents/` only route to them. Read this file and the skill for the task before acting. Every implementation agent, including a Codex subagent, must be invoked through an implementation skill. Do not substitute a prose prompt or a role file for the skill.
 
-1. **Sol designs.** Write numbered ADRs in `docs/adr/` for architectural choices and numbered, testable BACs in `docs/bac/` for observable behavior. Each BAC links its governing ADR. Andrew and Mia resolve choices that need maintainer approval before implementation.
-2. **Astra reviews the design.** Review the ADR and BACs for missing options, assumptions, safety and failure cases, and whether every BAC can become a test. Record findings with the design; Sol revises until blocking findings are resolved.
-3. **Luna implements.** Work from the reviewed design and BACs. Add meaningful tests for changed behavior and report build and test results in the PR. If implementation exposes a design gap, return it to Sol for a design update and Astra for another design review.
-4. **Sol reviews code.** Check the implementation against the ADR, every BAC, and the reported tests. Record findings on the PR; Luna addresses blocking findings.
-5. **Astra critiques every PR.** Inspect the actual diff and tests independently and ruthlessly: probe failure paths, regressions, trust boundaries, and claims of coverage. Record findings on the PR; Luna addresses blocking findings, and both reviewers recheck affected work.
+Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until maintainers choose another integration branch. Keep decisions in `docs/adr/`, observable acceptance criteria in `docs/bac/`, behavior in tests and code, and change history in commits and PRs. Link to a canonical rule by heading or path; do not copy it into a second instruction file.
 
-## Handoff gates
+## Handoffs
 
-- **Design ready:** Sol has written the ADR and linked, testable BACs; any decision requiring Andrew and Mia is recorded.
-- **Design review done:** Astra has recorded a review outcome, and Sol has resolved all blocking design findings.
-- **Implementation ready:** Luna has implemented the reviewed behavior, supplied BAC test evidence, and reported `cargo build --release` and `cargo test` results or named the reason either could not pass or run.
-- **Code review done:** Sol has reviewed the actual diff against the ADR and BACs and rechecked fixes for blocking findings.
-- **PR critique done:** Astra has independently reviewed the implementation and tests, and rechecked fixes for blocking findings.
+1. **Sol designs:** use `write-adr` and `write-bac`. Record open choices, especially those requiring Andrew and Mia, before implementation.
+2. **Astra reviews design:** use `review-design`. Sol resolves blocking findings and requests another review when the contract changes.
+3. **Luna implements:** use `implement-bac` against the reviewed ADR and BACs. A new design choice returns to Sol and Astra.
+4. **Sol reviews code:** use `review-code` against the diff, ADR, BACs, and test evidence.
+5. **Astra critiques every PR:** use `critique-pr` independently, including fixes to prior findings.
 
-An implementation is done when every gate above is met and no blocking review finding remains. Maintainers decide when to merge. A PR should link the design, design review, implementation/test evidence, Sol code review, and Astra PR critique.
+No handoff proceeds with an unresolved blocking finding. Maintainers decide when to merge.
 
-## Commands and baseline
+## Verification and proof of done
 
-Run from the repository root:
+From the repository root, run `cargo build --release` and `cargo test` for an implementation or a review claiming verification. Record each command, its exit status, the tested commit or working-tree state, and material failures or skipped checks in the PR. A passing count alone is not evidence that a BAC is covered: map every applicable BAC to a test or an explicit substitute check, with its result. New or changed behavior tests need an observed assertion failure against a deliberately broken implementation, followed by a pass after restoring the fix; record the change and both results. If a test cannot be made to fail this way, explain the limitation and the substitute check. Do not claim a check ran when it did not.
 
-```sh
-cargo build --release
-cargo test
-```
+The recorded baseline at `ad9f709` (`origin/launcher-m1`) is **165 passed, 13 ignored**. Compare a new run against that pinned baseline and explain a difference; the current run and its command are the verification evidence. The repository has no single-command CI gate yet, so these two commands are the current required checks. Add a fuller gate only when its recipe and CI job exist together.
 
-On `ad9f709` (`origin/launcher-m1`), the recorded test baseline is **165 passed, 13 ignored**. Compare later runs with that baseline and name any changed count or failure.
+A PR is ready for maintainer merge consideration when the reviewed ADR and BACs are linked, required maintainer decisions are recorded, implementation evidence covers each BAC, both checks and their exit statuses are reported, Sol and Astra have reviewed the actual diff, and all blocking findings have a recorded resolution and recheck. The PR description links those artifacts. Reviewers report findings with a path and location, the observed evidence, impact, severity or blocking status, and a concrete way to reproduce or falsify the claim. State review scope and any unexamined area; an empty findings list is not proof of full coverage.
 
-## Canonical role checklists and skills
+## Git and evidence hygiene
 
-- Sol: `docs/agents/sol.md`; skills: `.agents/skills/write-adr/`, `.agents/skills/write-bac/`.
-- Astra: `docs/agents/astra.md`; skills: `.agents/skills/review-design/`, `.agents/skills/critique-pr/`.
-- Luna: `docs/agents/luna.md`.
+Use a task branch or worktree. Stage only owned paths (`git add <paths>`), inspect the index before committing, and write the reason and verification in the commit or PR. Do not reset, stash, or check out another contributor's changes. Verify the branch and commit identity before reporting a result. A pushed or merged commit must be the one that passed the stated checks; rerun checks after material fixes. PRs target the agreed integration branch. Never use a closing keyword in a commit message for a partially completed issue.
 
-The role files are the checklists. `.codex/agents/*.toml` only routes agents to them.
+## Skill routes
+
+| Task | Skill |
+|---|---|
+| Sol architecture decision | `.agents/skills/write-adr/SKILL.md` |
+| Sol acceptance criteria | `.agents/skills/write-bac/SKILL.md` |
+| Astra design review | `.agents/skills/review-design/SKILL.md` |
+| Luna implementation | `.agents/skills/implement-bac/SKILL.md` |
+| Sol code review | `.agents/skills/review-code/SKILL.md` |
+| Astra PR critique | `.agents/skills/critique-pr/SKILL.md` |

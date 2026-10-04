@@ -5,8 +5,8 @@ description: Write testable launcher behavior acceptance criteria in docs/bac, l
 
 # Write a BAC
 
-Read `AGENTS.md`, `docs/agents/sol.md`, and the governing ADR. Give each BAC a stable identifier and file in `docs/bac/`; link the ADR by path and identifier.
+Read `AGENTS.md` and the governing ADR. Give each BAC a stable identifier and file in `docs/bac/`; link the ADR by path and identifier.
 
-Describe the observable starting state, action, and expected result so a developer can write a test without guessing intent. Cover material error, repair, and recovery behavior as separate cases when they affect the decision. State platform or scope limits and any required test fixture. Avoid implementation details unless the ADR makes them part of the contract.
+Describe observable starting state, action, and expected result so an implementer can write a test without guessing intent. Cover material error, repair, and recovery behavior as separate cases when they affect the decision. State platform or scope limits and any required fixture. Make the expected result distinguish the intended behavior from a plausible wrong implementation. Avoid implementation details unless the ADR makes them part of the contract.
 
-Have Astra check that the BAC is testable and traces to the ADR. Update the BAC when a design review changes the contract; point Luna to the reviewed version.
+Have Astra check the BAC through `review-design`. Update it when design review changes the contract; point Luna to the reviewed version.
