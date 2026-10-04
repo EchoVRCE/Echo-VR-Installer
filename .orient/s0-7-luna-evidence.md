@@ -179,3 +179,10 @@ The menu render filename is `launcher_play_version_menu.png`.
 
 - In `missing_installed_target_routes_only_its_catalogue_id_to_install`, both main-action clicks now use the accessible `PLAY` widget rect center rather than fixed screen coordinates. The test still verifies that a missing installed target with a catalogue ID routes that ID to Install and one without an ID routes `None`.
 - Verification after this coordinate cleanup: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::play::split_info_tests -- --nocapture` — 16 passed; `cargo fmt --all -- --check` and `git diff --check` passed.
+
+## Arrow dead-corner dismissal regression
+
+- Added `inert_upper_right_arrow_corner_dismisses_open_menu`. It opens through a physical click at the accessible arrow center, computes Astra's reported upper-right dead-corner point from that widget rect using named 10 px / 1 px inset constants, verifies the point is inside the arrow rect, clicks it as a later event, and asserts the menu closes without changing page, selection, or main action. The existing physical blue Check for updates dismissal/dispatch test remains unchanged.
+- Red reproduction on the rectangle-only implementation at `41965c6`: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::play::split_info_tests::inert_upper_right_arrow_corner_dismisses_open_menu -- --nocapture` failed at the menu-closed assertion; the inert corner left the menu open.
+- Green fix: the exclusion now requires the point to be inside both the arrow bounds and the same compact Play polygon used by `hot_shape`; compact row drawing and hit ownership share that polygon helper. The original thin popup positioning anchor is unchanged, and the later blue Update click remains outside the exclusion.
+- Focused verification after the fix: Play split tests 17 passed; hero split tests 3 passed; `cargo fmt --all -- --check`, `git diff --check`, and `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo build --release` passed.

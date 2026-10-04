@@ -769,12 +769,13 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit, has_versions: bool, enabled:
         egui::vec2(dz(404.0), dz(1.0)),
     );
     let arrow_opener = kit.drect(hero::compact_play_arrow_region());
+    let arrow_shape = hero::compact_play_button_shape().map(|(x, y)| kit.dpos(x, y));
     if !enabled {
         return;
     }
 
     let items = version_menu_items(d, &installed, &available);
-    match kit.menu_at_below_excluding(VERSION_MENU, anchor, arrow_opener, &items) {
+    match kit.menu_at_below_excluding(VERSION_MENU, anchor, arrow_opener, &arrow_shape, &items) {
         Some(i) if i < installed.len() + available.len() => {
             let id = match installed.get(i) {
                 Some(v) => v.id.clone(),
@@ -1004,6 +1005,9 @@ mod split_info_tests {
     const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
     const TEST_PROGRESS_35_PERCENT_FRACTION: f32 = 0.35;
     const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
+    // Astra's repro point sits just inside the arrow bounds, beyond its clipped top edge.
+    const DEAD_ARROW_CORNER_INSET_X: f32 = 10.0;
+    const DEAD_ARROW_CORNER_INSET_Y: f32 = 1.0;
     // Blank backdrop at the 1280×720 harness size, outside the popup and its anchor.
     const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
 
@@ -1364,6 +1368,41 @@ mod split_info_tests {
         assert!(action_after_update
             .iter()
             .any(|line| line == "Checking for updates…"));
+    }
+
+    #[test]
+    fn inert_upper_right_arrow_corner_dismisses_open_menu() {
+        let mut h = play_harness(play_dashboard());
+        h.run_steps(2);
+        let action_before = pc_action(h.state_mut()).line.primary;
+        let selected_before = h.state().state.selected.clone();
+
+        let arrow = h.get_by_label("Choose PC version").rect();
+        click_at_one_frame_per_event(&mut h, arrow.center());
+        assert!(h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        let dead_corner = egui::pos2(
+            arrow.max.x - DEAD_ARROW_CORNER_INSET_X,
+            arrow.min.y + DEAD_ARROW_CORNER_INSET_Y,
+        );
+        assert!(arrow.contains(dead_corner));
+        let arrow_area = hero::compact_play_arrow_region();
+        let shape_origin =
+            arrow.min - egui::vec2(design::dz(arrow_area.x), design::dz(arrow_area.y));
+        let active_shape: Vec<_> = hero::compact_play_button_shape()
+            .iter()
+            .map(|&(x, y)| shape_origin + egui::vec2(design::dz(x), design::dz(y)))
+            .collect();
+        assert!(!design::inside(dead_corner, &active_shape));
+        click_at_one_frame_per_event(&mut h, dead_corner);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(h.state().page, Page::Play);
+        assert_eq!(h.state().state.selected, selected_before);
+        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
     }
 
     #[test]

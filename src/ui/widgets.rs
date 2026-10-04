@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use egui::epaint::CornerRadiusF32;
 use egui::text::LayoutJob;
-use egui::{pos2, vec2, Color32, CursorIcon, Galley, Id, Order, Rect, Sense, Stroke, StrokeKind};
+use egui::{
+    pos2, vec2, Color32, CursorIcon, Galley, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind,
+};
 
 use super::design::{self, dz};
 use super::kit::Kit;
@@ -733,15 +735,23 @@ impl Kit<'_> {
         self.menu_popup(menu_id(key), anchor, items, false, None)
     }
 
-    /// A menu below its positioning anchor with a separate region for the opening control.
+    /// A menu below its positioning anchor; only the opening control's active shape is
+    /// exempt from outside-click dismissal.
     pub fn menu_at_below_excluding(
         &mut self,
         key: &str,
         anchor: Rect,
         opener: Rect,
+        opener_shape: &[Pos2],
         items: &[MenuItem],
     ) -> Option<usize> {
-        self.menu_popup(menu_id(key), anchor, items, true, Some(opener))
+        self.menu_popup(
+            menu_id(key),
+            anchor,
+            items,
+            true,
+            Some((opener, opener_shape)),
+        )
     }
 
     /// The open menu of `open_id` next to `anchor`: violet with the card rim, rows turning
@@ -752,7 +762,7 @@ impl Kit<'_> {
         anchor: Rect,
         items: &[MenuItem],
         stay_below: bool,
-        dismissal_exclusion: Option<Rect>,
+        dismissal_exclusion: Option<(Rect, &[Pos2])>,
     ) -> Option<usize> {
         let open = self
             .ui
@@ -909,7 +919,9 @@ impl Kit<'_> {
                 && i.pointer.interact_pos().is_some_and(|p| {
                     !popup.contains(p)
                         && !anchor.contains(p)
-                        && !dismissal_exclusion.is_some_and(|r| r.contains(p))
+                        && !dismissal_exclusion.is_some_and(|(area, shape)| {
+                            area.contains(p) && design::inside(p, shape)
+                        })
                 })
         });
         if picked.is_some() || outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {

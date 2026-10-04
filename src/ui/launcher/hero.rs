@@ -37,6 +37,10 @@ const PLAY_COMPACT_MAIN: Dr = Dr::new(139.0, 88.0, 160.999, 66.8);
 const PLAY_COMPACT_ARROW: Dr = Dr::new(300.001, 88.0, 144.998, 66.8);
 const PLAY_COMPACT_MAIN_FULL: Dr = Dr::new(139.0, 88.0, 305.999, 66.8);
 const PLAY_COMPACT_UPDATE: Dr = Dr::new(445.001, 88.0, 337.999, 66.0);
+// The compact Play asset is shifted into the version row using the approved split-control geometry.
+const COMPACT_PLAY_EXTRA_X: f32 = 120.0;
+const PLAY_SHAPE_SHIFT_START_X: f32 = 200.0;
+const COMPACT_PLAY_Y_OFFSET: f32 = -155.0;
 
 fn compact_play_regions(has_arrow: bool) -> (Dr, Option<Dr>, Dr) {
     (
@@ -50,7 +54,13 @@ fn compact_play_regions(has_arrow: bool) -> (Dr, Option<Dr>, Dr) {
     )
 }
 
-/// Arrow hit region in the compact Play split control, for popup dismissal exclusion.
+/// Active polygon used by the compact Play main/arrow controls.
+pub(super) fn compact_play_button_shape() -> [(f32, f32); 4] {
+    design::shifted(PLAY_SHAPE, COMPACT_PLAY_EXTRA_X, PLAY_SHAPE_SHIFT_START_X)
+        .map(|(x, y)| (x, y + COMPACT_PLAY_Y_OFFSET))
+}
+
+/// Arrow hit region in the compact Play split control.
 pub(super) fn compact_play_arrow_region() -> Dr {
     PLAY_COMPACT_ARROW
 }
@@ -591,10 +601,11 @@ pub(super) fn play_row(
     arrow_enabled: bool,
     arrow_tip: &str,
 ) -> (bool, bool, bool) {
-    const EXTRA: f32 = 120.0;
-    const UP: f32 = -155.0;
-    let green = design::shifted(PLAY_SHAPE, EXTRA, 200.0).map(|(x, y)| (x, y + UP));
-    let blue = design::shifted(UPDATE_SHAPE, EXTRA, 0.0).map(|(x, y)| (x, y + UP));
+    const EXTRA: f32 = COMPACT_PLAY_EXTRA_X;
+    const UP: f32 = COMPACT_PLAY_Y_OFFSET;
+    let green = compact_play_button_shape();
+    let blue = design::shifted(UPDATE_SHAPE, COMPACT_PLAY_EXTRA_X, 0.0)
+        .map(|(x, y)| (x, y + COMPACT_PLAY_Y_OFFSET));
 
     // The blue and green assets overlap by five design pixels. Paint and ownership use
     // the same seam so the two controls never both respond to one pointer position.
