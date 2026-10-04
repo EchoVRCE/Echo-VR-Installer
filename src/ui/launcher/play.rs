@@ -1354,6 +1354,56 @@ mod split_info_tests {
     }
 
     #[test]
+    fn pointer_keyboard_and_accesskit_open_ignore_only_the_opener_click() {
+        let mut h = play_harness(play_dashboard());
+        h.run_steps(2);
+
+        // A physical arrow click must survive the release pass that opens the menu.
+        let arrow = h.get_by_label("Choose PC version").rect().center();
+        click_at_one_frame_per_event(&mut h, arrow);
+        assert!(h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        // The blue Update control remains outside the exemption and dismisses the menu.
+        let update = h.get_by_label("Check for updates").rect().center();
+        click_at_one_frame_per_event(&mut h, update);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(h.state().page, Page::Play);
+
+        // Keyboard activation also opens the menu; a later generic outside click closes it.
+        let mut keyboard = play_harness(play_dashboard());
+        keyboard.run_steps(2);
+        keyboard.get_by_label("Choose PC version").focus();
+        keyboard.key_press(egui::Key::Enter);
+        keyboard.step();
+        assert!(keyboard.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        click_at_one_frame_per_event(&mut keyboard, egui::pos2(1000.0, 650.0));
+        assert!(!keyboard.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        // AccessKit activation has the same later outside-click dismissal behavior.
+        let mut accesskit = play_harness(play_dashboard());
+        accesskit.run_steps(2);
+        accesskit
+            .get_by_label("Choose PC version")
+            .click_accesskit();
+        accesskit.run_steps(2);
+        assert!(accesskit.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        click_at_one_frame_per_event(&mut accesskit, egui::pos2(1000.0, 650.0));
+        assert!(!accesskit.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+    }
+
+    #[test]
     fn quest_info_band_includes_the_device_once_for_ready_and_installing() {
         let device = "Meta Quest 3 (test-device)";
         let mut ready = quest_dashboard(false);
