@@ -1882,7 +1882,8 @@ mod split_info_tests {
         });
         let mut h = play_harness(d);
         h.run_steps(2);
-        click_at(&mut h, egui::pos2(147.0, 80.0));
+        let play_center = h.get_by_label("PLAY").rect().center();
+        click_at(&mut h, play_center);
         assert_eq!(h.state().page, Page::Install);
         assert_eq!(h.state().install_pick.as_deref(), Some("pc-beta"));
 
@@ -1902,7 +1903,8 @@ mod split_info_tests {
         no_catalog_id.state.selected = Some("external-no-catalog".into());
         let mut h = play_harness(no_catalog_id);
         h.run_steps(2);
-        click_at(&mut h, egui::pos2(147.0, 80.0));
+        let play_center = h.get_by_label("PLAY").rect().center();
+        click_at(&mut h, play_center);
         assert_eq!(h.state().page, Page::Install);
         assert_eq!(h.state().install_pick, None);
     }
