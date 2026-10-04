@@ -168,5 +168,7 @@ The menu render filename is `launcher_play_version_menu.png`.
 ## Physical arrow opener and blue Update dismissal assertion
 
 - Renamed the regression to `physical_pointer_arrow_opens_then_blue_update_click_closes_menu` and made it finish with a physical click at `get_by_label("Check for updates").rect().center()`. It first asserts the pointer release on the dynamic `Choose PC version` rect center leaves the popup open and does not change the main action, page, selection, jobs, update note, or dialog state. The later blue Update click closes the menu while leaving page and selected version intact; the click itself is allowed to start the update-check action.
-- The two generic click-away paths use the named `OUTSIDE_MENU_TEST_POINT`, documented as outside the popup/Play controls in the 1280×720 harness. Indeterminate width/speed constants and the named 0.99 test phase have inline rationale comments.
+- The pointer, keyboard, and AccessKit dismissal paths each click the actual accessible blue Check for updates rect center; no fixed pointer coordinate is used. The physical pointer test verifies its opening click leaves the primary action unchanged, then asserts the later blue click dispatches Update (`Updating` and `Checking for updates…`) while closing the menu. Indeterminate width/speed constants and the named 0.99 test phase have inline rationale comments.
 - The focused Play split suite passed 16 tests after this assertion change; fmt and diff checks passed.
+
+- Final blue-region verification: `physical_pointer_arrow_opens_then_blue_update_click_closes_menu` passed after asserting Update dispatch and menu closure; no `OUTSIDE_MENU_TEST_POINT` fixture remains. `cargo fmt --all -- --check` and `git diff --check` passed.
