@@ -49,6 +49,12 @@ fn compact_play_regions(has_arrow: bool) -> (Dr, Option<Dr>, Dr) {
         PLAY_COMPACT_UPDATE,
     )
 }
+
+/// Progress is clipped to the active Play main target: the PC main segment when the
+/// arrow is present, and the full green button on Quest or with no PC choices.
+fn compact_job_progress_body(has_arrow: bool) -> Dr {
+    compact_play_regions(has_arrow).0
+}
 /// PLAY's native size, and the rounded left end and slanted right end (native pixels)
 /// that keep their shape when the green in between is stretched.
 const PLAY_NATIVE: (f32, f32) = (821.0, 380.0);
@@ -684,7 +690,7 @@ pub(super) fn play_job_row(
             false,
             &job.step(),
         );
-        let body = kit.drect(Dr::new(139.0, 88.0, 160.999, 66.8));
+        let body = kit.drect(compact_job_progress_body(arrow));
         play_body_at(kit, EXTRA, true, 0.0, UP);
         if let Some(f) = job.fraction {
             let clip = Rect::from_min_max(
@@ -1222,5 +1228,17 @@ mod play_split_tests {
         assert!(visible.ends_with('…'));
         assert!(visible.len() < name.len());
         assert_eq!(state, "Installing  ·  35%");
+    }
+
+    #[test]
+    fn job_progress_uses_the_active_main_button_width() {
+        assert_eq!(
+            compact_job_progress_body(true),
+            Dr::new(139.0, 88.0, 160.999, 66.8)
+        );
+        assert_eq!(
+            compact_job_progress_body(false),
+            Dr::new(139.0, 88.0, 305.999, 66.8)
+        );
     }
 }
