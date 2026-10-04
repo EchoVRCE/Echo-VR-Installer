@@ -158,3 +158,9 @@ The menu render filename is `launcher_play_version_menu.png`.
 - Re-inspected the current tree: there is no `opened-frame` guard or B1 red mutation. Progress body uses `compact_play_regions(has_arrow).0`; physical arrow clicks derive their point from the accessible `Choose PC version` rect, then assert the popup remains open after release. The next click uses the accessible blue Update rect and asserts the popup closes.
 - BAC-0003 selects installed B through the popup before activating PLAY; the main click now also uses the accessible PLAY rect. BAC-0004 retains exact disabled reason, unchanged selected ID, and disabled pointer/keyboard activation assertions for each required busy state and platform switch.
 - Added a rationale for the named indeterminate progress band and sweep rate. Final focused rerun: Play split tests 16 passed; hero split tests 3 passed, including Quest full-width and PC-bounded progress. `cargo fmt --all -- --check` and `git diff --check` passed.
+
+## BAC-0003/0004 source-level clarification
+
+- Clarified the BAC-0003 fixture name to `installed_b`; the test explicitly starts with `other-a` selected, opens the arrow menu, chooses `selected-b` through the installed-choice row helper, asserts the menu closed and selected ID changed to B, then activates PLAY and verifies the missing-executable preflight references B's distinct root rather than A's.
+- Reconfirmed `assert_busy_arrow_rejected` checks disabled AccessKit metadata, hovers the disabled arrow to assert the exact reason, sends a real pointer click and focused Enter while disabled, and after each attempt asserts the selected ID is unchanged and the menu remains closed. The transition test invokes it for launch-start, external-running, owned-running, selected install, and unrelated job; it also asserts selected ID after each transition.
+- Focused rerun after these assertions: Play split tests 16 passed; `cargo fmt --all -- --check` and `git diff --check` passed.
