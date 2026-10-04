@@ -52,6 +52,7 @@ The menu render filename is `launcher_play_version_menu.png`.
 
 ## Review recheck: B1 Quest job progress
 
+- Fix and 100% Quest snapshot fixture committed as `5f21cef` (`Fix Quest Play job progress width`).
 - `hero::play_job_row` now clips the progress fill to `compact_play_regions(arrow).0`. PC retains x=139..300 when its arrow is present; Quest and zero-choice PC use the full x=139..445 main button.
 - The `QuestInstalling` headless fixture is now a known 100% job. Fixed screenshots were generated with `headless_snapshots` at all three named viewports and visually inspected:
   - `/tmp/s0-7-luna-b1-960/launcher_play_quest_installing.png` (960×540)
@@ -63,3 +64,12 @@ The menu render filename is `launcher_play_version_menu.png`.
   - `/tmp/s0-7-luna-b1-red-1280/launcher_play_quest_installing.png`
   - `/tmp/s0-7-luna-b1-red-1680/launcher_play_quest_installing.png`
   At 1280×720, the green fill stops at the PC split boundary while the 100% label remains visible; the fixed render fills the whole Quest button. Each headless render command exited 0.
+- Each render used `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target ECHOVR_SNAPSHOTS=<output-dir> ECHOVR_SNAPSHOTS_ONLY=launcher_play_quest_installing ECHOVR_SNAPSHOTS_SIZE=<width>x<height> ECHOVR_SNAPSHOTS_DEMO=1 cargo test --bin EchoVR_Installer headless_snapshots -- --ignored --nocapture` and exited 0 at 960×540, 1280×720, and 1680×720, for both the old-width mutation and fixed implementation.
+
+## Review recheck: Quest info band and widget interaction evidence
+
+- Removed the second Quest device append in `quest_action`. `quest_info` supplies the device suffix once for both ready and installing branches.
+- `quest_info_band_includes_the_device_once_for_ready_and_installing` exercises both action states. With the old append restored deliberately, the focused test failed at the ready assertion with 2 device strings where 1 was expected; after restoring the fix, it passed for ready and installing (including 100% progress).
+- Added widget-level coverage: `arrow_opens_with_keyboard_and_pointer_selects_a_catalogue_choice` focuses and activates the arrow with Enter, then selects the catalogue row with an actual pointer click; `open_version_menu_clears_on_busy_and_quest_transitions` attempts pointer and keyboard activation while the arrow is disabled in a busy game state and confirms the menu stays closed; `platform_switch_widgets_enter_quest_and_return_to_pc` activates the platform switch controls to Quest and back to PC and asserts the platform and arrow visibility after each action.
+- Focused verification after these changes: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::play::split_info_tests -- --nocapture` — 14 passed; `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::hero::play_split_tests -- --nocapture` — 3 passed. `cargo fmt --all -- --check` and `git diff --check` passed.
+- Full checks on the combined implementation tree: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo build --release` — exit 0; `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test` — exit 101, 181 passed, 1 failed, 13 ignored. The sole failure is the known `core::remote_zip::tests::repairs_single_files_from_a_remote_zip` loopback bind at `src/core/remote_zip.rs:187`, denied by the sandbox (`PermissionDenied: Operation not permitted`). Compared with the pinned `ad9f709` baseline of 165 passed/13 ignored, this tree has 16 additional passing tests and the same environment-limited loopback failure. `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo fmt --all -- --check` passed.
