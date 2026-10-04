@@ -65,6 +65,11 @@ pub fn shots() -> Vec<Shot> {
         ("play_installing", Page::Play, SnapVariant::Installing),
         ("play_extracting", Page::Play, SnapVariant::Extracting),
         ("play_quest", Page::Play, SnapVariant::QuestSide),
+        (
+            "play_quest_installing",
+            Page::Play,
+            SnapVariant::QuestInstalling,
+        ),
         ("play_notice", Page::Play, SnapVariant::Notice),
         ("install_ask", Page::Install, SnapVariant::InstallAsk),
         ("install_ask_new", Page::Install, SnapVariant::InstallAskNew),
