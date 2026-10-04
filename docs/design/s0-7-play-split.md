@@ -1,8 +1,8 @@
 # S0-7: Play split button and compact action row
 
-Status: Revised proposal for Astra recheck. Code baseline: 0a85ed94413a44fb1e087acd21e24029b5abe1f4. This revision answers [Astra's review](s0-7-play-split.review.md) at 72d2195.
+Status: Approved for implementation in [Astra's recheck](s0-7-play-split.review.md) at 739ec41. Code baseline: 0a85ed94413a44fb1e087acd21e24029b5abe1f4. This revision answers the initial review at 72d2195.
 
-Visual references: [requested compact row](refs/s0-7-mockup-v1.png) and [original layout](refs/s0-7-original.png). The requested image moves the row into the logo band but retains a separate VERSION picker. The split arrow and geometry below replace that picker. These images are references, not a rendering claim for unimplemented behavior.
+Layout in words: the current Play panel puts a large Echo VR logo above the Play, Check for Updates and PCVR/Quest controls, with a separate VERSION picker below. The compact layout removes the logo, lifts those controls into its former band and places the PC version arrow inside the green Play control. The arrow opens the version list below the row; the blue update control and platform switch remain to its right. The bounds and hit regions below define the proposed layout.
 
 ## Intent and scope
 
@@ -58,4 +58,4 @@ The arrow is visible but disabled with a reason during the launch-start interval
 - [BAC-0003](../bac/BAC-0003-play-selected-version.md): main action uses the resolved target and existing Install/preflight routes.
 - [BAC-0004](../bac/BAC-0004-play-platform-and-busy.md): Quest and busy-state transitions.
 
-This is a design-only revision. Astra rechecks the revised contract before implementation. The reference images do not prove the proposed split rendering, and no new behavior or build result is claimed here.
+This approved design describes the intended split control. Its rendering and behavior remain implementation work; no new behavior or build result is claimed here.
