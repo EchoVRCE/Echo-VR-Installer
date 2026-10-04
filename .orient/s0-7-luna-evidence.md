@@ -124,3 +124,10 @@ The menu render filename is `launcher_play_version_menu.png`.
 
 - On committed code tree `207f098cdf417a4cdddb46df72b85541b9bf8ad2`, `ui::launcher::play::split_info_tests` passed (15 tests). `cargo fmt --all -- --check` and `git diff --check` passed.
 - Full `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test` on that tree: 182 passed, 1 failed, 13 ignored. The failure is the known sandbox-denied loopback bind in `core::remote_zip::tests::repairs_single_files_from_a_remote_zip` at `src/core/remote_zip.rs:187` (`PermissionDenied: Operation not permitted`). The code change since the release build is test-only; the release build passed on the immediately preceding tree.
+
+## BAC-0002 pointer-open red/green recheck
+
+- Reproduced the reported failure against the exact `11a24e8` `widgets.rs` behavior: `toggle_menu` only toggled the open flag, and `menu_popup` treated any click outside both the popup and anchor as dismissal. Temporarily restored those two functions from `git show 11a24e8:src/ui/widgets.rs` while retaining the physical pointer test; the same test failed because the popup was no longer open after the arrow click.
+- Red command: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::play::split_info_tests::physical_pointer_arrow_opens_only_the_menu -- --nocapture` — failed (exit 101), assertion at `src/ui/launcher/play.rs:1336`, 0 passed / 1 failed / 195 filtered.
+- Restored the open-frame guard. `toggle_menu` records the cumulative frame when opening; `menu_popup` skips outside-click dismissal during that frame. Green command: the same focused command — passed (1 passed / 195 filtered).
+- The pointer test uses separate move, press, and release passes at the center of the accessible arrow rect. It asserts the popup remains open after release, then asserts a subsequent outside click closes it. This tests the reported click-away race and preserves later outside-click dismissal.
