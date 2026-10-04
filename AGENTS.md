@@ -9,6 +9,7 @@ Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until mainta
 Run [`.agents/skills/start-sprint/SKILL.md`](.agents/skills/start-sprint/SKILL.md) first. It owns the repository inventory, preservation, item branch, commit cadence, early push, and draft PR procedure. Complete its hygiene report before starting an item.
 Every agent sets and drives its own Codex Goal, reports steps by courier, checks the inbox between steps, and is replaced rather than nudged if stalled.
 When a user or agent driver corrects an agent, record the correction in durable instructions and apply it in later turns. Do not acknowledge a correction by affirming that the user or driver is right. Never claim an error was avoidable until after saving and verifying a concrete prevention rule for that failure, including corrections made in the current turn. Do not quote the user or driver in explanations, reports, or instructions; express the rationale in the agent's own words so it stands on its own.
+Report counts and size changes from commands over a named population, with differences computed from the command results. For reclaimed disk space, measure the same path with `du` before and after cleanup; do not attribute a filesystem-wide `df` change to one cleanup. If the before measurement is missing, state that the reclaimed amount is unknown.
 
 ## Handoffs
 
