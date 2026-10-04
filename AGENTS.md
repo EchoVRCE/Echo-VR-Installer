@@ -8,6 +8,8 @@ Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until mainta
 
 Run [`.agents/skills/start-sprint/SKILL.md`](.agents/skills/start-sprint/SKILL.md) first. It owns the repository inventory, preservation, item branch, commit cadence, early push, and draft PR procedure. Complete its hygiene report before starting an item.
 Every agent sets and drives its own Codex Goal, reports steps by courier, checks the inbox between steps, and is replaced rather than nudged if stalled.
+When a user or agent driver corrects an agent, record the correction in durable instructions and apply it in later turns. Do not acknowledge a correction by affirming that the user or driver is right. Never claim an error was avoidable until after saving and verifying a concrete prevention rule for that failure, including corrections made in the current turn. Do not quote the user or driver in explanations, reports, or instructions; express the rationale in the agent's own words so it stands on its own.
+Report counts and size changes from commands over a named population, with differences computed from the command results. For reclaimed disk space, measure the same path with `du` before and after cleanup; do not attribute a filesystem-wide `df` change to one cleanup. If the before measurement is missing, state that the reclaimed amount is unknown.
 
 ## Handoffs
 
@@ -17,11 +19,15 @@ Every agent sets and drives its own Codex Goal, reports steps by courier, checks
 4. **Sol reviews code:** use `review-code` against the diff, ADR, BACs, and test evidence.
 5. **Astra critiques every PR:** use `critique-pr` independently, including fixes to prior findings.
 
+After committing an item, the finishing agent couriers Glow the branch, commit and result, then runs `codex queue` to the named next agent's thread in the same handoff step. The next agent can read the committed local branch immediately; a push is not a prerequisite for queueing. If further changes are needed, the reviewer queues the originating agent's thread directly. If `codex queue` fails in the sandbox, courier Glow the exact error and exit status immediately and mark the handoff pending. Do not rely on a user or coordinator to wake the next agent.
+
 No handoff proceeds with an unresolved blocking finding. Maintainers decide when to merge.
 
 ## Verification and proof of done
 
-From the repository root, run `cargo build --release` and `cargo test` for an implementation or a review claiming verification. Record each command, its exit status, the tested commit or working-tree state, and material failures or skipped checks in the PR. A passing count alone is not evidence that a BAC is covered: map every applicable BAC to a test or an explicit substitute check, with its result. New or changed behavior tests need an observed assertion failure against a deliberately broken implementation, followed by a pass after restoring the fix; record the change and both results. If a test cannot be made to fail this way, explain the limitation and the substitute check. Do not claim a check ran when it did not.
+Every Cargo build and test in this repository, from every worktree, must use `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target`. This shared directory is gitignored; never create or use a per-worktree `target/` directory. Set the variable on each Cargo command or in the environment before running Cargo.
+
+From the repository root, run `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo build --release` and `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test` for an implementation or a review claiming verification. Record each command, its exit status, the tested commit or working-tree state, and material failures or skipped checks in the PR. A passing count alone is not evidence that a BAC is covered: map every applicable BAC to a test or an explicit substitute check, with its result. New or changed behavior tests need an observed assertion failure against a deliberately broken implementation, followed by a pass after restoring the fix; record the change and both results. If a test cannot be made to fail this way, explain the limitation and the substitute check. Do not claim a check ran when it did not.
 
 The recorded baseline at `ad9f709` (`origin/launcher-m1`) is **165 passed, 13 ignored**. Compare a new run against that pinned baseline and explain a difference; the current run and its command are the verification evidence. The repository has no single-command CI gate yet, so these two commands are the current required checks. Add a fuller gate only when its recipe and CI job exist together.
 
