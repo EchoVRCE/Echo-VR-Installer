@@ -1308,7 +1308,7 @@ mod split_info_tests {
     }
 
     #[test]
-    fn physical_pointer_arrow_opens_only_the_menu() {
+    fn physical_pointer_arrow_opens_then_blue_update_click_closes_menu() {
         let mut h = play_harness(play_dashboard());
         h.run_steps(2);
         let selected = h.state().state.selected.clone();
@@ -1350,9 +1350,12 @@ mod split_info_tests {
         // still dismisses the popup.
         let update = h.get_by_label("Check for updates").rect().center();
         click_at_one_frame_per_event(&mut h, update);
-        assert!(!h.ctx.data(|data| data
-            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
-            .unwrap_or(false)));
+        assert!(
+            !h.ctx.data(|data| data
+                .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+                .unwrap_or(false)),
+            "a later physical click on Check for updates must close the menu"
+        );
         assert_eq!(h.state().page, Page::Play);
         assert_eq!(h.state().state.selected, selected);
     }
