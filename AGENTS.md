@@ -19,7 +19,7 @@ Report counts and size changes from commands over a named population, with diffe
 4. **Sol reviews code:** use `review-code` against the diff, ADR, BACs, and test evidence.
 5. **Astra critiques every PR:** use `critique-pr` independently, including fixes to prior findings.
 
-The agent completing a handoff queues the next agent's Codex thread directly, naming the branch, commit and requested check. If further changes are needed, the reviewer queues the originating agent's thread directly. If `codex queue` fails in the sandbox, courier Glow the exact error and exit status so the handoff is not silently lost. Do not rely on a user or coordinator to wake the next agent.
+After committing an item, the finishing agent couriers Glow the branch, commit and result, then runs `codex queue` to the named next agent's thread in the same handoff step. The next agent can read the committed local branch immediately; a push is not a prerequisite for queueing. If further changes are needed, the reviewer queues the originating agent's thread directly. If `codex queue` fails in the sandbox, courier Glow the exact error and exit status immediately and mark the handoff pending. Do not rely on a user or coordinator to wake the next agent.
 
 No handoff proceeds with an unresolved blocking finding. Maintainers decide when to merge.
 
