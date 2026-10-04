@@ -7,6 +7,7 @@ Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until mainta
 ## Before every sprint
 
 Run [`.agents/skills/start-sprint/SKILL.md`](.agents/skills/start-sprint/SKILL.md) first. It owns the repository inventory, preservation, item branch, commit cadence, early push, and draft PR procedure. Complete its hygiene report before starting an item.
+Every agent sets and drives its own Codex Goal, reports steps by courier, checks the inbox between steps, and is replaced rather than nudged if stalled.
 
 ## Handoffs
 

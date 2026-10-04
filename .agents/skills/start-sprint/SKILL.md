@@ -7,6 +7,12 @@ description: Start any evr-launcher sprint by preserving repository state, assig
 
 Run this skill before any sprint work. `AGENTS.md` names the current integration branch and owns the shared verification and handoff gates. Report what you checked, including the commands, populations covered, and gaps in coverage; a bare "clean" or "nothing pending" is not enough.
 
+## Own the assignment
+
+At assignment start, set a Codex Goal for the full assigned outcome, with checkable completion evidence, scope, and constraints. Use `/goal` or the Goal tool yourself; do not wait for another person to restate or nudge the next action. A Goal persists in this Codex thread across turns, so continue until the evidence meets its completion condition. See [official OpenAI Goals documentation](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex).
+
+After each named assignment step or handoff, report the artifact, commit SHA, and actual verification to the assigned recipient by courier. Check the courier inbox before the next step and incorporate new instructions. If the courier destination is missing, report that gap rather than inventing an address. An agent that stalls is replaced, not coaxed: preserve its work, fix the missing route in `AGENTS.md`, and start a fresh agent.
+
 ## Inventory and preserve the repository
 
 Before creating a branch, editing, cleaning, or deciding what work is safe to take:
