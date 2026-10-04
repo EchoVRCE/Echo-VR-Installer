@@ -1357,6 +1357,7 @@ mod split_info_tests {
         assert_eq!(h.state().page, Page::Play);
         assert_eq!(h.state().state.selected, selected);
         let action_after_update = pc_action(h.state_mut()).line.primary;
+        assert_ne!(action_after_update, action_before);
         assert!(action_after_update.iter().any(|line| line == "Updating"));
         assert!(action_after_update
             .iter()
