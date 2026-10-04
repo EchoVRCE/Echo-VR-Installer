@@ -164,3 +164,9 @@ The menu render filename is `launcher_play_version_menu.png`.
 - Clarified the BAC-0003 fixture name to `installed_b`; the test explicitly starts with `other-a` selected, opens the arrow menu, chooses `selected-b` through the installed-choice row helper, asserts the menu closed and selected ID changed to B, then activates PLAY and verifies the missing-executable preflight references B's distinct root rather than A's.
 - Reconfirmed `assert_busy_arrow_rejected` checks disabled AccessKit metadata, hovers the disabled arrow to assert the exact reason, sends a real pointer click and focused Enter while disabled, and after each attempt asserts the selected ID is unchanged and the menu remains closed. The transition test invokes it for launch-start, external-running, owned-running, selected install, and unrelated job; it also asserts selected ID after each transition.
 - Focused rerun after these assertions: Play split tests 16 passed; `cargo fmt --all -- --check` and `git diff --check` passed.
+
+## Physical arrow opener and blue Update dismissal assertion
+
+- Strengthened `physical_pointer_arrow_opens_only_the_menu` to finish with a physical click at `get_by_label("Check for updates").rect().center()`. It first asserts the pointer release on the dynamic `Choose PC version` rect center leaves the popup open and does not change the main action, page, selection, jobs, update note, or dialog state. The later blue Update click closes the menu while leaving page and selected version intact; the click itself is allowed to start the update-check action.
+- The two generic click-away paths use the named `OUTSIDE_MENU_TEST_POINT`, documented as outside the popup/Play controls in the 1280×720 harness. Indeterminate width/speed constants and the named 0.99 test phase have inline rationale comments.
+- The focused Play split suite passed 16 tests after this assertion change; fmt and diff checks passed.

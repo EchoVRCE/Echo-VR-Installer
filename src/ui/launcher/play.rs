@@ -1004,6 +1004,8 @@ mod split_info_tests {
     const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
     const TEST_PROGRESS_35_PERCENT_FRACTION: f32 = 0.35;
     const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
+    // Click-away point inside the 1280×720 harness, outside the popup and Play controls.
+    const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
 
     fn play_dashboard() -> Dashboard {
         let mut d = Dashboard::default();
@@ -1344,14 +1346,15 @@ mod split_info_tests {
         assert!(h.state().update_note.is_empty());
         assert!(!h.state().dialogs.is_open());
 
-        // A separate click on a later pass outside both menu and anchor still dismisses.
-        click_at_one_frame_per_event(&mut h, egui::pos2(1000.0, 650.0));
+        // A later click on the blue Update widget is outside the arrow exclusion and
+        // still dismisses the popup.
+        let update = h.get_by_label("Check for updates").rect().center();
+        click_at_one_frame_per_event(&mut h, update);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
         assert_eq!(h.state().page, Page::Play);
         assert_eq!(h.state().state.selected, selected);
-        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
     }
 
     #[test]
@@ -1383,7 +1386,7 @@ mod split_info_tests {
         assert!(keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        click_at_one_frame_per_event(&mut keyboard, egui::pos2(1000.0, 650.0));
+        click_at_one_frame_per_event(&mut keyboard, OUTSIDE_MENU_TEST_POINT);
         assert!(!keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
@@ -1398,7 +1401,7 @@ mod split_info_tests {
         assert!(accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        click_at_one_frame_per_event(&mut accesskit, egui::pos2(1000.0, 650.0));
+        click_at_one_frame_per_event(&mut accesskit, OUTSIDE_MENU_TEST_POINT);
         assert!(!accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
