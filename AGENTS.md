@@ -4,6 +4,10 @@ This file owns the repository-wide workflow. A role's task instructions live in 
 
 Work from `origin/launcher-m1` and target `launcher-m1` for Stage 0 until maintainers choose another integration branch. Keep decisions in `docs/adr/`, observable acceptance criteria in `docs/bac/`, behavior in tests and code, and change history in commits and PRs. Link to a canonical rule by heading or path; do not copy it into a second instruction file.
 
+## Before every sprint
+
+Run [`.agents/skills/start-sprint/SKILL.md`](.agents/skills/start-sprint/SKILL.md) first. It owns the repository inventory, preservation, item branch, commit cadence, early push, and draft PR procedure. Complete its hygiene report before starting an item.
+
 ## Handoffs
 
 1. **Sol designs:** use `write-adr` and `write-bac`. Record open choices, especially those requiring Andrew and Mia, before implementation.
@@ -20,16 +24,13 @@ From the repository root, run `cargo build --release` and `cargo test` for an im
 
 The recorded baseline at `ad9f709` (`origin/launcher-m1`) is **165 passed, 13 ignored**. Compare a new run against that pinned baseline and explain a difference; the current run and its command are the verification evidence. The repository has no single-command CI gate yet, so these two commands are the current required checks. Add a fuller gate only when its recipe and CI job exist together.
 
-A PR is ready for maintainer merge consideration when the reviewed ADR and BACs are linked, required maintainer decisions are recorded, implementation evidence covers each BAC, both checks and their exit statuses are reported, Sol and Astra have reviewed the actual diff, and all blocking findings have a recorded resolution and recheck. The PR description links those artifacts. Reviewers report findings with a path and location, the observed evidence, impact, severity or blocking status, and a concrete way to reproduce or falsify the claim. State review scope and any unexamined area; an empty findings list is not proof of full coverage.
-
-## Git and evidence hygiene
-
-Use a task branch or worktree. Stage only owned paths (`git add <paths>`), inspect the index before committing, and write the reason and verification in the commit or PR. Do not reset, stash, or check out another contributor's changes. Verify the branch and commit identity before reporting a result. A pushed or merged commit must be the one that passed the stated checks; rerun checks after material fixes. PRs target the agreed integration branch. Never use a closing keyword in a commit message for a partially completed issue.
+A PR is ready for maintainer merge consideration when the reviewed ADR and BACs are linked, required maintainer decisions are recorded, implementation evidence covers each BAC, both checks and their exit statuses are reported, Sol and Astra have reviewed the actual diff, and all blocking findings have a recorded resolution and recheck. Reviewers report findings with a path and location, the observed evidence, impact, severity or blocking status, and a concrete way to reproduce or falsify the claim. State review scope and any unexamined area; an empty findings list is not proof of full coverage.
 
 ## Skill routes
 
 | Task | Skill |
 |---|---|
+| Start every sprint | `.agents/skills/start-sprint/SKILL.md` |
 | Sol architecture decision | `.agents/skills/write-adr/SKILL.md` |
 | Sol acceptance criteria | `.agents/skills/write-bac/SKILL.md` |
 | Astra design review | `.agents/skills/review-design/SKILL.md` |
