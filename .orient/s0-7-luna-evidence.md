@@ -174,3 +174,8 @@ The menu render filename is `launcher_play_version_menu.png`.
 - Final blue-region verification: `physical_pointer_arrow_opens_then_blue_update_click_closes_menu` passed after asserting Update dispatch and menu closure; the `OUTSIDE_MENU_TEST_POINT` fixture is named and documented. `cargo fmt --all -- --check` and `git diff --check` passed.
 
 - Final coordinate cleanup: keyboard and AccessKit outside-dismiss checks now use the named blank-backdrop point; the physical arrow test retains the actual blue Update rect click and Update-dispatch assertion.
+
+## Installed target action coordinates
+
+- In `missing_installed_target_routes_only_its_catalogue_id_to_install`, both main-action clicks now use the accessible `PLAY` widget rect center rather than fixed screen coordinates. The test still verifies that a missing installed target with a catalogue ID routes that ID to Install and one without an ID routes `None`.
+- Verification after this coordinate cleanup: `CARGO_TARGET_DIR=/home/andrew/src/evr-launcher/.cargo-target cargo test --bin EchoVR_Installer ui::launcher::play::split_info_tests -- --nocapture` — 16 passed; `cargo fmt --all -- --check` and `git diff --check` passed.
