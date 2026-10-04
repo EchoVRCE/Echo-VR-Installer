@@ -102,10 +102,16 @@ pub struct Playing {
 }
 
 /// `--play`'s parent when it is Steam's per-launch `reaper`.
+#[cfg(target_os = "linux")]
 fn steam_reaper() -> Option<u32> {
     let parent = std::os::unix::process::parent_id();
     let comm = std::fs::read_to_string(format!("/proc/{parent}/comm")).ok()?;
     (comm.trim() == "reaper").then_some(parent)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn steam_reaper() -> Option<u32> {
+    None
 }
 
 /// Where `--play` says what it runs (so the launcher knows the game for its own).
