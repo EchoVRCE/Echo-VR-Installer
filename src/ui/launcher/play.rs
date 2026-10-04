@@ -1806,15 +1806,15 @@ mod split_info_tests {
     #[test]
     fn installed_main_routes_the_selected_version_without_launching_a_different_one() {
         let mut d = play_dashboard();
-        let mut selected = d.state.versions[0].clone();
-        selected.id = "selected-b".into();
-        selected.name = "Selected build B".into();
-        selected.root = std::env::temp_dir()
+        let mut installed_b = d.state.versions[0].clone();
+        installed_b.id = "selected-b".into();
+        installed_b.name = "Selected build B".into();
+        installed_b.root = std::env::temp_dir()
             .join("s0-7-selected-b-missing")
             .to_string_lossy()
             .into_owned();
-        selected.patched = true;
-        let mut other = selected.clone();
+        installed_b.patched = true;
+        let mut other = installed_b.clone();
         other.id = "other-a".into();
         other.name = "Other build A".into();
         other.root = std::env::temp_dir()
@@ -1822,14 +1822,18 @@ mod split_info_tests {
             .to_string_lossy()
             .into_owned();
         let other_root = other.root.clone();
-        d.state.versions = vec![other, selected.clone()];
+        d.state.versions = vec![other, installed_b.clone()];
         d.state.selected = Some("other-a".into());
         d.state.owner = Some(true);
         let mut h = play_harness(d);
         h.run_steps(2);
+        assert_eq!(h.state().state.selected.as_deref(), Some("other-a"));
         arrow_open(&mut h);
         click_version_choice(&mut h, "selected-b");
         assert_eq!(h.state().state.selected.as_deref(), Some("selected-b"));
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
         let main = h.get_by_label("PLAY").rect().center();
         click_at(&mut h, main);
         let (title, message) = h
@@ -1838,7 +1842,7 @@ mod split_info_tests {
             .top_text_for_test()
             .expect("missing executable dialog");
         assert_eq!(title, "Echo VR not found");
-        assert!(message.contains(&selected.root));
+        assert!(message.contains(&installed_b.root));
         assert!(!message.contains(&other_root));
     }
 
