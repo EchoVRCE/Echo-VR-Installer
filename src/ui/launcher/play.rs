@@ -1103,6 +1103,7 @@ mod split_info_tests {
         click_version_choice_at_index(h, index);
     }
 
+    /// Pointer-click a menu row by ID, whether it is installed or catalogue-only.
     fn click_version_choice(h: &mut Harness<'_, Dashboard>, id: &str) {
         let (installed, available) = version_choices(h.state());
         let index = installed
@@ -1485,50 +1486,65 @@ mod split_info_tests {
         let mut h = play_harness(play_dashboard());
         h.run_steps(2);
         arrow_open(&mut h);
-        let selected = h.state().state.selected.clone();
+        let initial_selected = h.state().state.selected.clone();
         let selected_name = pc_action(h.state_mut()).line.primary.first().cloned();
+        let selected_before_launching = h.state().state.selected.clone();
         h.state_mut().snap_game = Some(super::super::SnapGame::Launching);
         h.run_steps(2);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        assert_eq!(h.state().state.selected, selected);
+        assert_eq!(h.state().state.selected, selected_before_launching);
+        assert_eq!(h.state().state.selected, initial_selected);
         assert_busy_arrow_rejected(
             &mut h,
             "Echo VR is starting; wait until it is running or has stopped",
-            &selected,
+            &selected_before_launching,
         );
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
         arrow_open(&mut h);
+        let selected_before_external_running = h.state().state.selected.clone();
         h.state_mut().snap_game = Some(super::super::SnapGame::Elsewhere);
         h.run_steps(2);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        assert_eq!(h.state().state.selected, selected);
+        assert_eq!(h.state().state.selected, selected_before_external_running);
+        assert_eq!(h.state().state.selected, initial_selected);
         assert_eq!(
             pc_action(h.state_mut()).line.primary.first().cloned(),
             selected_name
         );
-        assert_busy_arrow_rejected(&mut h, "Close Echo VR to switch versions", &selected);
+        assert_busy_arrow_rejected(
+            &mut h,
+            "Close Echo VR to switch versions",
+            &selected_before_external_running,
+        );
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
         arrow_open(&mut h);
+        let selected_before_owned_running = h.state().state.selected.clone();
         h.state_mut().snap_game = Some(super::super::SnapGame::Ours);
         h.run_steps(2);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        assert_eq!(h.state().state.selected, selected);
-        assert_busy_arrow_rejected(&mut h, "Close Echo VR to switch versions", &selected);
+        assert_eq!(h.state().state.selected, selected_before_owned_running);
+        assert_eq!(h.state().state.selected, initial_selected);
+        assert_busy_arrow_rejected(
+            &mut h,
+            "Close Echo VR to switch versions",
+            &selected_before_owned_running,
+        );
         assert!(!h.get_by_label("STOP").accesskit_node().is_disabled());
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
         arrow_open(&mut h);
+        let selected_before_selected_job = h.state().state.selected.clone();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         h.state_mut().jobs.insert(
             "pc-latest".into(),
@@ -1544,10 +1560,12 @@ mod split_info_tests {
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected_before_selected_job);
+        assert_eq!(h.state().state.selected, initial_selected);
         assert_busy_arrow_rejected(
             &mut h,
             "Busy: Install selected version. Wait until it's done.",
-            &selected,
+            &selected_before_selected_job,
         );
         h.get_by_label("Cancel").click_accesskit();
         h.run_steps(2);
@@ -1556,6 +1574,7 @@ mod split_info_tests {
         h.state_mut().jobs.clear();
         h.run_steps(2);
         arrow_open(&mut h);
+        let selected_before_unrelated_job = h.state().state.selected.clone();
         h.state_mut().jobs.insert(
             "unrelated-job".into(),
             super::super::Job {
@@ -1570,15 +1589,18 @@ mod split_info_tests {
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected_before_unrelated_job);
+        assert_eq!(h.state().state.selected, initial_selected);
         assert_busy_arrow_rejected(
             &mut h,
             "Busy: Convert background. Wait until it's done.",
-            &selected,
+            &selected_before_unrelated_job,
         );
 
         h.state_mut().jobs.clear();
         h.run_steps(2);
         arrow_open(&mut h);
+        let selected_before_quest_switch = h.state().state.selected.clone();
         let quest_switch = h.get_by_label("Echo VR on your Quest, over USB").rect();
         click_at_one_frame_per_event(&mut h, quest_switch.center());
         assert_eq!(h.state().platform, Platform::Quest);
@@ -1587,14 +1609,17 @@ mod split_info_tests {
             .unwrap_or(false)));
         h.step();
         assert!(h.query_by_label("Choose PC version").is_none());
-        assert_eq!(h.state().state.selected, selected);
+        assert_eq!(h.state().state.selected, selected_before_quest_switch);
+        assert_eq!(h.state().state.selected, initial_selected);
+        let selected_before_pc_switch = h.state().state.selected.clone();
         let pc_switch = h.get_by_label("Echo VR on this PC").rect();
         click_at_one_frame_per_event(&mut h, pc_switch.center());
         assert_eq!(h.state().platform, Platform::Pc);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        assert_eq!(h.state().state.selected, selected);
+        assert_eq!(h.state().state.selected, selected_before_pc_switch);
+        assert_eq!(h.state().state.selected, initial_selected);
         assert_eq!(
             pc_action(h.state_mut()).line.primary.first().cloned(),
             selected_name
@@ -1610,7 +1635,7 @@ mod split_info_tests {
         assert!(arrow.accesskit_node().is_disabled());
         let rect = arrow.rect();
         h.hover_at(rect.center());
-        h.run_steps(3);
+        h.run_steps(6);
         assert!(
             h.query_by_label(reason).is_some(),
             "missing visible/accessibility disabled reason: {reason}"
