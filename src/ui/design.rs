@@ -106,7 +106,7 @@ pub const POPUP: Color32 = Color32::from_rgba_unmultiplied_const(30, 16, 56, 248
 pub const SCRIM: Color32 = Color32::from_rgba_unmultiplied_const(6, 2, 16, 170);
 
 /// Even-odd point-in-polygon.
-fn inside(p: Pos2, poly: &[Pos2]) -> bool {
+pub(super) fn inside(p: Pos2, poly: &[Pos2]) -> bool {
     let mut hit = false;
     let mut j = poly.len().wrapping_sub(1);
     for i in 0..poly.len() {

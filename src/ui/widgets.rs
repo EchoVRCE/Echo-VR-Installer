@@ -700,7 +700,7 @@ impl Kit<'_> {
         }
         let pw = 230.0f32.max(w);
         let anchor = Rect::from_min_size(pos2(r.max.x - pw, r.min.y), vec2(pw, h));
-        self.menu_popup(open_id, anchor, items)
+        self.menu_popup(open_id, anchor, items, false)
     }
 
     /// Whether the menu of `key` is open.
@@ -717,15 +717,36 @@ impl Kit<'_> {
         self.ui.ctx().data_mut(|d| d.insert_temp(id, !open));
     }
 
+    /// Close a temporary menu and clear its open flag during page/platform transitions.
+    pub fn clear_menu(&self, key: &str) {
+        let id = menu_id(key);
+        self.ui.ctx().data_mut(|d| {
+            d.insert_temp(id, false);
+            d.insert_temp(id.with("scroll"), 0.0f32);
+        });
+    }
+
     /// The menu of `key`, if open, under `anchor` (logical, the menu takes its width);
     /// returns the picked row.
+    #[allow(dead_code)]
     pub fn menu_at(&mut self, key: &str, anchor: Rect, items: &[MenuItem]) -> Option<usize> {
-        self.menu_popup(menu_id(key), anchor, items)
+        self.menu_popup(menu_id(key), anchor, items, false)
+    }
+
+    /// A menu that stays below its anchor and scrolls when it reaches the window edge.
+    pub fn menu_at_below(&mut self, key: &str, anchor: Rect, items: &[MenuItem]) -> Option<usize> {
+        self.menu_popup(menu_id(key), anchor, items, true)
     }
 
     /// The open menu of `open_id` next to `anchor`: violet with the card rim, rows turning
     /// blue under the pointer. Closes on a pick, a click outside or Escape.
-    fn menu_popup(&mut self, open_id: Id, anchor: Rect, items: &[MenuItem]) -> Option<usize> {
+    fn menu_popup(
+        &mut self,
+        open_id: Id,
+        anchor: Rect,
+        items: &[MenuItem],
+        stay_below: bool,
+    ) -> Option<usize> {
         let open = self
             .ui
             .ctx()
@@ -734,15 +755,27 @@ impl Kit<'_> {
             return None;
         }
         let w = anchor.width();
-        let h = items.iter().map(MenuItem::height).sum::<f32>() + 8.0;
+        let content_h = items.iter().map(MenuItem::height).sum::<f32>() + 8.0;
         let screen = self.ui.ctx().content_rect();
-        let pos = if anchor.max.y + 6.0 + h <= screen.max.y {
+        let h = if stay_below {
+            content_h.min((screen.max.y - anchor.max.y - 6.0).max(1.0))
+        } else {
+            content_h
+        };
+        let pos = if stay_below || anchor.max.y + 6.0 + h <= screen.max.y {
             pos2(anchor.min.x, anchor.max.y + 6.0)
         } else {
             pos2(anchor.min.x, anchor.min.y - 6.0 - h)
         };
         let popup = Rect::from_min_size(pos, vec2(w, h));
         let ctx = self.ui.ctx().clone();
+        let scroll_id = open_id.with("scroll");
+        let mut scroll = ctx.data(|d| d.get_temp::<f32>(scroll_id).unwrap_or(0.0));
+        if stay_below && ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| popup.contains(p))) {
+            scroll -= ctx.input(|i| i.smooth_scroll_delta.y);
+        }
+        scroll = scroll.clamp(0.0, (content_h - h).max(0.0));
+        ctx.data_mut(|d| d.insert_temp(scroll_id, scroll));
         let mut picked = None;
         egui::Area::new(open_id.with("area"))
             .order(Order::Foreground)
@@ -756,7 +789,9 @@ impl Kit<'_> {
                     Color32::from_black_alpha(90),
                 );
                 p.rect_filled(rect, dz(6.0), design::POPUP);
-                let mut y = rect.min.y + 4.0;
+                let saved_clip = ui.clip_rect();
+                ui.set_clip_rect(saved_clip.intersect(rect));
+                let mut y = rect.min.y + 4.0 - scroll;
                 for (i, item) in items.iter().enumerate() {
                     let rr = Rect::from_min_size(
                         pos2(rect.min.x + 4.0, y),
@@ -857,6 +892,7 @@ impl Kit<'_> {
                         }
                     }
                 }
+                ui.set_clip_rect(saved_clip);
             });
         let rim = Kit::rim_shape(popup, dz(6.0), 1.5);
         ctx.layer_painter(egui::LayerId::new(Order::Foreground, open_id.with("area")))
