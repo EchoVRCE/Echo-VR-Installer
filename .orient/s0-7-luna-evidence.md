@@ -152,3 +152,9 @@ The menu render filename is `launcher_play_version_menu.png`.
 - Confirmed `compact_job_progress_body(has_arrow)` uses `compact_play_regions(has_arrow).0`; it selects the full Quest main bounds when there is no arrow. There is no `let _ = has_arrow` red mutation in the worktree.
 - Confirmed the real arrow pointer tests use `get_by_label("Choose PC version").rect().center()`; no `(235, 80)` coordinate exists in the current Play tests. Updated the installed-B launch test to click the accessible PLAY rect center as well, and corrected the pointer test comment to describe the arrow-only exclusion rather than the superseded frame guard.
 - Rechecked after cleanup: Play split tests 16 passed (including BAC-0003 installed B chosen through the menu and BAC-0004 busy reason/selection/pointer+keyboard attempts); hero split tests 3 passed (including Quest full-width and PC-capped B1 assertions). Formatting and diff checks pass. The geometry-based implementation and blue Update dismissal regression remain in place.
+
+## User diff review follow-up
+
+- Re-inspected the current tree: there is no `opened-frame` guard or B1 red mutation. Progress body uses `compact_play_regions(has_arrow).0`; physical arrow clicks derive their point from the accessible `Choose PC version` rect, then assert the popup remains open after release. The next click uses the accessible blue Update rect and asserts the popup closes.
+- BAC-0003 selects installed B through the popup before activating PLAY; the main click now also uses the accessible PLAY rect. BAC-0004 retains exact disabled reason, unchanged selected ID, and disabled pointer/keyboard activation assertions for each required busy state and platform switch.
+- Added a rationale for the named indeterminate progress band and sweep rate. Final focused rerun: Play split tests 16 passed; hero split tests 3 passed, including Quest full-width and PC-bounded progress. `cargo fmt --all -- --check` and `git diff --check` passed.
