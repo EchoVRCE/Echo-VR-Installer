@@ -1001,6 +1001,7 @@ mod split_info_tests {
     const VERSION_MENU_ROW_HEIGHT: f32 = 44.0;
     const VERSION_MENU_ROW_CENTER: f32 = 22.0;
     const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
+    const TEST_PROGRESS_35_PERCENT_FRACTION: f32 = 0.35;
     const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
 
     fn play_dashboard() -> Dashboard {
@@ -1155,7 +1156,7 @@ mod split_info_tests {
             kind: super::super::JobKind::Install,
             title: "Install Beta".into(),
             label: "Downloading files".into(),
-            fraction: Some(0.35),
+            fraction: Some(TEST_PROGRESS_35_PERCENT_FRACTION),
             cancelling: false,
         };
         let mut action = Action::new();
@@ -1164,7 +1165,10 @@ mod split_info_tests {
             action.line.primary,
             ["Echo VR (PC, Beta)", "Installing", "35%"]
         );
-        assert_eq!(action.job.as_ref().and_then(|j| j.fraction), Some(0.35));
+        assert_eq!(
+            action.job.as_ref().and_then(|j| j.fraction),
+            Some(TEST_PROGRESS_35_PERCENT_FRACTION)
+        );
 
         action.not_installed(Some("Echo VR (PC, Beta)"), "Game files missing", None);
         assert_eq!(

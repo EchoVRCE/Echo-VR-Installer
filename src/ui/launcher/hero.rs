@@ -56,6 +56,11 @@ fn compact_job_progress_body(has_arrow: bool) -> Dr {
     compact_play_regions(has_arrow).0
 }
 
+// Shared by the wide Play job row and compact split-button row so their indeterminate
+// highlights keep the same design width and sweep timing.
+const INDETERMINATE_BAND_WIDTH_FRACTION: f32 = 0.35;
+const INDETERMINATE_CYCLES_PER_SECOND: f32 = 0.6;
+
 fn job_progress_clip(body: Rect, fraction: Option<f32>, time: f32) -> Rect {
     if let Some(fraction) = fraction {
         return Rect::from_min_max(
@@ -66,8 +71,9 @@ fn job_progress_clip(body: Rect, fraction: Option<f32>, time: f32) -> Rect {
             ),
         );
     }
-    let band = body.width() * 0.35;
-    let x = body.min.x - band + (time * 0.6).fract() * (body.width() + band);
+    let band = body.width() * INDETERMINATE_BAND_WIDTH_FRACTION;
+    let x = body.min.x - band
+        + (time * INDETERMINATE_CYCLES_PER_SECOND).fract() * (body.width() + band);
     Rect::from_min_max(
         pos2(x.max(body.min.x), body.min.y),
         pos2((x + band).min(body.max.x), body.max.y),
@@ -907,8 +913,8 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
         Some(f) => Some((x0, x0 + (x1 - x0) * f.clamp(0.0, 1.0))),
         None => {
             let t = kit.ui.input(|i| i.time) as f32;
-            let band = (x1 - x0) * 0.35;
-            let pos = x0 - band + (t * 0.6).fract() * (x1 - x0 + band);
+            let band = (x1 - x0) * INDETERMINATE_BAND_WIDTH_FRACTION;
+            let pos = x0 - band + (t * INDETERMINATE_CYCLES_PER_SECOND).fract() * (x1 - x0 + band);
             kit.ui.ctx().request_repaint();
             Some((pos.max(x0), (pos + band).min(x1)))
         }
@@ -1246,6 +1252,7 @@ mod play_split_tests {
         const EXPECTED_QUEST_PROGRESS_RIGHT: f32 = 444.999;
         const FULL_PROGRESS_FRACTION: f32 = 1.0;
         const PC_MAIN_RIGHT_EDGE: f32 = 300.0;
+        // Near the end of the sweep, the band reaches across the PC/Quest split.
         const INDETERMINATE_SAMPLE_TIME: f32 = 0.99;
 
         let pc = compact_job_progress_body(true);
