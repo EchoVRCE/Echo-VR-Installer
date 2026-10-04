@@ -367,6 +367,8 @@ pub enum SnapVariant {
     QuestSide,
     /// The Quest side, a headset without Echo VR.
     QuestFresh,
+    /// The Quest side while an install job is in progress.
+    QuestInstalling,
     /// The Quest side, Echo VR running on the headset (seen through its API).
     QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
@@ -1124,6 +1126,23 @@ impl Dashboard {
                     i.installed = false;
                     i.marker = None;
                 }
+            }
+            Some(SnapVariant::QuestInstalling) => {
+                self.platform = Platform::Quest;
+                if let Some(i) = &mut self.quest_info {
+                    i.installed = false;
+                    i.marker = None;
+                }
+                self.jobs.insert(
+                    setup::QUEST_JOB.into(),
+                    Job {
+                        kind: JobKind::QuestInstall,
+                        title: "Installing Echo VR on Quest".into(),
+                        label: "Copying game files".into(),
+                        fraction: Some(0.42),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    },
+                );
             }
             // The concept's orange "!" on CHECK FOR UPDATES.
             None => {

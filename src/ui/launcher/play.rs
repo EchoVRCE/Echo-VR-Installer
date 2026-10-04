@@ -400,6 +400,59 @@ fn version_choices(d: &Dashboard) -> (Vec<InstalledVersion>, Vec<VersionEntry>) 
     (installed, available)
 }
 
+fn version_menu_items(
+    d: &Dashboard,
+    installed: &[InstalledVersion],
+    available: &[VersionEntry],
+) -> Vec<MenuItem> {
+    let current_id = match d.target() {
+        Target::Installed(v) | Target::Missing(v) => Some(v.id),
+        Target::Available(e) => Some(e.id),
+        Target::None => None,
+    };
+    let checked = |id: &str| current_id.as_deref() == Some(id);
+    let mut items: Vec<MenuItem> = installed
+        .iter()
+        .map(|v| {
+            let present = d.demo || v.present();
+            let (detail, detail_color) = if !present {
+                ("Files missing".to_string(), design::DANGER)
+            } else if v.external {
+                ("Existing folder".to_string(), design::GREY)
+            } else {
+                let size = v.catalog_id.as_ref().and_then(|cid| {
+                    let c = d.catalog.as_ref()?;
+                    c.pc().find(|e| &e.id == cid)?.size.map(gb)
+                });
+                (size.unwrap_or_default(), design::GREY)
+            };
+            MenuItem::Pick {
+                label: v.name.clone(),
+                detail,
+                detail_color,
+                checked: checked(&v.id),
+                tip: v.root.clone(),
+            }
+        })
+        .collect();
+    items.extend(available.iter().map(|e| MenuItem::Pick {
+        label: e.name.clone(),
+        detail: match e.size {
+            Some(s) => format!("Not installed  ·  {}", gb(s)),
+            None => "Not installed".into(),
+        },
+        detail_color: design::GREY,
+        checked: checked(&e.id),
+        tip: "Not installed yet: PLAY takes you to the Install page".into(),
+    }));
+    items.push(MenuItem::Divider);
+    items.push(MenuItem::row(
+        "Install another version…",
+        "Open the Install page",
+    ));
+    items
+}
+
 // ---- Quest ----
 
 fn quest_action(d: &mut Dashboard) -> Action {
@@ -714,11 +767,6 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit, has_versions: bool, enabled:
         return;
     }
     let (installed, available) = version_choices(d);
-    let current_id = match d.target() {
-        Target::Installed(v) | Target::Missing(v) => Some(v.id),
-        Target::Available(e) => Some(e.id),
-        Target::None => None,
-    };
     let anchor = egui::Rect::from_min_size(
         kit.drect(Dr::new(300.0, 154.8, 404.0, 1.0)).min,
         egui::vec2(dz(404.0), dz(1.0)),
@@ -727,46 +775,7 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit, has_versions: bool, enabled:
         return;
     }
 
-    let checked = |id: &str| current_id.as_deref() == Some(id);
-    let mut items: Vec<MenuItem> = installed
-        .iter()
-        .map(|v| {
-            let present = d.demo || v.present();
-            let (detail, detail_color) = if !present {
-                ("Files missing".to_string(), design::DANGER)
-            } else if v.external {
-                ("Existing folder".to_string(), design::GREY)
-            } else {
-                let size = v.catalog_id.as_ref().and_then(|cid| {
-                    let c = d.catalog.as_ref()?;
-                    c.pc().find(|e| &e.id == cid)?.size.map(gb)
-                });
-                (size.unwrap_or_default(), design::GREY)
-            };
-            MenuItem::Pick {
-                label: v.name.clone(),
-                detail,
-                detail_color,
-                checked: checked(&v.id),
-                tip: v.root.clone(),
-            }
-        })
-        .collect();
-    items.extend(available.iter().map(|e| MenuItem::Pick {
-        label: e.name.clone(),
-        detail: match e.size {
-            Some(s) => format!("Not installed  ·  {}", gb(s)),
-            None => "Not installed".into(),
-        },
-        detail_color: design::GREY,
-        checked: checked(&e.id),
-        tip: "Not installed yet: PLAY takes you to the Install page".into(),
-    }));
-    items.push(MenuItem::Divider);
-    items.push(MenuItem::row(
-        "Install another version…",
-        "Open the Install page",
-    ));
+    let items = version_menu_items(d, &installed, &available);
     match kit.menu_at_below(VERSION_MENU, anchor, &items) {
         Some(i) if i < installed.len() + available.len() => {
             let id = match installed.get(i) {
@@ -979,6 +988,102 @@ fn card(kit: &mut Kit, i: usize, r: Dr, item: &NewsItem, with_link: bool) {
 #[cfg(test)]
 mod split_info_tests {
     use super::*;
+    use crate::core::launcher::catalog::Catalog;
+    use crate::ui::{assets::Assets, kit::Kit};
+    use egui_kittest::{
+        kittest::{NodeT, Queryable},
+        Harness,
+    };
+
+    fn play_dashboard() -> Dashboard {
+        let mut d = Dashboard::default();
+        d.demo = true;
+        d.started = true;
+        d.state = super::super::demo_state();
+        d.catalog = Some(super::super::demo_catalog());
+        d.page = Page::Play;
+        d.quest_auto_checked = true;
+        d
+    }
+
+    fn play_harness(d: Dashboard) -> Harness<'static, Dashboard> {
+        play_harness_at(d, egui::vec2(1280.0, 720.0))
+    }
+
+    fn play_harness_at(d: Dashboard, size: egui::Vec2) -> Harness<'static, Dashboard> {
+        let assets = Assets::default();
+        let mut fonts_installed = false;
+        Harness::builder().with_size(size).build_ui_state(
+            move |ui, d| {
+                let ctx = ui.ctx().clone();
+                if !fonts_installed {
+                    crate::ui::theme::install_fonts(&ctx);
+                    crate::ui::theme::install_style(&ctx);
+                    fonts_installed = true;
+                    return;
+                }
+                let mut kit = Kit::new(ui, &assets, false);
+                show(d, &mut kit, &ctx);
+            },
+            d,
+        )
+    }
+
+    fn click_at(h: &mut Harness<'_, Dashboard>, p: egui::Pos2) {
+        h.hover_at(p);
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.run_steps(2);
+    }
+
+    fn arrow_open(h: &mut Harness<'_, Dashboard>) {
+        h.get_by_label("Choose PC version").click_accesskit();
+        h.run_steps(2);
+    }
+
+    fn click_catalogue_choice(h: &mut Harness<'_, Dashboard>, id: &str) {
+        let (installed, available) = version_choices(h.state());
+        let index = installed.len()
+            + available
+                .iter()
+                .position(|entry| entry.id == id)
+                .expect("catalogue choice exists");
+        // The popup starts 6 px below its anchor and each choice row is 44 px high.
+        let y = 103.2 + 6.0 + 4.0 + index as f32 * 44.0 + 22.0;
+        click_at(h, egui::pos2(220.0, y));
+    }
+
+    fn checked_choice(d: &Dashboard, id: &str) -> bool {
+        let (installed, available) = version_choices(d);
+        let Some(name) = installed
+            .iter()
+            .find(|v| v.id == id)
+            .map(|v| v.name.as_str())
+            .or_else(|| {
+                available
+                    .iter()
+                    .find(|v| v.id == id)
+                    .map(|v| v.name.as_str())
+            })
+        else {
+            return false;
+        };
+        version_menu_items(d, &installed, &available)
+            .into_iter()
+            .any(
+                |item| matches!(item, MenuItem::Pick { label, checked: true, .. } if label == name),
+            )
+    }
 
     #[test]
     fn selected_catalogue_name_and_install_progress_are_primary() {
@@ -1009,6 +1114,439 @@ mod split_info_tests {
             action.line.primary,
             ["No PC version selected", "Install a version"]
         );
+    }
+
+    #[test]
+    fn elided_selected_name_exposes_the_full_name_on_hover() {
+        let full_name = format!("Echo VR long selected build {}", "BETA ".repeat(40));
+        let mut d = play_dashboard();
+        d.state.versions.clear();
+        d.state.selected = Some("long-name".into());
+        d.catalog = Some(Catalog {
+            versions: vec![VersionEntry {
+                id: "long-name".into(),
+                name: full_name.clone(),
+                platform: Platform::Pc,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut h = play_harness(d);
+        h.run_steps(2);
+        h.hover_at(egui::pos2(110.0, 130.0));
+        h.run_steps(6);
+        assert!(h.query_by_label(&full_name).is_some());
+        assert_eq!(
+            pc_action(h.state_mut()).line.primary.first(),
+            Some(&full_name)
+        );
+    }
+
+    #[test]
+    fn accesskit_arrow_selects_catalogue_and_main_routes_to_install() {
+        let mut d = play_dashboard();
+        let catalog = d.catalog.as_mut().unwrap();
+        catalog.versions.push(VersionEntry {
+            id: "pc-beta".into(),
+            name: "Echo VR (PC, Beta)".into(),
+            platform: Platform::Pc,
+            ..Default::default()
+        });
+        let mut h = play_harness(d);
+        h.run_steps(2);
+        assert!(h.query_by_label("PLAY").is_some());
+        assert!(h.query_by_label("Choose PC version").is_some());
+        assert!(!h
+            .get_by_label("PLAY")
+            .rect()
+            .intersects(h.get_by_label("Choose PC version").rect()));
+
+        // The arrow has its own pointer-free activation target and never invokes main.
+        arrow_open(&mut h);
+        assert_eq!(h.state().page, Page::Play);
+        assert!(h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        // Two installed entries precede the distinct catalogue choices.
+        click_catalogue_choice(&mut h, "pc-34.4");
+        assert_eq!(h.state().state.selected.as_deref(), Some("pc-34.4"));
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        let visible = pc_action(h.state_mut()).line.primary;
+        assert_eq!(
+            visible.first().map(String::as_str),
+            Some("Echo VR 34.4 (PC)")
+        );
+
+        arrow_open(&mut h);
+        click_catalogue_choice(&mut h, "pc-beta");
+        assert_eq!(h.state().state.selected.as_deref(), Some("pc-beta"));
+        assert_eq!(
+            pc_action(h.state_mut())
+                .line
+                .primary
+                .first()
+                .map(String::as_str),
+            Some("Echo VR (PC, Beta)")
+        );
+        arrow_open(&mut h);
+        assert_eq!(h.state().state.selected.as_deref(), Some("pc-beta"));
+        assert!(checked_choice(h.state(), "pc-beta"));
+        arrow_open(&mut h);
+
+        // Main remains a separate action and sends an available target to Install.
+        h.get_by_label("PLAY").click_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().page, Page::Install);
+        assert_eq!(h.state().install_pick.as_deref(), Some("pc-beta"));
+    }
+
+    #[test]
+    fn non_demo_selection_saves_and_reloads_in_isolated_state_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "echovr-s0-7-state-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state_path = dir.join("launcher.json");
+        crate::core::launcher::store::with_state_file_for_test(state_path.clone(), || {
+            let mut d = play_dashboard();
+            d.demo = false;
+            let mut h = play_harness(d);
+            h.run_steps(2);
+            arrow_open(&mut h);
+            click_catalogue_choice(&mut h, "pc-34.4");
+            assert_eq!(h.state().state.selected.as_deref(), Some("pc-34.4"));
+            assert!(checked_choice(h.state(), "pc-34.4"));
+            let loaded = crate::core::launcher::store::LauncherState::load();
+            assert_eq!(loaded.selected.as_deref(), Some("pc-34.4"));
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn non_demo_selection_reports_a_failed_save() {
+        let dir = std::env::temp_dir().join(format!(
+            "echovr-s0-7-save-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let blocker = dir.join("not-a-directory");
+        std::fs::write(&blocker, "block").unwrap();
+        let state_path = blocker.join("launcher.json");
+        crate::core::launcher::store::with_state_file_for_test(state_path, || {
+            let mut d = play_dashboard();
+            d.demo = false;
+            let mut h = play_harness(d);
+            h.run_steps(2);
+            arrow_open(&mut h);
+            click_catalogue_choice(&mut h, "pc-34.4");
+            assert_eq!(h.state().state.selected.as_deref(), Some("pc-34.4"));
+            assert!(h.state().notice.as_ref().is_some_and(
+                |(message, _)| message.contains("Couldn't save the selected PC version")
+            ));
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_and_single_choice_menus_follow_the_contract() {
+        let mut empty = play_dashboard();
+        empty.state.versions.clear();
+        empty.state.selected = None;
+        empty.catalog = Some(Catalog::default());
+        let mut h = play_harness(empty);
+        h.run_steps(2);
+        assert!(h.query_by_label("Choose PC version").is_none());
+        // The old arrow area is part of the full green main when there are no choices.
+        click_at(&mut h, egui::pos2(237.0, 80.0));
+        assert_eq!(h.state().page, Page::Install);
+        assert_eq!(h.state().install_pick, None);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+
+        let mut one = play_dashboard();
+        one.state.versions.clear();
+        one.state.selected = Some("only-choice".into());
+        one.catalog = Some(Catalog {
+            versions: vec![VersionEntry {
+                id: "only-choice".into(),
+                name: "Only PC version".into(),
+                platform: Platform::Pc,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut h = play_harness(one);
+        h.run_steps(2);
+        arrow_open(&mut h);
+        assert!(h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        // The single checked choice is followed by a divider and Install another version.
+        click_at(&mut h, egui::pos2(220.0, 181.0));
+        assert_eq!(h.state().page, Page::Install);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+    }
+
+    #[test]
+    fn open_version_menu_clears_on_busy_and_quest_transitions() {
+        let mut h = play_harness(play_dashboard());
+        h.run_steps(2);
+        arrow_open(&mut h);
+        let selected = h.state().state.selected.clone();
+        h.state_mut().snap_game = Some(super::super::SnapGame::Launching);
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected);
+
+        h.state_mut().snap_game = None;
+        h.run_steps(2);
+        arrow_open(&mut h);
+        h.state_mut().snap_game = Some(super::super::SnapGame::Elsewhere);
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert!(h
+            .get_by_label("Choose PC version")
+            .accesskit_node()
+            .is_disabled());
+
+        h.state_mut().snap_game = None;
+        h.run_steps(2);
+        arrow_open(&mut h);
+        h.state_mut().snap_game = Some(super::super::SnapGame::Ours);
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert!(!h.get_by_label("STOP").accesskit_node().is_disabled());
+
+        h.state_mut().snap_game = None;
+        h.run_steps(2);
+        arrow_open(&mut h);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.state_mut().jobs.insert(
+            "pc-latest".into(),
+            super::super::Job {
+                kind: super::super::JobKind::Install,
+                title: "Install selected version".into(),
+                label: "Downloading".into(),
+                fraction: Some(0.42),
+                cancel: cancel.clone(),
+            },
+        );
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert!(h
+            .get_by_label("Choose PC version")
+            .accesskit_node()
+            .is_disabled());
+        h.get_by_label("Cancel").click_accesskit();
+        h.run_steps(2);
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+
+        h.state_mut().jobs.clear();
+        h.run_steps(2);
+        arrow_open(&mut h);
+        h.state_mut().jobs.insert(
+            "unrelated-job".into(),
+            super::super::Job {
+                kind: super::super::JobKind::Background,
+                title: "Convert background".into(),
+                label: "Converting".into(),
+                fraction: Some(0.42),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        );
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert!(h
+            .get_by_label("Choose PC version")
+            .accesskit_node()
+            .is_disabled());
+
+        h.state_mut().jobs.clear();
+        h.run_steps(2);
+        arrow_open(&mut h);
+        h.state_mut().platform = Platform::Quest;
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert!(h.query_by_label("Choose PC version").is_none());
+        h.state_mut().platform = Platform::Pc;
+        h.run_steps(2);
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected);
+    }
+
+    #[test]
+    fn old_logo_hotspot_does_not_open_the_retired_easter_egg() {
+        let mut h = play_harness(play_dashboard());
+        h.run_steps(2);
+        // This point lies inside the old (574, 74.4, 50, 126.5) design-pixel target.
+        click_at(&mut h, egui::pos2(600.0 * 2.0 / 3.0, 120.0 * 2.0 / 3.0));
+        assert!(!h.state().dialogs.is_open());
+        assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+    }
+
+    #[test]
+    fn long_version_list_scrolls_below_arrow_at_named_sizes() {
+        for size in [
+            egui::vec2(960.0, 540.0),
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(1680.0, 720.0),
+        ] {
+            let mut d = play_dashboard();
+            d.state.versions.clear();
+            d.state.selected = Some("choice-0".into());
+            d.catalog = Some(Catalog {
+                versions: (0..24)
+                    .map(|i| VersionEntry {
+                        id: format!("choice-{i}"),
+                        name: format!("PC archived build {i}"),
+                        platform: Platform::Pc,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            let mut h = play_harness_at(d, size);
+            h.run_steps(2);
+            arrow_open(&mut h);
+            let open_id = crate::ui::widgets::menu_id(VERSION_MENU);
+            assert!(h
+                .ctx
+                .data(|data| data.get_temp::<bool>(open_id).unwrap_or(false)));
+            let scroll_id = open_id.with("scroll");
+            let before = h
+                .ctx
+                .data(|data| data.get_temp::<f32>(scroll_id).unwrap_or(0.0));
+            h.hover_at(egui::pos2(220.0, 300.0));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -8.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Default::default(),
+            });
+            h.run_steps(2);
+            let after = h
+                .ctx
+                .data(|data| data.get_temp::<f32>(scroll_id).unwrap_or(0.0));
+            assert!(
+                after > before,
+                "scroll offset should advance at {size:?}: {before} -> {after}"
+            );
+            let content_h = 24.0 * 44.0 + 9.0 + 30.0 + 8.0;
+            let viewport_h = size.y - 109.2 - 6.0;
+            assert!(after <= content_h - viewport_h);
+        }
+    }
+
+    #[test]
+    fn installed_main_routes_the_selected_version_without_launching_a_different_one() {
+        let mut d = play_dashboard();
+        let mut selected = d.state.versions[0].clone();
+        selected.id = "selected-b".into();
+        selected.name = "Selected build B".into();
+        selected.root = std::env::temp_dir()
+            .join("s0-7-selected-b-missing")
+            .to_string_lossy()
+            .into_owned();
+        selected.patched = true;
+        let mut other = selected.clone();
+        other.id = "other-a".into();
+        other.name = "Other build A".into();
+        other.root = std::env::temp_dir()
+            .join("s0-7-other-a-missing")
+            .to_string_lossy()
+            .into_owned();
+        let other_root = other.root.clone();
+        d.state.versions = vec![other, selected.clone()];
+        d.state.selected = Some("selected-b".into());
+        d.state.owner = Some(true);
+        let mut h = play_harness(d);
+        h.run_steps(2);
+        click_at(&mut h, egui::pos2(147.0, 80.0));
+        let (title, message) = h
+            .state()
+            .dialogs
+            .top_text_for_test()
+            .expect("missing executable dialog");
+        assert_eq!(title, "Echo VR not found");
+        assert!(message.contains(&selected.root));
+        assert!(!message.contains(&other_root));
+    }
+
+    #[test]
+    fn missing_installed_target_routes_only_its_catalogue_id_to_install() {
+        let mut d = play_dashboard();
+        d.demo = false;
+        d.state.versions = vec![InstalledVersion {
+            id: "external-missing".into(),
+            name: "External missing B".into(),
+            root: std::env::temp_dir()
+                .join("s0-7-no-such-install")
+                .to_string_lossy()
+                .into_owned(),
+            external: true,
+            catalog_id: Some("pc-beta".into()),
+            ..Default::default()
+        }];
+        d.state.selected = Some("external-missing".into());
+        d.catalog.as_mut().unwrap().versions.push(VersionEntry {
+            id: "pc-beta".into(),
+            name: "Echo VR (PC, Beta)".into(),
+            platform: Platform::Pc,
+            ..Default::default()
+        });
+        let mut h = play_harness(d);
+        h.run_steps(2);
+        click_at(&mut h, egui::pos2(147.0, 80.0));
+        assert_eq!(h.state().page, Page::Install);
+        assert_eq!(h.state().install_pick.as_deref(), Some("pc-beta"));
+
+        let mut no_catalog_id = play_dashboard();
+        no_catalog_id.demo = false;
+        no_catalog_id.state.versions = vec![InstalledVersion {
+            id: "external-no-catalog".into(),
+            name: "External missing C".into(),
+            root: std::env::temp_dir()
+                .join("s0-7-no-such-install-without-catalog")
+                .to_string_lossy()
+                .into_owned(),
+            external: true,
+            catalog_id: None,
+            ..Default::default()
+        }];
+        no_catalog_id.state.selected = Some("external-no-catalog".into());
+        let mut h = play_harness(no_catalog_id);
+        h.run_steps(2);
+        click_at(&mut h, egui::pos2(147.0, 80.0));
+        assert_eq!(h.state().page, Page::Install);
+        assert_eq!(h.state().install_pick, None);
     }
 }
 

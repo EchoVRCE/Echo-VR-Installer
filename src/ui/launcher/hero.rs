@@ -363,13 +363,15 @@ fn info_line_primary(d: &mut Dashboard, kit: &mut Kit, key: &str, line: &InfoLin
     let primary_rect = kit.rect(x, first_y, max_w, dz(INFO_SIZE + 4.0));
     if primary_text != primary_full {
         let name = line.primary_tip.as_deref().unwrap_or(&primary_full);
-        kit.ui
-            .interact(
-                primary_rect,
-                egui::Id::new((key, "primary-tip")),
-                egui::Sense::hover(),
-            )
-            .on_hover_text(name);
+        let response = kit.ui.interact(
+            primary_rect,
+            egui::Id::new((key, "primary-tip")),
+            egui::Sense::hover(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, false, name.to_string())
+        });
+        response.on_hover_text(name);
     }
     kit.put(x, second_y, secondary);
     let (Some(path), Some(shown_path)) = (line.path.clone(), shown_path) else {
