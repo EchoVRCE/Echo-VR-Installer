@@ -992,6 +992,17 @@ mod split_info_tests {
         Harness,
     };
 
+    // Physical popup positions at the default 1280x720 harness size: menu anchor y=154.8
+    // design units scaled by 2/3, then the popup gap, top inset, and row center/height.
+    const VERSION_MENU_TEST_X: f32 = 220.0;
+    const VERSION_MENU_ANCHOR_SCREEN_Y: f32 = 103.2;
+    const VERSION_MENU_POPUP_GAP: f32 = 6.0;
+    const VERSION_MENU_TOP_INSET: f32 = 4.0;
+    const VERSION_MENU_ROW_HEIGHT: f32 = 44.0;
+    const VERSION_MENU_ROW_CENTER: f32 = 22.0;
+    const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
+    const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
+
     fn play_dashboard() -> Dashboard {
         let mut d = Dashboard::default();
         d.demo = true;
@@ -1107,9 +1118,12 @@ mod split_info_tests {
     }
 
     fn click_version_choice_at_index(h: &mut Harness<'_, Dashboard>, index: usize) {
-        // The popup starts 6 px below its anchor and each choice row is 44 px high.
-        let y = 103.2 + 6.0 + 4.0 + index as f32 * 44.0 + 22.0;
-        click_at(h, egui::pos2(220.0, y));
+        let y = VERSION_MENU_ANCHOR_SCREEN_Y
+            + VERSION_MENU_POPUP_GAP
+            + VERSION_MENU_TOP_INSET
+            + index as f32 * VERSION_MENU_ROW_HEIGHT
+            + VERSION_MENU_ROW_CENTER;
+        click_at(h, egui::pos2(VERSION_MENU_TEST_X, y));
     }
 
     fn checked_choice(d: &Dashboard, id: &str) -> bool {
@@ -1325,7 +1339,7 @@ mod split_info_tests {
                 kind: super::super::JobKind::QuestInstall,
                 title: "Install Echo VR on Quest".into(),
                 label: "Copying files".into(),
-                fraction: Some(1.0),
+                fraction: Some(TEST_FULL_PROGRESS_FRACTION),
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
@@ -1518,7 +1532,7 @@ mod split_info_tests {
                 kind: super::super::JobKind::Install,
                 title: "Install selected version".into(),
                 label: "Downloading".into(),
-                fraction: Some(0.42),
+                fraction: Some(TEST_PROGRESS_42_PERCENT_FRACTION),
                 cancel: cancel.clone(),
             },
         );
@@ -1544,7 +1558,7 @@ mod split_info_tests {
                 kind: super::super::JobKind::Background,
                 title: "Convert background".into(),
                 label: "Converting".into(),
-                fraction: Some(0.42),
+                fraction: Some(TEST_PROGRESS_42_PERCENT_FRACTION),
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );

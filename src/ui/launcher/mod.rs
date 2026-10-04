@@ -316,6 +316,11 @@ struct Job {
     cancel: Arc<AtomicBool>,
 }
 
+// Named snapshot fractions distinguish the full-button boundary render from the mid-job
+// render used to inspect partial-fill width at each viewport.
+const SNAPSHOT_PROGRESS_FULL: f32 = 1.0;
+const SNAPSHOT_PROGRESS_42_PERCENT: f32 = 0.42;
+
 /// Snapshot mode: extra states to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapVariant {
@@ -902,7 +907,10 @@ impl Dashboard {
             Some(v @ (SnapVariant::Installing | SnapVariant::Extracting)) => {
                 self.state.selected = None;
                 let (label, fraction) = if v == SnapVariant::Installing {
-                    ("Downloading... 42.0%", Some(0.42))
+                    (
+                        "Downloading... 42.0%",
+                        Some(SNAPSHOT_PROGRESS_42_PERCENT),
+                    )
                 } else {
                     ("Extracting...", None)
                 };
@@ -1142,9 +1150,9 @@ impl Dashboard {
                         title: "Installing Echo VR on Quest".into(),
                         label: "Copying game files".into(),
                         fraction: Some(if self.snap_variant == Some(SnapVariant::QuestInstalling42) {
-                            0.42
+                            SNAPSHOT_PROGRESS_42_PERCENT
                         } else {
-                            1.0
+                            SNAPSHOT_PROGRESS_FULL
                         }),
                         cancel: Arc::new(AtomicBool::new(false)),
                     },

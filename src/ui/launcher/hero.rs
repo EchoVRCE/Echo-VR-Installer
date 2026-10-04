@@ -1237,22 +1237,35 @@ mod play_split_tests {
 
     #[test]
     fn job_progress_uses_the_active_main_button_width() {
+        // Independent expectations for the approved compact Play design coordinates:
+        // origin (139, 88), PC edge x=300, Quest edge x=445, height 66.8. The body
+        // endpoints sit 0.001 px before each seam to keep the adjacent regions separate.
+        const EXPECTED_PC_PROGRESS_BODY: Dr = Dr::new(139.0, 88.0, 160.999, 66.8);
+        const EXPECTED_QUEST_PROGRESS_BODY: Dr = Dr::new(139.0, 88.0, 305.999, 66.8);
+        const EXPECTED_PC_PROGRESS_RIGHT: f32 = 299.999;
+        const EXPECTED_QUEST_PROGRESS_RIGHT: f32 = 444.999;
+        const FULL_PROGRESS_FRACTION: f32 = 1.0;
+        const PC_MAIN_RIGHT_EDGE: f32 = 300.0;
+        const INDETERMINATE_SAMPLE_TIME: f32 = 0.99;
+
         let pc = compact_job_progress_body(true);
         let quest = compact_job_progress_body(false);
-        assert_eq!(pc.right(), 299.999);
-        assert_eq!(quest.right(), 444.999);
+        assert_eq!(pc, EXPECTED_PC_PROGRESS_BODY);
+        assert_eq!(quest, EXPECTED_QUEST_PROGRESS_BODY);
+        assert_eq!(pc.right(), EXPECTED_PC_PROGRESS_RIGHT);
+        assert_eq!(quest.right(), EXPECTED_QUEST_PROGRESS_RIGHT);
 
         let rect = |body: Dr| Rect::from_min_size(pos2(body.x, body.y), egui::vec2(body.w, body.h));
-        let pc_determinate = job_progress_clip(rect(pc), Some(1.0), 0.0);
-        let quest_determinate = job_progress_clip(rect(quest), Some(1.0), 0.0);
+        let pc_determinate = job_progress_clip(rect(pc), Some(FULL_PROGRESS_FRACTION), 0.0);
+        let quest_determinate = job_progress_clip(rect(quest), Some(FULL_PROGRESS_FRACTION), 0.0);
         assert_eq!(pc_determinate.max.x, rect(pc).max.x);
-        assert!(pc_determinate.max.x < 300.0);
+        assert!(pc_determinate.max.x < PC_MAIN_RIGHT_EDGE);
         assert_eq!(quest_determinate.max.x, rect(quest).max.x);
 
-        let pc_indeterminate = job_progress_clip(rect(pc), None, 0.99);
-        let quest_indeterminate = job_progress_clip(rect(quest), None, 0.99);
-        assert!(pc_indeterminate.max.x < 300.0);
-        assert!(quest_indeterminate.max.x > 300.0);
+        let pc_indeterminate = job_progress_clip(rect(pc), None, INDETERMINATE_SAMPLE_TIME);
+        let quest_indeterminate = job_progress_clip(rect(quest), None, INDETERMINATE_SAMPLE_TIME);
+        assert!(pc_indeterminate.max.x < PC_MAIN_RIGHT_EDGE);
+        assert!(quest_indeterminate.max.x > PC_MAIN_RIGHT_EDGE);
         assert!(quest_indeterminate.max.x <= rect(quest).max.x);
     }
 }
