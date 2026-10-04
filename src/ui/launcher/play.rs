@@ -487,6 +487,11 @@ fn quest_action(d: &mut Dashboard) -> Action {
         return a;
     }
     if job.as_ref().is_some_and(JobView::installs) || (known && !installed) {
+        // The primary line carries the not-installed/installing state; keep the
+        // secondary details for connection context such as the device name.
+        a.line
+            .parts
+            .retain(|part| part != "Not installed on this Quest");
         a.not_installed(None, "Not installed on this Quest", job.as_ref());
         a.tip = "Echo VR isn't on your Quest yet. Click to install it".into();
     } else if installed {
@@ -1009,6 +1014,41 @@ mod split_info_tests {
     const DEAD_ARROW_CORNER_INSET_Y: f32 = 1.0;
     // Blank backdrop at the 1280×720 harness size, outside the popup and its anchor.
     const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
+    // Viewport fixtures named by the approved S0-7 design and BAC-0002.
+    const PLAY_SPLIT_VIEWPORTS: [(f32, f32); 3] =
+        [(960.0, 540.0), (1280.0, 720.0), (1680.0, 720.0)];
+    // Independent pointer samples in 1920×1080 design coordinates, at and around both seams.
+    const MAIN_INTERIOR_SAMPLE: egui::Pos2 = egui::pos2(220.0, 120.0);
+    const FIRST_SEAM_MAIN_SIDE: egui::Pos2 = egui::pos2(299.9, 120.0);
+    const FIRST_SEAM_STROKE: egui::Pos2 = egui::pos2(300.0, 120.0);
+    const FIRST_SEAM_ARROW_SIDE: egui::Pos2 = egui::pos2(300.1, 120.0);
+    const SECOND_SEAM_ARROW_SIDE: egui::Pos2 = egui::pos2(444.9, 154.0);
+    const SECOND_SEAM_STROKE: egui::Pos2 = egui::pos2(445.0, 154.0);
+    const SECOND_SEAM_UPDATE_SIDE: egui::Pos2 = egui::pos2(445.1, 88.5);
+    const UPDATE_INTERIOR_SAMPLE: egui::Pos2 = egui::pos2(600.0, 120.0);
+    const GREEN_SLANTED_CORNER_SAMPLE: egui::Pos2 = egui::pos2(390.0, 88.0);
+    const BLUE_SLANTED_CORNER_SAMPLE: egui::Pos2 = egui::pos2(500.0, 154.0);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PointerOwner {
+        Main,
+        Arrow,
+        Update,
+        Inert,
+    }
+
+    const B2_POINTER_SAMPLES: [(egui::Pos2, PointerOwner); 10] = [
+        (MAIN_INTERIOR_SAMPLE, PointerOwner::Main),
+        (FIRST_SEAM_MAIN_SIDE, PointerOwner::Main),
+        (FIRST_SEAM_STROKE, PointerOwner::Inert),
+        (FIRST_SEAM_ARROW_SIDE, PointerOwner::Arrow),
+        (SECOND_SEAM_ARROW_SIDE, PointerOwner::Arrow),
+        (SECOND_SEAM_STROKE, PointerOwner::Inert),
+        (SECOND_SEAM_UPDATE_SIDE, PointerOwner::Update),
+        (UPDATE_INTERIOR_SAMPLE, PointerOwner::Update),
+        (GREEN_SLANTED_CORNER_SAMPLE, PointerOwner::Inert),
+        (BLUE_SLANTED_CORNER_SAMPLE, PointerOwner::Inert),
+    ];
 
     fn play_dashboard() -> Dashboard {
         Dashboard {
@@ -1133,6 +1173,13 @@ mod split_info_tests {
             + index as f32 * VERSION_MENU_ROW_HEIGHT
             + VERSION_MENU_ROW_CENTER;
         click_at(h, egui::pos2(VERSION_MENU_TEST_X, y));
+    }
+
+    /// Transform an independent design-coordinate pointer sample using the real arrow rect.
+    fn play_design_point(arrow: egui::Rect, point: egui::Pos2) -> egui::Pos2 {
+        let region = hero::compact_play_arrow_region();
+        let scale = arrow.width() / region.w;
+        arrow.min + egui::vec2((point.x - region.x) * scale, (point.y - region.y) * scale)
     }
 
     fn checked_choice(d: &Dashboard, id: &str) -> bool {
@@ -1406,6 +1453,82 @@ mod split_info_tests {
     }
 
     #[test]
+    fn physical_pointer_ownership_matches_clipped_polygons_at_all_design_sizes() {
+        for (width, height) in PLAY_SPLIT_VIEWPORTS {
+            let size = egui::vec2(width, height);
+            for (design_point, expected_owner) in B2_POINTER_SAMPLES {
+                let mut dashboard = play_dashboard();
+                // Keep the main-action sample independent of a live Meta Link process.
+                dashboard.state.profile.runtime = Runtime::Flat;
+                let mut h = play_harness_at(dashboard, size);
+                h.run_steps(2);
+                let selected_before = h.state().state.selected.clone();
+                let action_before = pc_action(h.state_mut()).line.primary;
+                let arrow = h.get_by_label("Choose PC version").rect();
+                let point = play_design_point(arrow, design_point);
+
+                click_at_one_frame_per_event(&mut h, point);
+
+                let menu_open = h.ctx.data(|data| {
+                    data.get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+                        .unwrap_or(false)
+                });
+                assert_eq!(
+                    menu_open,
+                    expected_owner == PointerOwner::Arrow,
+                    "menu ownership at design point {design_point:?} in viewport {size:?}"
+                );
+                assert_eq!(h.state().page, Page::Play);
+                assert_eq!(h.state().state.selected, selected_before);
+
+                match expected_owner {
+                    PointerOwner::Arrow => {
+                        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
+                        assert!(h.state().jobs.is_empty());
+                        assert!(h.state().update_note.is_empty());
+                        assert!(!h.state().dialogs.is_open());
+                    }
+                    PointerOwner::Update => {
+                        assert_ne!(pc_action(h.state_mut()).line.primary, action_before);
+                    }
+                    PointerOwner::Main => {
+                        let (title, _) = h
+                            .state()
+                            .dialogs
+                            .top_text_for_test()
+                            .expect("main pointer sample activates the selected build");
+                        assert_eq!(title, "Echo VR not found");
+                    }
+                    PointerOwner::Inert => {
+                        assert_eq!(pc_action(h.state_mut()).line.primary, action_before);
+                        assert!(h.state().jobs.is_empty());
+                        assert!(h.state().update_note.is_empty());
+                        assert!(!h.state().dialogs.is_open());
+                    }
+                }
+            }
+
+            // Exercise Astra's inert upper-right point at each actual viewport scale.
+            let mut h = play_harness_at(play_dashboard(), size);
+            h.run_steps(2);
+            let arrow = h.get_by_label("Choose PC version").rect();
+            let scale = arrow.width() / hero::compact_play_arrow_region().w;
+            let dead_corner = egui::pos2(
+                arrow.max.x - DEAD_ARROW_CORNER_INSET_X * scale,
+                arrow.min.y + DEAD_ARROW_CORNER_INSET_Y * scale,
+            );
+            click_at_one_frame_per_event(&mut h, arrow.center());
+            assert!(h.ctx.data(|data| data
+                .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+                .unwrap_or(false)));
+            click_at_one_frame_per_event(&mut h, dead_corner);
+            assert!(!h.ctx.data(|data| data
+                .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+                .unwrap_or(false)));
+        }
+    }
+
+    #[test]
     fn pointer_keyboard_and_accesskit_open_ignore_only_the_opener_click() {
         let mut h = play_harness(play_dashboard());
         h.run_steps(2);
@@ -1458,13 +1581,25 @@ mod split_info_tests {
     #[test]
     fn quest_info_band_includes_the_device_once_for_ready_and_installing() {
         let device = "Meta Quest 3 (test-device)";
+        let status = "Not installed on this Quest";
         let mut ready = quest_dashboard(false);
         let action = quest_action(&mut ready);
         assert_eq!(
             action
                 .line
-                .parts
+                .primary
                 .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [status]
+        );
+        assert!(!action.line.parts.iter().any(|part| part == status));
+        assert_eq!(
+            action
+                .line
+                .primary
+                .iter()
+                .chain(&action.line.parts)
                 .filter(|part| part.as_str() == device)
                 .count(),
             1
@@ -1485,13 +1620,23 @@ mod split_info_tests {
         assert_eq!(
             action
                 .line
-                .parts
+                .primary
                 .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["Installing", "100%"]
+        );
+        assert!(!action.line.parts.iter().any(|part| part == status));
+        assert_eq!(
+            action
+                .line
+                .primary
+                .iter()
+                .chain(&action.line.parts)
                 .filter(|part| part.as_str() == device)
                 .count(),
             1
         );
-        assert_eq!(action.line.primary.last().map(String::as_str), Some("100%"));
     }
 
     #[test]
@@ -1857,6 +2002,9 @@ mod split_info_tests {
     #[test]
     fn installed_main_routes_the_selected_version_without_launching_a_different_one() {
         let mut d = play_dashboard();
+        // Avoid Windows' live Meta Link preflight so this routing test reaches the same
+        // missing-executable check on every OS.
+        d.state.profile.runtime = Runtime::Flat;
         let mut installed_b = d.state.versions[0].clone();
         installed_b.id = "selected-b".into();
         installed_b.name = "Selected build B".into();
