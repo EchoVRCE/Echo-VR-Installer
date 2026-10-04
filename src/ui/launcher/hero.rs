@@ -63,6 +63,7 @@ fn compact_job_progress_body(has_arrow: bool) -> Dr {
 
 // Shared by the wide Play job row and compact split-button row so their indeterminate
 // highlights keep the same design width and sweep timing.
+// The band spans 35% of the button and advances 0.6 full sweeps per second.
 const INDETERMINATE_BAND_WIDTH_FRACTION: f32 = 0.35;
 const INDETERMINATE_CYCLES_PER_SECOND: f32 = 0.6;
 
