@@ -1088,6 +1088,25 @@ mod split_info_tests {
                 .iter()
                 .position(|entry| entry.id == id)
                 .expect("catalogue choice exists");
+        click_version_choice_at_index(h, index);
+    }
+
+    fn click_version_choice(h: &mut Harness<'_, Dashboard>, id: &str) {
+        let (installed, available) = version_choices(h.state());
+        let index = installed
+            .iter()
+            .position(|entry| entry.id == id)
+            .or_else(|| {
+                available
+                    .iter()
+                    .position(|entry| entry.id == id)
+                    .map(|i| i + installed.len())
+            })
+            .expect("version choice exists");
+        click_version_choice_at_index(h, index);
+    }
+
+    fn click_version_choice_at_index(h: &mut Harness<'_, Dashboard>, index: usize) {
         // The popup starts 6 px below its anchor and each choice row is 44 px high.
         let y = 103.2 + 6.0 + 4.0 + index as f32 * 44.0 + 22.0;
         click_at(h, egui::pos2(220.0, y));
@@ -1448,6 +1467,10 @@ mod split_info_tests {
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
         assert_eq!(h.state().state.selected, selected);
+        assert_disabled_arrow_reason(
+            &mut h,
+            "Echo VR is starting; wait until it is running or has stopped",
+        );
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
@@ -1457,21 +1480,25 @@ mod split_info_tests {
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected);
         assert!(h
             .get_by_label("Choose PC version")
             .accesskit_node()
             .is_disabled());
         let disabled_arrow = h.get_by_label("Choose PC version").rect();
         click_at(&mut h, disabled_arrow.center());
+        assert_eq!(h.state().state.selected, selected);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
         h.get_by_label("Choose PC version").focus();
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
+        assert_eq!(h.state().state.selected, selected);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        assert_disabled_arrow_reason(&mut h, "Close Echo VR to switch versions");
 
         h.state_mut().snap_game = None;
         h.run_steps(2);
@@ -1481,6 +1508,8 @@ mod split_info_tests {
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        assert_eq!(h.state().state.selected, selected);
+        assert_disabled_arrow_reason(&mut h, "Close Echo VR to switch versions");
         assert!(!h.get_by_label("STOP").accesskit_node().is_disabled());
 
         h.state_mut().snap_game = None;
@@ -1505,6 +1534,11 @@ mod split_info_tests {
             .get_by_label("Choose PC version")
             .accesskit_node()
             .is_disabled());
+        assert_eq!(h.state().state.selected, selected);
+        assert_disabled_arrow_reason(
+            &mut h,
+            "Busy: Install selected version. Wait until it's done.",
+        );
         h.get_by_label("Cancel").click_accesskit();
         h.run_steps(2);
         assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
@@ -1530,22 +1564,38 @@ mod split_info_tests {
             .get_by_label("Choose PC version")
             .accesskit_node()
             .is_disabled());
+        assert_eq!(h.state().state.selected, selected);
+        assert_disabled_arrow_reason(&mut h, "Busy: Convert background. Wait until it's done.");
 
         h.state_mut().jobs.clear();
         h.run_steps(2);
         arrow_open(&mut h);
-        h.state_mut().platform = Platform::Quest;
-        h.run_steps(2);
+        let quest_switch = h.get_by_label("Echo VR on your Quest, over USB").rect();
+        click_at_one_frame_per_event(&mut h, quest_switch.center());
+        assert_eq!(h.state().platform, Platform::Quest);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
+        h.step();
         assert!(h.query_by_label("Choose PC version").is_none());
-        h.state_mut().platform = Platform::Pc;
-        h.run_steps(2);
+        assert_eq!(h.state().state.selected, selected);
+        let pc_switch = h.get_by_label("Echo VR on this PC").rect();
+        click_at_one_frame_per_event(&mut h, pc_switch.center());
+        assert_eq!(h.state().platform, Platform::Pc);
         assert!(!h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
         assert_eq!(h.state().state.selected, selected);
+    }
+
+    fn assert_disabled_arrow_reason(h: &mut Harness<'_, Dashboard>, reason: &str) {
+        let rect = h.get_by_label("Choose PC version").rect();
+        h.hover_at(rect.center());
+        h.run_steps(3);
+        assert!(
+            h.query_by_label(reason).is_some(),
+            "missing disabled reason: {reason}"
+        );
     }
 
     #[test]
@@ -1633,10 +1683,13 @@ mod split_info_tests {
             .into_owned();
         let other_root = other.root.clone();
         d.state.versions = vec![other, selected.clone()];
-        d.state.selected = Some("selected-b".into());
+        d.state.selected = Some("other-a".into());
         d.state.owner = Some(true);
         let mut h = play_harness(d);
         h.run_steps(2);
+        arrow_open(&mut h);
+        click_version_choice(&mut h, "selected-b");
+        assert_eq!(h.state().state.selected.as_deref(), Some("selected-b"));
         click_at(&mut h, egui::pos2(147.0, 80.0));
         let (title, message) = h
             .state()
