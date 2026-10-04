@@ -768,12 +768,13 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit, has_versions: bool, enabled:
         kit.drect(Dr::new(300.0, 154.8, 404.0, 1.0)).min,
         egui::vec2(dz(404.0), dz(1.0)),
     );
+    let arrow_opener = kit.drect(hero::compact_play_arrow_region());
     if !enabled {
         return;
     }
 
     let items = version_menu_items(d, &installed, &available);
-    match kit.menu_at_below(VERSION_MENU, anchor, &items) {
+    match kit.menu_at_below_excluding(VERSION_MENU, anchor, arrow_opener, &items) {
         Some(i) if i < installed.len() + available.len() => {
             let id = match installed.get(i) {
                 Some(v) => v.id.clone(),
