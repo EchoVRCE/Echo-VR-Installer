@@ -794,7 +794,6 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit, has_versions: bool, enabled:
     }
 }
 
-/// How far below its galley's top a DMCAPS capital starts, at the caption's size.
 // ---- Community News ----
 
 fn news(d: &mut Dashboard, kit: &mut Kit) {
@@ -1012,14 +1011,15 @@ mod split_info_tests {
     const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
 
     fn play_dashboard() -> Dashboard {
-        let mut d = Dashboard::default();
-        d.demo = true;
-        d.started = true;
-        d.state = super::super::demo_state();
-        d.catalog = Some(super::super::demo_catalog());
-        d.page = Page::Play;
-        d.quest_auto_checked = true;
-        d
+        Dashboard {
+            demo: true,
+            started: true,
+            state: super::super::demo_state(),
+            catalog: Some(super::super::demo_catalog()),
+            page: Page::Play,
+            quest_auto_checked: true,
+            ..Default::default()
+        }
     }
 
     fn quest_dashboard(installed: bool) -> Dashboard {
