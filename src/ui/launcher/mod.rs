@@ -369,6 +369,8 @@ pub enum SnapVariant {
     QuestFresh,
     /// The Quest side while an install job is in progress.
     QuestInstalling,
+    /// The Quest side while an install job is 42% complete.
+    QuestInstalling42,
     /// The Quest side, Echo VR running on the headset (seen through its API).
     QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
@@ -1127,7 +1129,7 @@ impl Dashboard {
                     i.marker = None;
                 }
             }
-            Some(SnapVariant::QuestInstalling) => {
+            Some(SnapVariant::QuestInstalling | SnapVariant::QuestInstalling42) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
                     i.installed = false;
@@ -1139,7 +1141,11 @@ impl Dashboard {
                         kind: JobKind::QuestInstall,
                         title: "Installing Echo VR on Quest".into(),
                         label: "Copying game files".into(),
-                        fraction: Some(1.0),
+                        fraction: Some(if self.snap_variant == Some(SnapVariant::QuestInstalling42) {
+                            0.42
+                        } else {
+                            1.0
+                        }),
                         cancel: Arc::new(AtomicBool::new(false)),
                     },
                 );

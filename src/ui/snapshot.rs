@@ -70,6 +70,11 @@ pub fn shots() -> Vec<Shot> {
             Page::Play,
             SnapVariant::QuestInstalling,
         ),
+        (
+            "play_quest_installing_42",
+            Page::Play,
+            SnapVariant::QuestInstalling42,
+        ),
         ("play_notice", Page::Play, SnapVariant::Notice),
         ("install_ask", Page::Install, SnapVariant::InstallAsk),
         ("install_ask_new", Page::Install, SnapVariant::InstallAskNew),
