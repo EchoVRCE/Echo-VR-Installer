@@ -1004,6 +1004,8 @@ mod split_info_tests {
     const TEST_FULL_PROGRESS_FRACTION: f32 = 1.0;
     const TEST_PROGRESS_35_PERCENT_FRACTION: f32 = 0.35;
     const TEST_PROGRESS_42_PERCENT_FRACTION: f32 = 0.42;
+    // Blank backdrop at the 1280×720 harness size, outside the popup and its anchor.
+    const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
 
     fn play_dashboard() -> Dashboard {
         let mut d = Dashboard::default();
@@ -1384,7 +1386,7 @@ mod split_info_tests {
             .unwrap_or(false)));
         assert_eq!(h.state().page, Page::Play);
 
-        // Keyboard activation also opens the menu; a later blue Update click closes it.
+        // Keyboard activation also opens the menu; a later blank-backdrop click closes it.
         let mut keyboard = play_harness(play_dashboard());
         keyboard.run_steps(2);
         keyboard.get_by_label("Choose PC version").focus();
@@ -1393,13 +1395,12 @@ mod split_info_tests {
         assert!(keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        let update = keyboard.get_by_label("Check for updates").rect().center();
-        click_at_one_frame_per_event(&mut keyboard, update);
+        click_at_one_frame_per_event(&mut keyboard, OUTSIDE_MENU_TEST_POINT);
         assert!(!keyboard.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
 
-        // AccessKit activation also leaves the blue Update click available for dismissal.
+        // AccessKit activation also leaves outside-click dismissal available.
         let mut accesskit = play_harness(play_dashboard());
         accesskit.run_steps(2);
         accesskit
@@ -1409,8 +1410,7 @@ mod split_info_tests {
         assert!(accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
-        let update = accesskit.get_by_label("Check for updates").rect().center();
-        click_at_one_frame_per_event(&mut accesskit, update);
+        click_at_one_frame_per_event(&mut accesskit, OUTSIDE_MENU_TEST_POINT);
         assert!(!accesskit.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
