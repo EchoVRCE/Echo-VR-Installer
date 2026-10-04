@@ -50,6 +50,11 @@ fn compact_play_regions(has_arrow: bool) -> (Dr, Option<Dr>, Dr) {
     )
 }
 
+/// Arrow hit region in the compact Play split control, for popup dismissal exclusion.
+pub(super) fn compact_play_arrow_region() -> Dr {
+    PLAY_COMPACT_ARROW
+}
+
 /// Progress is clipped to the active Play main target: the PC main segment when the
 /// arrow is present, and the full green button on Quest or with no PC choices.
 fn compact_job_progress_body(has_arrow: bool) -> Dr {

@@ -700,7 +700,7 @@ impl Kit<'_> {
         }
         let pw = 230.0f32.max(w);
         let anchor = Rect::from_min_size(pos2(r.max.x - pw, r.min.y), vec2(pw, h));
-        self.menu_popup(open_id, anchor, items, false)
+        self.menu_popup(open_id, anchor, items, false, None)
     }
 
     /// Whether the menu of `key` is open.
@@ -714,15 +714,7 @@ impl Kit<'_> {
     /// Opens or closes the menu of `key`, for a control that draws its own button.
     pub fn toggle_menu(&self, key: &str) {
         let (id, open) = (menu_id(key), self.menu_open(key));
-        let frame = self.ui.ctx().cumulative_pass_nr();
-        self.ui.ctx().data_mut(|d| {
-            d.insert_temp(id, !open);
-            if !open {
-                // The trigger lies outside the popup rectangle, so don't let the same
-                // pointer click that opened the menu immediately dismiss it.
-                d.insert_temp(id.with("opened-frame"), frame);
-            }
-        });
+        self.ui.ctx().data_mut(|d| d.insert_temp(id, !open));
     }
 
     /// Close a temporary menu and clear its open flag during page/platform transitions.
@@ -738,12 +730,18 @@ impl Kit<'_> {
     /// returns the picked row.
     #[allow(dead_code)]
     pub fn menu_at(&mut self, key: &str, anchor: Rect, items: &[MenuItem]) -> Option<usize> {
-        self.menu_popup(menu_id(key), anchor, items, false)
+        self.menu_popup(menu_id(key), anchor, items, false, None)
     }
 
-    /// A menu that stays below its anchor and scrolls when it reaches the window edge.
-    pub fn menu_at_below(&mut self, key: &str, anchor: Rect, items: &[MenuItem]) -> Option<usize> {
-        self.menu_popup(menu_id(key), anchor, items, true)
+    /// A menu below its positioning anchor with a separate region for the opening control.
+    pub fn menu_at_below_excluding(
+        &mut self,
+        key: &str,
+        anchor: Rect,
+        opener: Rect,
+        items: &[MenuItem],
+    ) -> Option<usize> {
+        self.menu_popup(menu_id(key), anchor, items, true, Some(opener))
     }
 
     /// The open menu of `open_id` next to `anchor`: violet with the card rim, rows turning
@@ -754,6 +752,7 @@ impl Kit<'_> {
         anchor: Rect,
         items: &[MenuItem],
         stay_below: bool,
+        dismissal_exclusion: Option<Rect>,
     ) -> Option<usize> {
         let open = self
             .ui
@@ -905,16 +904,14 @@ impl Kit<'_> {
         let rim = Kit::rim_shape(popup, dz(6.0), 1.5);
         ctx.layer_painter(egui::LayerId::new(Order::Foreground, open_id.with("area")))
             .add(rim);
-        let opened_frame = ctx
-            .data(|d| d.get_temp::<u64>(open_id.with("opened-frame")))
-            .is_some_and(|frame| frame == ctx.cumulative_pass_nr());
-        let outside_click = !opened_frame
-            && ctx.input(|i| {
-                i.pointer.any_click()
-                    && i.pointer
-                        .interact_pos()
-                        .is_some_and(|p| !popup.contains(p) && !anchor.contains(p))
-            });
+        let outside_click = ctx.input(|i| {
+            i.pointer.any_click()
+                && i.pointer.interact_pos().is_some_and(|p| {
+                    !popup.contains(p)
+                        && !anchor.contains(p)
+                        && !dismissal_exclusion.is_some_and(|r| r.contains(p))
+                })
+        });
         if picked.is_some() || outside_click || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             ctx.data_mut(|d| d.insert_temp(open_id, false));
         }
