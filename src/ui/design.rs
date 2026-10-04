@@ -178,7 +178,7 @@ impl Kit<'_> {
         self.rect(dz(r.x), dz(r.y), dz(r.w), dz(r.h))
     }
 
-    fn dpos(&self, x: f32, y: f32) -> Pos2 {
+    pub fn dpos(&self, x: f32, y: f32) -> Pos2 {
         self.origin + vec2(dz(x), dz(y))
     }
 
