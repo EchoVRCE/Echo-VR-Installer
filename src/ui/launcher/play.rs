@@ -1012,6 +1012,9 @@ mod split_info_tests {
     // Astra's repro point sits just inside the arrow bounds, beyond its clipped top edge.
     const DEAD_ARROW_CORNER_INSET_X: f32 = 10.0;
     const DEAD_ARROW_CORNER_INSET_Y: f32 = 1.0;
+    // The approved launcher design viewport that production fit_zoom scales against.
+    const TEST_DESIGN_WIDTH: f32 = 1280.0;
+    const TEST_DESIGN_HEIGHT: f32 = 720.0;
     // Blank backdrop at the 1280×720 harness size, outside the popup and its anchor.
     const OUTSIDE_MENU_TEST_POINT: egui::Pos2 = egui::pos2(1000.0, 650.0);
     // Viewport fixtures named by the approved S0-7 design and BAC-0002.
@@ -1086,6 +1089,8 @@ mod split_info_tests {
         Harness::builder().with_size(size).build_ui_state(
             move |ui, d| {
                 let ctx = ui.ctx().clone();
+                // Match App::ui so viewport geometry is measured at the production zoom.
+                crate::ui::fit_zoom(&ctx);
                 if !fonts_installed {
                     crate::ui::theme::install_fonts(&ctx);
                     crate::ui::theme::install_style(&ctx);
@@ -1097,6 +1102,16 @@ mod split_info_tests {
             },
             d,
         )
+    }
+
+    fn assert_production_zoom(h: &Harness<'_, Dashboard>, size: egui::Vec2) {
+        // Independent expectation from the approved 1280×720 design viewport.
+        let expected = (size.x / TEST_DESIGN_WIDTH).min(size.y / TEST_DESIGN_HEIGHT);
+        let actual = h.ctx.zoom_factor();
+        assert!(
+            (actual - expected).abs() <= 0.001,
+            "expected production zoom {expected} for viewport {size:?}, got {actual}"
+        );
     }
 
     fn click_at(h: &mut Harness<'_, Dashboard>, p: egui::Pos2) {
@@ -1462,6 +1477,7 @@ mod split_info_tests {
                 dashboard.state.profile.runtime = Runtime::Flat;
                 let mut h = play_harness_at(dashboard, size);
                 h.run_steps(2);
+                assert_production_zoom(&h, size);
                 let selected_before = h.state().state.selected.clone();
                 let action_before = pc_action(h.state_mut()).line.primary;
                 let arrow = h.get_by_label("Choose PC version").rect();
@@ -1511,6 +1527,7 @@ mod split_info_tests {
             // Exercise Astra's inert upper-right point at each actual viewport scale.
             let mut h = play_harness_at(play_dashboard(), size);
             h.run_steps(2);
+            assert_production_zoom(&h, size);
             let arrow = h.get_by_label("Choose PC version").rect();
             let scale = arrow.width() / hero::compact_play_arrow_region().w;
             let dead_corner = egui::pos2(
