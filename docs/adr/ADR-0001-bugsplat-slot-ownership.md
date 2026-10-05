@@ -1,12 +1,16 @@
 # ADR-0001: Ownership of `bin/win10/BugSplat64.dll`
 
-Status: **OPEN — no implementation choice approved**
-Decision owners: Andrew and Mia
+Status: **DECIDED — NEVR Runtime owns the slot**
+Decision: **Option A — NEVR Runtime owns `bin/win10/BugSplat64.dll` for supported Windows PCVR installs.**
+Decision recorded by: Andrew
+Review/merge: Mia
 Scope: the live Windows PCVR game build. Linux/Proton, flat mode, event builds, and Quest need separate evidence before they inherit this decision.
 
-## Decision needed
+## Decision
 
-The game imports `BugSplat64.dll` before `WinMain`. Both EchoLoader 2 and NEVR Runtime use that exact file as their entry point, so they cannot each own the path independently. Andrew and Mia must decide which component owns the installed file, who may replace it, and how users move between old and new installations before the launcher installs NEVR. This draft records options and required consequences; it selects none.
+The game imports `BugSplat64.dll` before `WinMain`. Both EchoLoader 2 and NEVR Runtime use that exact file as their entry point, so they cannot each own the path independently. NEVR Runtime will own the installed slot for supported Windows PCVR installs. EchoLoader chaining and a launcher-managed exclusive choice are not selected.
+
+This ownership decision does not by itself authorize launcher installation or updates. Artifact trust remains gated on ADR-0002, and the launcher still needs explicit, testable Update, Verify, Repair, Remove, and migration behavior before implementing NEVR support. Existing installs and unknown DLLs must remain recoverable; this decision does not grant permission to overwrite unrecognized bytes.
 
 ## Evidence and current behavior
 
@@ -18,15 +22,15 @@ The game imports `BugSplat64.dll` before `WinMain`. Both EchoLoader 2 and NEVR R
 
 The cited source files are unchanged between the `launcher-m1` base and the original analysis commit `0a85ed9`; citations here point to the actual PR base `ad9f709` so reviewers can verify each claim in this branch.
 
-## Options
+## Options considered
 
 | Option | Ownership and benefit | Cost and unresolved proof |
 |---|---|---|
-| **A. NEVR owns the slot.** | Install NEVR's signed DLL at the import path; it keeps its earliest hook point and one entry point. | Community updates and archive repair must cede the slot to NEVR when selected. Mods UI needs a NEVR configuration path (ADR-0003), and EchoLoader plugins need explicit compatibility or migration proof. Existing EchoLoader users need a reversible handover. |
-| **B. EchoLoader owns the slot and loads NEVR separately.** | Retains the current loader, update, Verify, and Mods contract at the slot. | NEVR currently ships as the imported `BugSplat64.dll`; no cited source establishes that it can be chainloaded as a plugin or later DLL, or retain its pre-`WinMain` guarantees. This option needs runtime design and a real compatibility test before approval. |
-| **C. The launcher manages an exclusive slot choice.** | Users can select a verified EchoLoader or NEVR owner per supported version; a recorded owner can make switching and rollback explicit. | The launcher must coordinate with the community manifest and archive repair for both modes, store the selected owner durably, detect drift, and maintain two configuration paths. It cannot simply label an unknown DLL as NEVR. |
+| **A. NEVR owns the slot — selected.** | Install NEVR's signed DLL at the import path; it keeps its earliest hook point and one entry point. | Community updates and archive repair must cede the slot to NEVR. Mods UI needs a NEVR configuration path (ADR-0003), and EchoLoader plugins need explicit compatibility or migration proof. Existing EchoLoader users need a reversible handover. |
+| **B. EchoLoader owns the slot and loads NEVR separately — not selected.** | Retains the current loader, update, Verify, and Mods contract at the slot. | NEVR currently ships as the imported `BugSplat64.dll`; no cited source establishes that it can be chainloaded as a plugin or later DLL, or retain its pre-`WinMain` guarantees. |
+| **C. The launcher manages an exclusive slot choice — not selected.** | Users can select a verified EchoLoader or NEVR owner per supported version; a recorded owner can make switching and rollback explicit. | The launcher must coordinate with the community manifest and archive repair for both modes, store the selected owner durably, detect drift, and maintain two configuration paths. It cannot simply label an unknown DLL as NEVR. |
 
-Retaining the current EchoLoader-only behavior defers NEVR integration; it is the safe status quo until one option is approved, not a Stage 1 ownership answer.
+The ownership choice is settled. The behavior and trust requirements below remain prerequisites for implementation.
 
 ## Required behavior under any approved option
 
@@ -49,4 +53,4 @@ The current updater can modify files before a later failure (`src/core/pc_update
 
 ## Consequences and handoff
 
-BACs are pending because the owner, trust, and migration behavior remain undecided. No NEVR installation, slot classifier change, or update/repair exclusion is authorized by this OPEN draft. Andrew and Mia select an option and resolve the migration/rollback questions. Sol then records the decision and linked, testable BACs for Update, Verify, Repair, Remove, and migration; Astra reviews them before implementation. Stage 1 code waits for ADR-0002 artifact trust and ADR-0003 plugin configuration where those contracts apply.
+Ownership is decided, but BACs remain pending for trusted artifact source/signing, slot classification, Update/Verify/Repair/Remove behavior, and migration/rollback. No NEVR installation, slot classifier change, or update/repair exclusion is authorized until those contracts are recorded. ADR-0002 must settle artifact trust, and ADR-0003 must settle plugin configuration where those contracts apply. The decision can now be merged as a recorded architectural choice while implementation remains gated on those follow-up decisions.
